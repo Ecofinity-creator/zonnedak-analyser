@@ -498,7 +498,90 @@ body{background:#f1f5f9;}
 .tl-result.selected{background:var(--amber-light);border-color:var(--amber);}
 `;
 
-// ─── Kaartfuncties ────────────────────────────────────────────────────────────
+// ─── Kaartfuncties ─────────────────────────────────────────────────────────
+const ASP_MAP={N:0,NO:45,O:90,ZO:135,Z:180,ZW:225,W:270,NW:315};
+
+// Clip polygoon naar angulaire sector (radiale slice vanuit centroid)
+function clipPolyToSector(lc,cLat,cLng,aspDeg,halfW){
+  const getAng=(lat,lng)=>((Math.atan2(lng-cLng,lat-cLat)*180/Math.PI)+360)%360;
+  const inSec=(lat,lng)=>{const a=getAng(lat,lng);const d=Math.abs(((a-aspDeg+180+360)%360)-180);return d<=halfW;};
+  const result=[];
+  const n=lc.length;
+  for(let i=0;i<n;i++){
+    const c=lc[i],nx=lc[(i+1)%n];
+    const cIn=inSec(c[0],c[1]),nIn=inSec(nx[0],nx[1]);
+    if(cIn) result.push(c);
+    if(cIn!==nIn){
+      // interpoleer overgang
+      for(let t=0.05;t<1;t+=0.05){
+        const lat=c[0]+t*(nx[0]-c[0]),lng=c[1]+t*(nx[1]-c[1]);
+        if(inSec(lat,lng)!==cIn){result.push([lat,lng]);break;}
+      }
+    }
+  }
+  return result.length>=2?[[cLat,cLng],...result]:null;
+}
+
+// Genummerde dakvlaksectoren tekenen (LiDAR-gedetecteerde richtingen)
+function drawFaceSectors(map,L,lc,faces,selFaceIdx,onSelect){
+  if(!lc||!faces||!faces.length) return null;
+  const lats=lc.map(p=>p[0]),lngs=lc.map(p=>p[1]);
+  const cLat=(Math.min(...lats)+Math.max(...lats))/2;
+  const cLng=(Math.min(...lngs)+Math.max(...lngs))/2;
+  const dLat=(Math.max(...lats)-Math.min(...lats));
+  const dLng=(Math.max(...lngs)-Math.min(...lngs));
+  const g=L.layerGroup();
+
+  // Sorteer op aspect en bepaal sector grenzen
+  const withAsp=faces.map((f,origIdx)=>({...f,asp:ASP_MAP[f.orientation]||0,origIdx}));
+  withAsp.sort((a,b)=>a.asp-b.asp);
+  const n=withAsp.length;
+
+  withAsp.forEach((f,si)=>{
+    const prev=withAsp[(si-1+n)%n],next=withAsp[(si+1)%n];
+    // Halveer de hoek met buren
+    let startAsp=((f.asp+prev.asp+(f.asp<prev.asp?360:0))/2)%360;
+    let endAsp=((f.asp+next.asp+(f.asp>next.asp?360:0))/2)%360;
+    let halfW=((endAsp-startAsp+360)%360)/2;
+    if(halfW<15) halfW=22.5; // minimum sector breedte
+
+    const q=ZONE_Q[f.orientation]||ZONE_Q.Z;
+    const isGood=BEST_SOUTH[f.orientation]!==false;
+    const color=isGood?q[0].c:q[1].c;
+    const isSel=f.origIdx===selFaceIdx;
+
+    // Sector polygoon
+    const sec=clipPolyToSector(lc,cLat,cLng,f.asp,halfW);
+    if(sec&&sec.length>=3){
+      L.polygon(sec,{
+        color:isSel?'#1e293b':color,
+        fillColor:color,
+        fillOpacity:isSel?.65:.38,
+        weight:isSel?3:1.5,
+        opacity:0.9,
+        dashArray:null
+      })
+      .bindTooltip(`<b>${si+1}. ${f.orientation} · ${f.slope}°</b><br>${q[isGood?0:1].l}<br>${f.pct}% van dak`,{sticky:true,direction:"top"})
+      .on("click",()=>onSelect(f.origIdx))
+      .addTo(g);
+    }
+
+    // Genummerd label: positioneer in richting van aspect
+    const aspRad=(90-f.asp)*Math.PI/180;
+    const labelLat=cLat+dLat*0.32*Math.sin(f.asp*Math.PI/180);
+    const labelLng=cLng+dLng*0.32*Math.cos((90-f.asp)*Math.PI/180);
+    L.marker([labelLat,labelLng],{icon:L.divIcon({
+      html:`<div style="width:26px;height:26px;background:${color};border:${isSel?"3px solid #1e293b":"2px solid rgba(255,255,255,.8)"};border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:12px;color:#fff;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4);user-select:none">${si+1}</div>`,
+      iconSize:[26,26],iconAnchor:[13,13],className:""
+    })}).on("click",()=>onSelect(f.origIdx)).addTo(g);
+  });
+
+  // Dakcontour
+  L.polygon(lc,{color:"#e07b00",fillOpacity:0,weight:2.5,dashArray:"6,3"}).addTo(g);
+  g.addTo(map);return g;
+}
+
+// Fallback: eenvoudig 2-helling dak (zonder LiDAR)
 function drawRealRoof(map,L,lc,orientation){
   const[sQ,nQ]=ZONE_Q[orientation]||ZONE_Q.Z;
   const lats=lc.map(p=>p[0]),mid=(Math.min(...lats)+Math.max(...lats))/2;
@@ -508,8 +591,6 @@ function drawRealRoof(map,L,lc,orientation){
   const nP=clipPolyByLat(lc,false,mid);
   if(nP?.length>=3) L.polygon(nP,{color:nQ.c,fillColor:nQ.c,fillOpacity:.4,weight:2,opacity:.9}).bindTooltip(`<b>Noord-helling</b><br>${nQ.l}`,{sticky:true}).addTo(g);
   L.polygon(lc,{color:"#e07b00",fillOpacity:0,weight:2.5,dashArray:"6,3"}).addTo(g);
-  const lngs=lc.map(p=>p[1]);
-  L.polyline([[mid,Math.min(...lngs)],[mid,Math.max(...lngs)]],{color:"#e07b00",weight:2,opacity:.8,dashArray:"4,3"}).addTo(g);
   g.addTo(map);return g;
 }
 function drawPanelLayer(map,L,lc,lat,count,panel,orientation){
@@ -840,7 +921,7 @@ export default function App(){
   const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
   const[coords,setCoords]=useState(null);const[displayName,setDisplayName]=useState("");
   const[slope,setSlope]=useState(35);const[orientation,setOrientation]=useState("Z");
-  const[activeLayer,setActiveLayer]=useState("dsm");const[mapReady,setMapReady]=useState(false);
+  const[activeLayer,setActiveLayer]=useState("luchtfoto"); // Start met luchtfotoconst[mapReady,setMapReady]=useState(false);
 
   const[grbStatus,setGrbStatus]=useState("idle");
   const[buildingCoords,setBuildingCoords]=useState(null);
@@ -850,6 +931,7 @@ export default function App(){
   const[detectedFaces,setDetectedFaces]=useState(null);const[selFaceIdx,setSelFaceIdx]=useState(0);
 
   const leafRef=useRef(null);const markerRef=useRef(null);
+  const selectingRef=useRef(false);  // Fix: bijhoud of suggestie geselecteerd wordt
   const dhmLayerRef=useRef(null);const searchTO=useRef(null);
   const roofLayerRef=useRef(null);const panelLayerRef=useRef(null);
 
@@ -894,9 +976,16 @@ export default function App(){
     const L=window.L,map=leafRef.current;
     if(roofLayerRef.current){map.removeLayer(roofLayerRef.current);roofLayerRef.current=null;}
     if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;setPanelsDrawn(false);}
-    roofLayerRef.current=drawRealRoof(map,L,buildingCoords,orientation);
-  },[buildingCoords,orientation]);
-  useEffect(()=>{if(mapReady&&buildingCoords) redrawRoof();},[mapReady,buildingCoords,orientation]);
+    // Gebruik genummerde sectoren als LiDAR-faces beschikbaar, anders eenvoudige 2-helling
+    if(detectedFaces&&detectedFaces.length>0){
+      roofLayerRef.current=drawFaceSectors(map,L,buildingCoords,detectedFaces,selFaceIdx,(idx)=>{
+        setSelFaceIdx(idx);setOrientation(detectedFaces[idx].orientation);setSlope(detectedFaces[idx].slope);
+      });
+    } else {
+      roofLayerRef.current=drawRealRoof(map,L,buildingCoords,orientation);
+    }
+  },[buildingCoords,orientation,detectedFaces,selFaceIdx]);
+  useEffect(()=>{if(mapReady&&buildingCoords) redrawRoof();},[mapReady,buildingCoords,orientation,detectedFaces,selFaceIdx]);
 
   useEffect(()=>{
     if(!panelsDrawn||!buildingCoords||!selPanel||!leafRef.current||!window.L||!coords) return;
@@ -913,18 +1002,48 @@ export default function App(){
     scr.src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
     scr.onload=()=>setMapReady(true);document.head.appendChild(scr);
   },[]);
+  // Base tile layers
+  const TILE_LAYERS={
+    kaart:   "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    luchtfoto:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  };
+  const TILE_ATTR={
+    kaart:"© OpenStreetMap contributors",
+    luchtfoto:"© Esri, Maxar, Earthstar Geographics"
+  };
+  const baseTileRef=useRef(null);
+
   useEffect(()=>{
     if(!mapReady||leafRef.current) return;
     const L=window.L,map=L.map("leaflet-map",{center:[50.85,4.35],zoom:8});
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:"© OSM",maxZoom:21}).addTo(map);
+    baseTileRef.current=L.tileLayer(TILE_LAYERS.luchtfoto,{attribution:TILE_ATTR.luchtfoto,maxZoom:21}).addTo(map);
     leafRef.current=map;
   },[mapReady]);
+
+  // Wissel base tile laag
+  useEffect(()=>{
+    if(!leafRef.current||!mapReady||!baseTileRef.current) return;
+    const L=window.L,map=leafRef.current;
+    map.removeLayer(baseTileRef.current);
+    baseTileRef.current=L.tileLayer(
+      activeLayer==="luchtfoto"?TILE_LAYERS.luchtfoto:TILE_LAYERS.kaart,
+      {attribution:activeLayer==="luchtfoto"?TILE_ATTR.luchtfoto:TILE_ATTR.kaart,maxZoom:21}
+    ).addTo(map);
+    // DHM overlay opnieuw toevoegen als actief
+    if(dhmLayerRef.current) dhmLayerRef.current.bringToFront?.();
+  },[activeLayer,mapReady]);
+
   useEffect(()=>{
     if(!leafRef.current||!mapReady) return;
     const L=window.L,map=leafRef.current;
     if(dhmLayerRef.current) map.removeLayer(dhmLayerRef.current);
-    const lyr=L.tileLayer.wms(DHM_WMS,{layers:activeLayer==="dsm"?"DHMVII_DSM_1m":"DHMVII_DTM_1m",format:"image/png",transparent:true,opacity:.55,attribution:"© Digitaal Vlaanderen",version:"1.3.0"});
-    lyr.addTo(map);dhmLayerRef.current=lyr;
+    if(activeLayer==="dsm"||activeLayer==="dtm"){
+      const lyr=L.tileLayer.wms(DHM_WMS,{
+        layers:activeLayer==="dsm"?"DHMVII_DSM_1m":"DHMVII_DTM_1m",
+        format:"image/png",transparent:true,opacity:.55,
+        attribution:"© Digitaal Vlaanderen",version:"1.3.0"
+      });lyr.addTo(map);dhmLayerRef.current=lyr;
+    } else {dhmLayerRef.current=null;}
   },[activeLayer,mapReady]);
 
   useEffect(()=>{
@@ -1052,14 +1171,15 @@ export default function App(){
           <div className="sl">Locatie</div>
           <div style={{display:"flex",flexDirection:"column",gap:5}}>
             <div className="sugg-wrap">
-              {/* FIX dubbel klikken: gebruik onFocus/onBlur voor visibility */}
+                {/* FIX dubbel klikken: mouseDown stopt blur, click selecteert */}
               <input className="inp" placeholder="Adres in Vlaanderen..." value={query}
                 onChange={e=>{setQuery(e.target.value);setShowSuggs(true);}}
-                onFocus={()=>suggs.length>0&&setShowSuggs(true)}
-                onBlur={()=>setTimeout(()=>setShowSuggs(false),150)}/>
+                onFocus={()=>setSuggs(s=>s)}
+                onBlur={()=>{if(!selectingRef.current)setShowSuggs(false);selectingRef.current=false;}}/>
               {showSuggs&&suggs.length>0&&<div className="sugg">
                 {suggs.map((s,i)=><div key={i} className="sugg-item"
-                  onMouseDown={e=>{e.preventDefault();selectAddr(s);}}>
+                  onMouseDown={e=>{e.preventDefault();selectingRef.current=true;}}
+                  onClick={()=>{selectingRef.current=false;selectAddr(s);}}>
                   {s.display_name}
                 </div>)}
               </div>}
@@ -1189,25 +1309,50 @@ export default function App(){
         {/* CONFIGURATIE = kaart */}
         {activeTab==="configuratie"&&<div className="map-area">
           <div id="leaflet-map" style={{height:"100%"}}/>
+          {/* Laagkiezer */}
           <div className="map-btns">
-            <button className={`map-btn ${activeLayer==="dsm"?"active":""}`} onClick={()=>setActiveLayer("dsm")}>DSM — Oppervlaktemodel</button>
-            <button className={`map-btn ${activeLayer==="dtm"?"active":""}`} onClick={()=>setActiveLayer("dtm")}>DTM — Terreinmodel</button>
+            <button className={`map-btn ${activeLayer==="luchtfoto"?"active":""}`} onClick={()=>setActiveLayer("luchtfoto")}>🛰️ Luchtfoto</button>
+            <button className={`map-btn ${activeLayer==="kaart"?"active":""}`} onClick={()=>setActiveLayer("kaart")}>🗺️ Kaart</button>
+            <button className={`map-btn ${activeLayer==="dsm"?"active":""}`} onClick={()=>setActiveLayer("dsm")}>📡 DSM Hoogte</button>
           </div>
+          {/* Status pill */}
           {coords&&<div className="status-pill">
             {grbStatus==="ok"&&<span style={{color:"var(--green)"}}>GRB ✅</span>}
             {grbStatus==="fallback"&&<span style={{color:"#92400e"}}>GRB ⚠️</span>}
-            {dhmStatus==="ok"&&<><span style={{color:"var(--alpha)"}}>LiDAR ✅</span><span style={{color:"var(--muted)"}}>{orientation} {slope}°</span></>}
+            {dhmStatus==="ok"&&<><span style={{color:"var(--alpha)"}}>LiDAR ✅</span><span style={{color:"var(--muted)"}}>{detectedFaces?.length||0} vlakken</span></>}
             {dhmStatus==="loading"&&<><div className="spinner cyan"/><span style={{color:"var(--alpha)"}}>LiDAR...</span></>}
             {dhmStatus==="error"&&<span style={{color:"var(--red)"}}>LiDAR ⚠️</span>}
             {grbStatus==="ok"&&<span style={{color:"var(--muted)"}}>{detectedArea} m²</span>}
           </div>}
-          {coords&&<div className="map-legend">
+          {/* Legende met klikbare genummerde vlakken */}
+          {coords&&<div className="map-legend" style={{maxWidth:185}}>
             <div className="legend-title">Dakpotentieel</div>
-            <div className="legend-row"><div className="legend-dot" style={{background:"#16a34a"}}/>Optimaal (Z/ZO/ZW)</div>
-            <div className="legend-row"><div className="legend-dot" style={{background:"#d97706"}}/>Goed (O/W)</div>
-            <div className="legend-row"><div className="legend-dot" style={{background:"#dc2626"}}/>Minder geschikt (N)</div>
-            <div className="legend-row"><div className="legend-dot" style={{background:"#2563eb"}}/>Geplaatste panelen</div>
-            {dhmStatus==="ok"&&<div style={{marginTop:3,color:"var(--alpha)",fontSize:7}}>◉ = LiDAR-richting</div>}
+            {dhmStatus==="ok"&&detectedFaces?.length>0?(
+              <>
+                <div style={{fontSize:7,color:"var(--muted)",marginBottom:5}}>Klik op nummer om vlak te selecteren:</div>
+                {detectedFaces.map((f,i)=>{
+                  const q=ZONE_Q[f.orientation]||ZONE_Q.Z;
+                  const isGood=BEST_SOUTH[f.orientation]!==false;
+                  const c=isGood?q[0].c:q[1].c;
+                  const lbl=isGood?q[0].l:q[1].l;
+                  return <div key={i} className="legend-row" style={{cursor:"pointer",padding:"2px 3px",borderRadius:4,background:i===selFaceIdx?"rgba(0,0,0,.05)":"transparent"}}
+                    onClick={()=>{setSelFaceIdx(i);setOrientation(f.orientation);setSlope(f.slope);}}>
+                    <div style={{width:20,height:20,background:c,borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:800,color:"#fff",flexShrink:0,border:i===selFaceIdx?"2px solid #1e293b":"2px solid transparent"}}>{i+1}</div>
+                    <div>
+                      <div style={{fontSize:8,fontWeight:i===selFaceIdx?700:500,color:"var(--text)"}}>{f.orientation} · {f.slope}° · {f.pct}%</div>
+                      <div style={{fontSize:7,color:c}}>{lbl}</div>
+                    </div>
+                  </div>;
+                })}
+              </>
+            ):(
+              <>
+                <div className="legend-row"><div className="legend-dot" style={{background:"#16a34a"}}/>Optimaal (Z/ZO/ZW)</div>
+                <div className="legend-row"><div className="legend-dot" style={{background:"#d97706"}}/>Goed (O/W)</div>
+                <div className="legend-row"><div className="legend-dot" style={{background:"#dc2626"}}/>Minder geschikt (N)</div>
+              </>
+            )}
+            <div className="legend-row" style={{marginTop:3}}><div className="legend-dot" style={{background:"#2563eb"}}/>Geplaatste panelen</div>
           </div>}
         </div>}
 
