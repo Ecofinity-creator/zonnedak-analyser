@@ -931,7 +931,8 @@ export default function App(){
   const[detectedFaces,setDetectedFaces]=useState(null);const[selFaceIdx,setSelFaceIdx]=useState(0);
 
   const leafRef=useRef(null);const markerRef=useRef(null);
-  const selectingRef=useRef(false);  // Fix: bijhoud of suggestie geselecteerd wordt
+  const selectingRef=useRef(false);
+  const baseTileRef=useRef(null); // luchtfoto / kaart base layer  // Fix: bijhoud of suggestie geselecteerd wordt
   const dhmLayerRef=useRef(null);const searchTO=useRef(null);
   const roofLayerRef=useRef(null);const panelLayerRef=useRef(null);
 
@@ -1002,40 +1003,31 @@ export default function App(){
     scr.src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
     scr.onload=()=>setMapReady(true);document.head.appendChild(scr);
   },[]);
-  // Base tile layers
-  const TILE_LAYERS={
-    kaart:   "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-    luchtfoto:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-  };
-  const TILE_ATTR={
-    kaart:"© OpenStreetMap contributors",
-    luchtfoto:"© Esri, Maxar, Earthstar Geographics"
-  };
-  const baseTileRef=useRef(null);
-
   useEffect(()=>{
     if(!mapReady||leafRef.current) return;
     const L=window.L,map=L.map("leaflet-map",{center:[50.85,4.35],zoom:8});
-    baseTileRef.current=L.tileLayer(TILE_LAYERS.luchtfoto,{attribution:TILE_ATTR.luchtfoto,maxZoom:21}).addTo(map);
+    // Start met luchtfoto
+    baseTileRef.current=L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      {attribution:"© Esri World Imagery",maxZoom:21}
+    ).addTo(map);
     leafRef.current=map;
   },[mapReady]);
-
-  // Wissel base tile laag
-  useEffect(()=>{
-    if(!leafRef.current||!mapReady||!baseTileRef.current) return;
-    const L=window.L,map=leafRef.current;
-    map.removeLayer(baseTileRef.current);
-    baseTileRef.current=L.tileLayer(
-      activeLayer==="luchtfoto"?TILE_LAYERS.luchtfoto:TILE_LAYERS.kaart,
-      {attribution:activeLayer==="luchtfoto"?TILE_ATTR.luchtfoto:TILE_ATTR.kaart,maxZoom:21}
-    ).addTo(map);
-    // DHM overlay opnieuw toevoegen als actief
-    if(dhmLayerRef.current) dhmLayerRef.current.bringToFront?.();
-  },[activeLayer,mapReady]);
 
   useEffect(()=>{
     if(!leafRef.current||!mapReady) return;
     const L=window.L,map=leafRef.current;
+    // Wissel base tile laag
+    if(baseTileRef.current){map.removeLayer(baseTileRef.current);}
+    if(activeLayer==="kaart"){
+      baseTileRef.current=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:"© OSM",maxZoom:21}).addTo(map);
+    } else {
+      baseTileRef.current=L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        {attribution:"© Esri World Imagery",maxZoom:21}
+      ).addTo(map);
+    }
+    // DHM overlay
     if(dhmLayerRef.current) map.removeLayer(dhmLayerRef.current);
     if(activeLayer==="dsm"||activeLayer==="dtm"){
       const lyr=L.tileLayer.wms(DHM_WMS,{
