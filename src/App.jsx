@@ -222,42 +222,67 @@ async function searchTeamleaderContact(name,token){
   const d=await r.json();return d.data||[];
 }
 
-// ─── PDF laden (jsPDF CDN) ───────────────────────────────────────────────────
-function loadJsPDF(){
+// ─── PDF bibliotheken laden ───────────────────────────────────────────────────
+function loadScript(src){
   return new Promise((res,rej)=>{
-    if(window.jspdf){res();return;}
-    const s=document.createElement("script");
-    s.src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-    s.onload=()=>{
-      // ook autoTable laden
-      const s2=document.createElement("script");
-      s2.src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js";
-      s2.onload=res;s2.onerror=rej;document.head.appendChild(s2);
-    };
-    s.onerror=rej;document.head.appendChild(s);
+    if(document.querySelector(`script[src="${src}"]`)){setTimeout(res,200);return;}
+    const s=document.createElement("script");s.src=src;s.onload=res;s.onerror=rej;document.head.appendChild(s);
   });
 }
+async function loadPdfLibs(){
+  await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+  await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js");
+  await loadScript("https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js");
+}
+async function fetchPdfBytes(path){
+  try{const r=await fetch(path);if(!r.ok) throw new Error(`HTTP ${r.status}`);return new Uint8Array(await r.arrayBuffer());}
+  catch(e){console.warn("Datasheet niet geladen:",path,e.message);return null;}
+}
 
-// ─── Default data ─────────────────────────────────────────────────────────────
+// ─── Default data (specs rechtstreeks uit datasheets) ──────────────────────────
+// Datasheet pad relatief aan de app base URL (in /public/datasheets/)
+const DS_BASE = import.meta.env.BASE_URL + "datasheets/";
+
 const DEFAULT_PANELS=[
-  // Meest gebruikte: Qcells & Trina eerst
-  {id:1,brand:"Qcells",        model:"Q.PEAK DUO ML-G11+ 440W", watt:440,area:1.879,eff:22.3,price:195,warranty:25,
-   dims:"1756×1096×35mm",weight:"21.3 kg"},
-  {id:2,brand:"Trina Solar",   model:"Vertex S+ 500W NEG18R.28",watt:500,area:2.411,eff:22.3,price:240,warranty:25,
-   dims:"2094×1134×35mm",weight:"32.3 kg"},
+  // ① Qcells Q.TRON BLK S-G3R.12+ BFG 440W — datasheet 2024-05
+  // Formaat: 1762×1134×30mm · Gewicht: 20,9 kg · Eff: 22,0% · 25j prod / 30j prestatie
+  {id:1,brand:"Qcells",      model:"Q.TRON BLK S-G3R.12+ 440W",   watt:440,area:1.998,eff:22.0,price:195,warranty:25,
+   dims:"1762×1134×30mm",weight:"20.9 kg",datasheet:"qcells-440w.pdf"},
+
+  // ② Trina Solar Vertex S+ TSM-NEG18RC.27 500W — datasheet 2024
+  // Formaat: 1961×1134×30mm · Gewicht: 23,6 kg · Eff: 22,3% · 15j prod / 30j prestatie
+  {id:2,brand:"Trina Solar", model:"Vertex S+ TSM-NEG18RC.27 500W",watt:500,area:2.224,eff:22.3,price:240,warranty:30,
+   dims:"1961×1134×30mm",weight:"23.6 kg",datasheet:"trina-500w.pdf"},
+
   {id:3,brand:"Jinko Solar",   model:"Tiger Neo N-Type 420W",   watt:420,area:1.722,eff:21.8,price:210,warranty:25,
-   dims:"1722×1134×30mm",weight:"21.3 kg"},
+   dims:"1722×1134×30mm",weight:"21.3 kg",datasheet:null},
   {id:4,brand:"LONGi Solar",   model:"Hi-MO 6 Explorer 415W",   watt:415,area:1.722,eff:21.3,price:195,warranty:25,
-   dims:"1722×1134×30mm",weight:"21.3 kg"},
+   dims:"1722×1134×30mm",weight:"21.3 kg",datasheet:null},
   {id:5,brand:"Canadian Solar",model:"HiHero 430W",              watt:430,area:1.879,eff:22.8,price:235,warranty:25,
-   dims:"1756×1096×35mm",weight:"21.3 kg"},
+   dims:"1756×1096×35mm",weight:"21.3 kg",datasheet:null},
 ];
+
 const DEFAULT_INVERTERS=[
-  {id:1,brand:"AlphaESS",model:"SMILE-G3-S3.6",fase:"1-fase",kw:3.68,mppt:2,maxPv:7400, eff:97.1,price:1850,warranty:10,notes:"Ideaal voor energiezuinige woningen. Uitbreidbaar tot 60,5 kWh. IP65."},
-  {id:2,brand:"AlphaESS",model:"SMILE-G3-S5",  fase:"1-fase",kw:5.0, mppt:2,maxPv:10000,eff:97.3,price:2400,warranty:10,notes:"Populairste model. 200% PV-oversizing. UPS backup. Fluvius-integratie."},
-  {id:3,brand:"AlphaESS",model:"SMILE-G3-S8",  fase:"1-fase",kw:8.0, mppt:2,maxPv:16000,eff:97.5,price:3100,warranty:10,notes:"Nieuwste 1-fase met display. 8kW backup. EV-laders."},
-  {id:4,brand:"AlphaESS",model:"SMILE-G3-T4/6/8/10",fase:"3-fase",kw:10.0,mppt:3,maxPv:20000,eff:97.5,price:4200,warranty:10,notes:"Driefase hybride. 3 MPPT, 150% overbelasting. Max 45,6 kWh."},
-  {id:5,brand:"AlphaESS",model:"SMILE-G3-T15/20", fase:"3-fase",kw:20.0,mppt:3,maxPv:40000,eff:97.6,price:6500,warranty:10,notes:"15-20kW driefase voor grote woningen of KMO."},
+  // Specs uit SMILE G3 S3.6/S5 datasheet 2025
+  // S3.6: 3,68kW nom · max PV 7,36kW (200%) · 2 MPPT/1 · 580V max · 97% eff · IP65
+  {id:1,brand:"AlphaESS",model:"SMILE-G3-S3.6",fase:"1-fase",kw:3.68,mppt:2,maxPv:7360, eff:97.0,price:1850,warranty:10,
+   dims:"610×212×366mm",weight:"19.5 kg",
+   notes:"3,68kW · max 7,36kWp PV · 2 MPPT · UPS backup · IP65 · C10/11 · Jabba.",
+   datasheet:"alphaess-smile-g3.pdf"},
+  // S5: 5kW nom · max PV 10kW (200%) · 2 MPPT/1 · 97% eff · IP65
+  {id:2,brand:"AlphaESS",model:"SMILE-G3-S5",  fase:"1-fase",kw:5.0, mppt:2,maxPv:10000,eff:97.0,price:2400,warranty:10,
+   dims:"610×212×366mm",weight:"19.5 kg",
+   notes:"5kW · max 10kWp PV · 2 MPPT · UPS backup · IP65 · C10/11 · Jabba. Populairste model.",
+   datasheet:"alphaess-smile-g3.pdf"},
+  {id:3,brand:"AlphaESS",model:"SMILE-G3-S8",  fase:"1-fase",kw:8.0, mppt:2,maxPv:16000,eff:97.5,price:3100,warranty:10,
+   dims:"610×212×366mm",weight:"22 kg",
+   notes:"8kW · max 16kWp · display · EV-laders · IP65.",datasheet:"alphaess-smile-g3.pdf"},
+  {id:4,brand:"AlphaESS",model:"SMILE-G3-T4/6/8/10",fase:"3-fase",kw:10.0,mppt:3,maxPv:20000,eff:97.5,price:4200,warranty:10,
+   dims:"610×212×366mm",weight:"25 kg",
+   notes:"Driefase hybride · 3 MPPT · 150% overbelasting · max 45,6 kWh.",datasheet:"alphaess-smile-g3.pdf"},
+  {id:5,brand:"AlphaESS",model:"SMILE-G3-T15/20", fase:"3-fase",kw:20.0,mppt:3,maxPv:40000,eff:97.6,price:6500,warranty:10,
+   dims:"610×212×366mm",weight:"30 kg",
+   notes:"15-20kW driefase voor grote woningen of KMO.",datasheet:"alphaess-smile-g3.pdf"},
 ];
 const DEFAULT_BATTERIES=[
   {id:1,brand:"AlphaESS",model:"BAT-G3-3.8S",               kwh:3.8, price:1507,cycles:10000,warranty:10,dod:95,notes:"Serieel, indoor IP21. Tot 4× (15,2 kWh).",isAlpha:true},
@@ -548,104 +573,155 @@ function MonthlyChart({annualKwh}){
 
 // ─── PDF generatie ────────────────────────────────────────────────────────────
 async function generatePDF(results,customer,displayName,slope,orientation){
-  await loadJsPDF();
+  await loadPdfLibs();
   const{jsPDF}=window.jspdf;
+  const{PDFDocument}=window.PDFLib;
   const doc=new jsPDF({orientation:"portrait",unit:"mm",format:"a4"});
   const W=210,margin=15;
   let y=margin;
 
-  // Header
-  doc.setFillColor(224,123,0);doc.rect(0,0,W,22,F);
-  doc.setTextColor(255,255,255);
-  doc.setFont("helvetica","bold");doc.setFontSize(16);
+  // ── Header ──
+  doc.setFillColor(224,123,0);doc.rect(0,0,W,22,"F");
+  doc.setFillColor(180,100,0);doc.rect(0,17,W,5,"F");
+  doc.setTextColor(255,255,255);doc.setFont("helvetica","bold");doc.setFontSize(18);
   doc.text("ZonneDak Analyse",margin,14);
   doc.setFontSize(9);doc.setFont("helvetica","normal");
-  doc.text(`Gegenereerd op ${new Date().toLocaleDateString("nl-BE")}`,W-margin,14,{align:"right"});
+  doc.text(`${new Date().toLocaleDateString("nl-BE")}`,W-margin,14,{align:"right"});
 
   y=30;
-  // Klantgegevens
-  doc.setTextColor(15,23,42);doc.setFontSize(11);doc.setFont("helvetica","bold");
-  doc.text("Klantgegevens",margin,y);y+=6;
-  doc.setFontSize(9);doc.setFont("helvetica","normal");doc.setTextColor(100,116,139);
-  doc.text(`Naam: ${customer.name||"—"}`,margin,y);y+=5;
-  doc.text(`Adres: ${customer.address||displayName||"—"}`,margin,y);y+=5;
-  if(customer.email) {doc.text(`E-mail: ${customer.email}`,margin,y);y+=5;}
+  // ── Klantgegevens ──
+  doc.setFillColor(248,250,252);doc.rect(margin-2,y-4,W-2*margin+4,customer.email?24:18,"F");
+  doc.setTextColor(15,23,42);doc.setFontSize(12);doc.setFont("helvetica","bold");
+  doc.text("Klantgegevens",margin,y);y+=7;
+  doc.setFontSize(10);doc.setFont("helvetica","normal");doc.setTextColor(71,85,105);
+  doc.text(`Naam:    ${customer.name||"—"}`,margin,y);y+=5;
+  doc.text(`Adres:   ${customer.address||displayName||"—"}`,margin,y);y+=5;
+  if(customer.email){doc.text(`E-mail:  ${customer.email}`,margin,y);y+=5;}
+  y+=4;doc.setDrawColor(224,123,0);doc.setLineWidth(0.5);doc.line(margin,y,W-margin,y);y+=6;
 
-  y+=3;doc.setDrawColor(226,232,240);doc.line(margin,y,W-margin,y);y+=5;
-
-  // Systeemoverzicht
-  doc.setTextColor(15,23,42);doc.setFontSize(11);doc.setFont("helvetica","bold");
+  // ── Systeemoverzicht ──
+  doc.setTextColor(15,23,42);doc.setFontSize(12);doc.setFont("helvetica","bold");
   doc.text("Systeemoverzicht",margin,y);y+=7;
-
   const rows=[
     ["Paneel",`${results.panel.brand} ${results.panel.model}`],
+    ["Afmetingen paneel",results.panel.dims||"—"],
     ["Aantal panelen",`${results.panelCount} panelen`],
     ["Totaal vermogen",`${((results.panelCount*results.panel.watt)/1000).toFixed(2)} kWp`],
     ["Dakoppervlak",`${results.detectedArea||80} m² (${results.grbOk?"GRB gemeten":"schatting"})`],
     ["Hellingshoek",`${slope}°`],
-    ["Oriëntatie",`${orientation} ${results.dhmOk?"(LiDAR)":"(handmatig)"}`],
+    ["Oriëntatie",`${orientation} ${results.dhmOk?"(LiDAR gemeten)":"(handmatig)"}`],
     ["Zonneirradiantie",`${results.irr} kWh/m²/jaar`],
     ["Jaarlijkse opbrengst",`${results.annualKwh.toLocaleString("nl-BE")} kWh/jaar`],
     ["CO₂ besparing",`${results.co2} kg/jaar`],
-    ["Dekkingsgraad",`${results.coverage}% van gemiddeld verbruik`],
+    ["Dekkingsgraad",`${results.coverage}% van gemiddeld verbruik (3.500 kWh/j)`],
   ];
-  if(results.inv) rows.splice(1,0,["AlphaESS Omvormer",`${results.inv.model} (${results.inv.kw} kW)`]);
-
+  if(results.inv) rows.splice(1,0,["AlphaESS Omvormer",`${results.inv.model} (${results.inv.kw} kW · ${results.inv.fase})`]);
   doc.autoTable({startY:y,head:[["Parameter","Waarde"]],body:rows,
-    styles:{fontSize:9,cellPadding:3},
-    headStyles:{fillColor:[224,123,0],textColor:[255,255,255],fontStyle:"bold"},
+    styles:{fontSize:9,cellPadding:3.5},
+    headStyles:{fillColor:[224,123,0],textColor:[255,255,255],fontStyle:"bold",fontSize:9},
     alternateRowStyles:{fillColor:[248,250,252]},
+    columnStyles:{0:{fontStyle:"bold",cellWidth:70},1:{cellWidth:"auto"}},
     margin:{left:margin,right:margin},
   });
   y=doc.lastAutoTable.finalY+8;
 
-  // Financieel
-  doc.setTextColor(15,23,42);doc.setFontSize(11);doc.setFont("helvetica","bold");
+  // ── Financieel ──
+  if(y>210){doc.addPage();y=margin;}
+  doc.setTextColor(15,23,42);doc.setFontSize(12);doc.setFont("helvetica","bold");
   doc.text("Financiële analyse",margin,y);y+=7;
   const finRows=[
-    ["Investering zonnepanelen",`€ ${(results.panelCount*results.panel.price).toLocaleString("nl-BE")}`],
-    ["Installatie & omvormer",`€ ${(results.inv?results.inv.price:1200).toLocaleString("nl-BE")}`],
-    ["Totale investering",`€ ${results.investPanels.toLocaleString("nl-BE")}`],
-    ["Jaarlijkse besparing",`€ ${results.annualBase.toLocaleString("nl-BE")} (@ €0,28/kWh)`],
-    ["Terugverdientijd",`${results.paybackBase} jaar`],
+    ["Zonnepanelen","€ "+(results.panelCount*results.panel.price).toLocaleString("nl-BE")],
+    ["Installatie & omvormer","€ "+(results.inv?results.inv.price:1200).toLocaleString("nl-BE")],
+    ["Totale investering","€ "+results.investPanels.toLocaleString("nl-BE")],
+    ["Jaarlijkse besparing","€ "+results.annualBase.toLocaleString("nl-BE")+" (@ €0,28/kWh)"],
+    ["Terugverdientijd zonder batterij",results.paybackBase+" jaar"],
   ];
   if(results.battResult){
-    finRows.push(["","—"]);
-    finRows.push([`Batterij (${results.batt?.brand} ${results.batt?.model})`,`€ ${results.batt?.price.toLocaleString("nl-BE")}`]);
-    finRows.push(["Totale investering met batterij",`€ ${results.battResult.totInv.toLocaleString("nl-BE")}`]);
-    finRows.push(["Jaarlijkse besparing met batterij",`€ ${results.battResult.totSav.toLocaleString("nl-BE")}`]);
-    finRows.push(["Terugverdientijd met batterij",`${results.battResult.payback} jaar`]);
+    finRows.push(["Batterij ("+results.batt?.brand+" "+results.batt?.model+")","€ "+results.batt?.price.toLocaleString("nl-BE")]);
+    finRows.push(["Extra besparing met batterij","€ "+results.battResult.extraSav.toLocaleString("nl-BE")+"/jaar"]);
+    finRows.push(["Totale investering met batterij","€ "+results.battResult.totInv.toLocaleString("nl-BE")]);
+    finRows.push(["Terugverdientijd met batterij",results.battResult.payback+" jaar"]);
   }
   doc.autoTable({startY:y,head:[["Post","Bedrag"]],body:finRows,
-    styles:{fontSize:9,cellPadding:3},
+    styles:{fontSize:9,cellPadding:3.5},
     headStyles:{fillColor:[37,99,235],textColor:[255,255,255],fontStyle:"bold"},
     alternateRowStyles:{fillColor:[239,246,255]},
+    columnStyles:{0:{fontStyle:"bold",cellWidth:110}},
     margin:{left:margin,right:margin},
   });
   y=doc.lastAutoTable.finalY+8;
 
-  // Maandelijkse productie (tekst tabel)
-  if(y>220){doc.addPage();y=margin;}
-  doc.setTextColor(15,23,42);doc.setFontSize(11);doc.setFont("helvetica","bold");
+  // ── Maandelijkse productie ──
+  if(y>210){doc.addPage();y=margin;}
+  doc.setTextColor(15,23,42);doc.setFontSize(12);doc.setFont("helvetica","bold");
   doc.text("Maandelijkse productie (kWh)",margin,y);y+=7;
-  const monthRows=[MONTHS.map((_,i)=>MONTHS[i]),MONTHS.map((_,i)=>Math.round(results.annualKwh*MONTHLY_FACTOR[i]).toString())];
-  doc.autoTable({startY:y,head:[monthRows[0]],body:[monthRows[1]],
-    styles:{fontSize:8,cellPadding:2,halign:"center"},
+  const mVals=MONTHLY_FACTOR.map(f=>Math.round(results.annualKwh*f));
+  doc.autoTable({startY:y,
+    head:[MONTHS],body:[mVals.map(v=>v.toString())],
+    styles:{fontSize:8,cellPadding:2.5,halign:"center"},
     headStyles:{fillColor:[22,163,74],textColor:[255,255,255],fontStyle:"bold"},
     alternateRowStyles:{fillColor:[240,253,244]},
     margin:{left:margin,right:margin},
   });
-  y=doc.lastAutoTable.finalY+8;
+  y=doc.lastAutoTable.finalY+4;
 
-  // Footer
-  const pageCount=doc.getNumberOfPages();
-  for(let i=1;i<=pageCount;i++){
-    doc.setPage(i);doc.setFontSize(7);doc.setTextColor(148,163,184);
-    doc.text(`Pagina ${i}/${pageCount} · ZonneDak Analyzer · © ${new Date().getFullYear()}`,W/2,295,{align:"center"});
-    doc.text("* Berekeningen zijn schattingen. Raadpleeg een erkend installateur voor een offerte.",margin,290);
+  // Grafiek (eenvoudige balken via rechthoeken)
+  if(y+45<285){
+    const bW=12,bX=margin,maxV=Math.max(...mVals);
+    mVals.forEach((v,i)=>{
+      const bH=(v/maxV)*35;
+      const heat=v/maxV;
+      const r=Math.round(37+heat*218),gg=Math.round(99+heat*78),b=Math.round(235-heat*139);
+      doc.setFillColor(r,gg,b);
+      doc.rect(bX+i*(bW+1),y+36-bH,bW,bH,"F");
+      doc.setFontSize(6);doc.setTextColor(100,116,139);
+      doc.text(MONTHS[i],bX+i*(bW+1)+bW/2,y+40,{align:"center"});
+    });
+    y+=45;
   }
 
-  doc.save(`ZonneDak_${(customer.name||"rapport").replace(/\s+/g,"_")}_${new Date().toISOString().slice(0,10)}.pdf`);
+  // ── Footer op alle pagina's ──
+  const pgC=doc.getNumberOfPages();
+  for(let i=1;i<=pgC;i++){
+    doc.setPage(i);doc.setFontSize(7);doc.setTextColor(148,163,184);
+    doc.text(`Pagina ${i}/${pgC} · ZonneDak Analyzer · ${new Date().getFullYear()}`,W/2,293,{align:"center"});
+    doc.setDrawColor(226,232,240);doc.line(margin,289,W-margin,289);
+    doc.text("Berekeningen zijn schattingen. Raadpleeg een erkend installateur voor een definitieve offerte.",margin,289);
+  }
+
+  // ── Datasheets samenvoegen via pdf-lib ──
+  const mainPdfBytes=doc.output("arraybuffer");
+  const mergedPdf=await PDFDocument.load(new Uint8Array(mainPdfBytes));
+
+  // Verzamel unieke datasheets (paneel + omvormer)
+  const dsFiles=new Set();
+  if(results.panel?.datasheet) dsFiles.add(results.panel.datasheet);
+  if(results.inv?.datasheet)   dsFiles.add(results.inv.datasheet);
+
+  let dsCount=0;
+  for(const dsFile of dsFiles){
+    const bytes=await fetchPdfBytes(DS_BASE+dsFile);
+    if(!bytes) continue;
+    try{
+      const dsPdf=await PDFDocument.load(bytes);
+      const pages=await mergedPdf.copyPages(dsPdf,dsPdf.getPageIndices());
+      // Scheidingspagina
+      const sepPage=mergedPdf.addPage([595,842]);
+      const {rgb}=window.PDFLib;
+      sepPage.drawRectangle({x:0,y:0,width:595,height:842,color:rgb(0.95,0.96,0.98)});
+      sepPage.drawText(`Datasheet: ${dsFile.replace(/-/g," ").replace(".pdf","").toUpperCase()}`,{x:50,y:420,size:18,color:rgb(0.88,0.48,0)});
+      pages.forEach(p=>mergedPdf.addPage(p));
+      dsCount++;
+    }catch(e){console.warn("Datasheet merge fout:",dsFile,e.message);}
+  }
+
+  const finalBytes=await mergedPdf.save();
+  const blob=new Blob([finalBytes],{type:"application/pdf"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;a.download=`ZonneDak_${(customer.name||"rapport").replace(/\s+/g,"_")}_${new Date().toISOString().slice(0,10)}.pdf`;
+  a.click();URL.revokeObjectURL(url);
+  return dsCount;
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -1247,15 +1323,21 @@ export default function App(){
             <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,boxShadow:"var(--shadow)"}}>
               <div className="sl" style={{marginBottom:8}}>PDF Rapport genereren</div>
               {!customer.name&&<div className="info-box warn" style={{marginBottom:8}}><strong>⚠️</strong> Voeg klantnaam toe in de "Klant" tab voor het rapport.</div>}
-              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:8}}>
                 <button className="btn green" onClick={handlePDF} disabled={pdfLoading||!results}>
-                  {pdfLoading?<><div className="spinner"/>Genereren...</>:"📄 Download PDF rapport"}
+                  {pdfLoading?<><div className="spinner"/>PDF genereren + datasheets samenvoegen...</>:"📄 Download PDF rapport"}
                 </button>
-                <div style={{fontSize:8,color:"var(--muted)"}}>Bevat: klantgegevens · systeemoverzicht<br/>maandgrafiek · terugverdienberekening</div>
               </div>
-              <div style={{fontSize:7,color:"var(--muted2)",marginTop:6}}>
-                ℹ️ Datasheets panelen/omvormer: upload deze als PDF-bijlage in uw e-mailclient of offertesysteem.
-                Stel ons ook in staat om ze automatisch toe te voegen via de settings.
+              <div style={{fontSize:8,color:"var(--muted)",lineHeight:1.7}}>
+                <strong>Rapport bevat:</strong> klantgegevens · systeemoverzicht · maandgrafiek · terugverdienberekening<br/>
+                <strong style={{color:"var(--green)"}}>+ Datasheets bijgevoegd:</strong>{" "}
+                {results?.panel?.datasheet
+                  ?<span style={{color:"var(--green)"}}>✅ {results.panel.brand} {results.panel.watt}W</span>
+                  :<span style={{color:"var(--muted2)"}}>— paneel (geen datasheet beschikbaar)</span>}
+                {" · "}
+                {results?.inv?.datasheet
+                  ?<span style={{color:"var(--green)"}}>✅ AlphaESS SMILE-G3</span>
+                  :<span style={{color:"var(--muted2)"}}>— omvormer (geen datasheet)</span>}
               </div>
             </div>
           </div>
