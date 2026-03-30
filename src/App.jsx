@@ -1,4 +1,20 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, Component } from "react";
+
+// ── ErrorBoundary: toont foutmelding in plaats van wit scherm ──────────────
+class ErrorBoundary extends Component {
+  constructor(props){ super(props); this.state={error:null}; }
+  static getDerivedStateFromError(e){ return {error:e}; }
+  render(){
+    if(this.state.error) return(
+      <div style={{padding:24,fontFamily:"monospace",background:"#fef2f2",border:"2px solid #dc2626",margin:16,borderRadius:8}}>
+        <h2 style={{color:"#dc2626",marginBottom:8}}>⚠️ App fout</h2>
+        <pre style={{fontSize:11,color:"#7f1d1d",whiteSpace:"pre-wrap"}}>{String(this.state.error)}</pre>
+        <p style={{marginTop:8,fontSize:11,color:"#991b1b"}}>Stuur dit scherm door naar uw ontwikkelaar.</p>
+      </div>
+    );
+    return this.props.children;
+  }
+}
 
 // ─── Endpoints ──────────────────────────────────────────────────────────────
 const NOMINATIM = "https://nominatim.openstreetmap.org/search";
@@ -567,7 +583,6 @@ function drawFaceSectors(map,L,lc,faces,selFaceIdx,onSelect){
     }
 
     // Genummerd label: positioneer in richting van aspect
-    const aspRad=(90-f.asp)*Math.PI/180;
     const labelLat=cLat+dLat*0.32*Math.sin(f.asp*Math.PI/180);
     const labelLng=cLng+dLng*0.32*Math.cos((90-f.asp)*Math.PI/180);
     L.marker([labelLat,labelLng],{icon:L.divIcon({
@@ -916,6 +931,7 @@ function CustomerPanel({customer,setCustomer,tlToken,setTlToken}){
 // ═══════════════════════════════════════════════════════════════════════════
 //  MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════
+export { ErrorBoundary };
 export default function App(){
   const[activeTab,setActiveTab]=useState("configuratie");
   const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
