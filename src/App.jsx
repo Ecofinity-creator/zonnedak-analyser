@@ -257,21 +257,37 @@ function buildingEdgePoints(buildingCoordsL72,dsmD,dtmD,w,h,xmin,ymin,xmax,ymax)
   return edgePoints;
 }
 
-// ── Hoofd: raster-analyse + rand/hoekpunten + face-clustering ────────────────
+// ── pointInPolyL72: test of Lambert72 punt (E,N) binnen polygoon ligt ────────
+function pointInPolyL72(E,N_,polyL72){
+  let inside=false;
+  for(let i=0,j=polyL72.length-1;i<polyL72.length;j=i++){
+    const[xi,yi]=polyL72[i],[xj,yj]=polyL72[j];
+    if((yi>N_)!==(yj>N_)&&E<(xj-xi)*(N_-yi)/(yj-yi)+xi) inside=!inside;
+  }
+  return inside;
+}
+
+// ── Hoofd: raster-analyse + rand/hoekpunten, ENKEL binnen GRB-contour ────────
 function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax,buildingCoordsL72){
   const cellW=(xmax-xmin)/w, cellH=(ymax-ymin)/h;
-  const roofPoints=[]; // dakpixels met slope/aspect
+  const roofPoints=[];
 
-  // ── 1. Raster-loop: elke pixel binnen het dak ──
+  // ── 1. Raster-loop: ALLEEN pixels BINNEN GRB-gebouwcontour ──
   for(let row=0;row<h;row++){
     for(let col=0;col<w;col++){
+      const E=xmin+(col+0.5)*cellW;
+      const N_=ymax-(row+0.5)*cellH;
+
+      // FILTER: sla pixels buiten het gebouw over
+      if(buildingCoordsL72&&!pointInPolyL72(E,N_,buildingCoordsL72)) continue;
+
       const i=row*w+col;
       const dsm=dsmD[i], dtm=dtmD[i];
       if(isNaN(dsm)||isNaN(dtm)) continue;
       const relH=dsm-dtm;
-      if(relH<1.5||relH>40) continue;
+      if(relH<1.0||relH>40) continue; // drempel iets lager voor dakrand
 
-      // Horn's methode (gebruik range-controlled neighbours)
+      // Horn's methode met clamped neighbours
       const v=(dr,dc)=>{
         const rr=Math.max(0,Math.min(h-1,row+dr));
         const cc=Math.max(0,Math.min(w-1,col+dc));
@@ -281,14 +297,10 @@ function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax,buildingCoordsL72){
       const dzdx=((c+2*f+ii)-(a+2*d+g))/(8*cellW);
       const dzdy=((g+2*hh+ii)-(a+2*b+c))/(8*cellH);
       const slopeDeg=Math.atan(Math.sqrt(dzdx**2+dzdy**2))*180/Math.PI;
-      if(slopeDeg<4) continue; // vlak dak skip
-
+      // Toon ALLE punten (ook vlak), maar markeer platte punten apart
       const aspectDeg=(90-Math.atan2(-dzdy,dzdx)*180/Math.PI+360)%360;
-      const dirIdx=Math.round(aspectDeg/45)%8;
-      const E=xmin+(col+0.5)*cellW;
-      const N_=ymax-(row+0.5)*cellH;
+      const dirIdx=slopeDeg>=4?Math.round(aspectDeg/45)%8:-1; // -1=vlak
       const [lat,lng]=lambert72ToWgs84(E,N_);
-
       roofPoints.push({lat,lng,relH:+relH.toFixed(2),slopeDeg:+slopeDeg.toFixed(1),
         aspectDeg:+aspectDeg.toFixed(1),dirIdx,dsm:+dsm.toFixed(2),dtm:+dtm.toFixed(2),
         isEdge:false,isCorner:false});
@@ -296,19 +308,22 @@ function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax,buildingCoordsL72){
   }
 
   // ── 2. Rand- en hoekpunten langs GRB-gebouwcontour ──
-  const edgePts = buildingCoordsL72
+  const edgePts=buildingCoordsL72
     ? buildingEdgePoints(buildingCoordsL72,dsmD,dtmD,w,h,xmin,ymin,xmax,ymax)
     : [];
 
-  // ── 3. Gecombineerde puntenwolk ──
   const rawPoints=[...roofPoints,...edgePts];
+  if(rawPoints.length<4) return {faces:null,rawPoints,edgePts};
 
-  if(rawPoints.length<4) return {faces:null, rawPoints, edgePts};
-
-  // ── 4. Cluster dakpixels per windrichting voor face-detectie ──
+  // ── 3. Face-clustering op ENKEL dakpixels met slope (geen randpunten) ──
+  const slopedPts=roofPoints.filter(p=>p.dirIdx>=0&&p.slopeDeg>=4);
   const bins=Array(8).fill(null).map(()=>({slopes:[],heights:[],n:0}));
-  roofPoints.forEach(p=>{bins[p.dirIdx].slopes.push(p.slopeDeg);bins[p.dirIdx].heights.push(p.relH);bins[p.dirIdx].n++;});
-  const total=roofPoints.length||1;
+  slopedPts.forEach(p=>{
+    bins[p.dirIdx].slopes.push(p.slopeDeg);
+    bins[p.dirIdx].heights.push(p.relH);
+    bins[p.dirIdx].n++;
+  });
+  const total=slopedPts.length||1;
   const faces=bins
     .map((b,i)=>({
       orientation:DIRS8[i],
@@ -320,7 +335,7 @@ function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax,buildingCoordsL72){
     .sort((a,b)=>b.n-a.n)
     .slice(0,5);
 
-  return {faces:faces.length?faces:null, rawPoints, edgePts};
+  return {faces:faces.length?faces:null,rawPoints,edgePts};
 }
 
 async function analyzeDHM(bc){
@@ -740,16 +755,18 @@ function drawMeasurementPoints(map,L,points,selFaceIdx,detectedFaces){
         })}).bindTooltip(`Hoek ${p.edgeIdx+1} · ${p.relH}m`,{direction:"top"}).addTo(g);
       }
     } else {
-      // ── Dakpixel (slope/aspect berekend) ──
-      const c=DIR_COLORS[p.dirIdx]||"#94a3b8";
-      const isSel=detectedFaces&&detectedFaces[selFaceIdx]?.orientation===DIR_LABEL[p.dirIdx];
+      // ── Dakpixel (slope/aspect berekend, of vlak) ──
+      const isFlat=p.dirIdx<0||p.slopeDeg<4;
+      const c=isFlat?"#94a3b8":DIR_COLORS[p.dirIdx];
+      const isSel=!isFlat&&detectedFaces&&detectedFaces[selFaceIdx]?.orientation===DIR_LABEL[p.dirIdx];
+      const dirLabel=isFlat?"Vlak dak":DIR_LABEL[p.dirIdx];
       L.circleMarker([p.lat,p.lng],{
         radius:isSel?5:2.5,
-        color:"rgba(255,255,255,0.6)",weight:isSel?1.5:0.5,
-        fillColor:c,fillOpacity:isSel?0.9:0.65,
+        color:"rgba(255,255,255,0.5)",weight:isSel?1.5:0.4,
+        fillColor:c,fillOpacity:isFlat?0.45:(isSel?0.92:0.72),
       })
       .bindTooltip(
-        `<b>${DIR_LABEL[p.dirIdx]} · ${p.slopeDeg}°</b><br>Hoogte: ${p.relH}m · DSM ${p.dsm}m · DTM ${p.dtm}m`,
+        `<b>${dirLabel} · ${p.slopeDeg}°</b><br>Hoogte boven maaiveld: ${p.relH}m<br>DSM: ${p.dsm}m · DTM: ${p.dtm}m`,
         {direction:"top"}
       )
       .addTo(g);
