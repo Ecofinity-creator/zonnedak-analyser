@@ -257,37 +257,48 @@ function buildingEdgePoints(buildingCoordsL72,dsmD,dtmD,w,h,xmin,ymin,xmax,ymax)
   return edgePoints;
 }
 
-// ── pointInPolyL72: test of Lambert72 punt (E,N) binnen polygoon ligt ────────
-function pointInPolyL72(E,N_,polyL72){
+// ── WGS84 punt-in-polygoon test ───────────────────────────────────────────────
+// buildingCoords is Leaflet formaat: [[lat,lng], ...]
+// We testen of (lat,lng) binnen die polygoon ligt
+function pointInBuildingWGS84(lat,lng,buildingCoords){
   let inside=false;
-  for(let i=0,j=polyL72.length-1;i<polyL72.length;j=i++){
-    const[xi,yi]=polyL72[i],[xj,yj]=polyL72[j];
-    if((yi>N_)!==(yj>N_)&&E<(xj-xi)*(N_-yi)/(yj-yi)+xi) inside=!inside;
+  const n=buildingCoords.length;
+  for(let i=0,j=n-1;i<n;j=i++){
+    const[lati,lngi]=buildingCoords[i];
+    const[latj,lngj]=buildingCoords[j];
+    // Ray-casting in lat/lng ruimte (voldoende nauwkeurig voor gebouwschaal)
+    if((lngi>lng)!==(lngj>lng) &&
+       lat<(latj-lati)*(lng-lngi)/(lngj-lngi)+lati){
+      inside=!inside;
+    }
   }
   return inside;
 }
 
 // ── Hoofd: raster-analyse + rand/hoekpunten, ENKEL binnen GRB-contour ────────
-function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax,buildingCoordsL72){
+// buildingCoordsWGS84: Leaflet [[lat,lng], ...] — de GRB-polygoon van het gebouw
+function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax,buildingCoordsWGS84){
   const cellW=(xmax-xmin)/w, cellH=(ymax-ymin)/h;
   const roofPoints=[];
 
-  // ── 1. Raster-loop: ALLEEN pixels BINNEN GRB-gebouwcontour ──
   for(let row=0;row<h;row++){
     for(let col=0;col<w;col++){
-      const E=xmin+(col+0.5)*cellW;
-      const N_=ymax-(row+0.5)*cellH;
-
-      // FILTER: sla pixels buiten het gebouw over
-      if(buildingCoordsL72&&!pointInPolyL72(E,N_,buildingCoordsL72)) continue;
-
       const i=row*w+col;
       const dsm=dsmD[i], dtm=dtmD[i];
       if(isNaN(dsm)||isNaN(dtm)) continue;
-      const relH=dsm-dtm;
-      if(relH<1.0||relH>40) continue; // drempel iets lager voor dakrand
 
-      // Horn's methode met clamped neighbours
+      // Lambert72 pixelcentrum → WGS84
+      const E=xmin+(col+0.5)*cellW;
+      const N_=ymax-(row+0.5)*cellH; // raster y is omgekeerd
+      const [lat,lng]=lambert72ToWgs84(E,N_);
+
+      // ── FILTER: sla pixels buiten GRB-gebouwcontour over ──
+      if(buildingCoordsWGS84&&!pointInBuildingWGS84(lat,lng,buildingCoordsWGS84)) continue;
+
+      const relH=dsm-dtm;
+      if(relH<0.8||relH>40) continue; // grondpunten en uitschieters
+
+      // Horn's methode (clamped neighbours)
       const v=(dr,dc)=>{
         const rr=Math.max(0,Math.min(h-1,row+dr));
         const cc=Math.max(0,Math.min(w-1,col+dc));
@@ -297,26 +308,34 @@ function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax,buildingCoordsL72){
       const dzdx=((c+2*f+ii)-(a+2*d+g))/(8*cellW);
       const dzdy=((g+2*hh+ii)-(a+2*b+c))/(8*cellH);
       const slopeDeg=Math.atan(Math.sqrt(dzdx**2+dzdy**2))*180/Math.PI;
-      // Toon ALLE punten (ook vlak), maar markeer platte punten apart
       const aspectDeg=(90-Math.atan2(-dzdy,dzdx)*180/Math.PI+360)%360;
-      const dirIdx=slopeDeg>=4?Math.round(aspectDeg/45)%8:-1; // -1=vlak
-      const [lat,lng]=lambert72ToWgs84(E,N_);
-      roofPoints.push({lat,lng,relH:+relH.toFixed(2),slopeDeg:+slopeDeg.toFixed(1),
-        aspectDeg:+aspectDeg.toFixed(1),dirIdx,dsm:+dsm.toFixed(2),dtm:+dtm.toFixed(2),
-        isEdge:false,isCorner:false});
+      const dirIdx=slopeDeg>=4?Math.round(aspectDeg/45)%8:-1;
+
+      roofPoints.push({lat,lng,
+        relH:+relH.toFixed(2),
+        slopeDeg:+slopeDeg.toFixed(1),
+        aspectDeg:+aspectDeg.toFixed(1),
+        dirIdx,
+        dsm:+dsm.toFixed(2),
+        dtm:+dtm.toFixed(2),
+        isEdge:false,isCorner:false
+      });
     }
   }
 
-  // ── 2. Rand- en hoekpunten langs GRB-gebouwcontour ──
-  const edgePts=buildingCoordsL72
-    ? buildingEdgePoints(buildingCoordsL72,dsmD,dtmD,w,h,xmin,ymin,xmax,ymax)
+  // ── Rand- en hoekpunten langs GRB-gebouwcontour ──
+  const bcL72=buildingCoordsWGS84
+    ? buildingCoordsWGS84.map(([lat,lng])=>wgs84ToLambert72(lat,lng))
+    : null;
+  const edgePts=bcL72
+    ? buildingEdgePoints(bcL72,dsmD,dtmD,w,h,xmin,ymin,xmax,ymax)
     : [];
 
   const rawPoints=[...roofPoints,...edgePts];
   if(rawPoints.length<4) return {faces:null,rawPoints,edgePts};
 
-  // ── 3. Face-clustering op ENKEL dakpixels met slope (geen randpunten) ──
-  const slopedPts=roofPoints.filter(p=>p.dirIdx>=0&&p.slopeDeg>=4);
+  // ── Face-clustering: enkel hellende dakpixels (dirIdx>=0) ──
+  const slopedPts=roofPoints.filter(p=>p.dirIdx>=0);
   const bins=Array(8).fill(null).map(()=>({slopes:[],heights:[],n:0}));
   slopedPts.forEach(p=>{
     bins[p.dirIdx].slopes.push(p.slopeDeg);
@@ -331,7 +350,7 @@ function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax,buildingCoordsL72){
       avgH:b.n?+(b.heights.reduce((a,v)=>a+v)/b.n).toFixed(1):0,
       pct:Math.round(b.n/total*100),n:b.n
     }))
-    .filter(b=>b.pct>=6)
+    .filter(b=>b.pct>=5)
     .sort((a,b)=>b.n-a.n)
     .slice(0,5);
 
@@ -339,15 +358,18 @@ function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax,buildingCoordsL72){
 }
 
 async function analyzeDHM(bc){
+  // bc is buildingCoords: Leaflet [[lat,lng], ...]
   const lats=bc.map(p=>p[0]), lngs=bc.map(p=>p[1]);
-  // Bounding box met kleine marge
-  const swL=wgs84ToLambert72(Math.min(...lats)-.0003, Math.min(...lngs)-.0003);
-  const neL=wgs84ToLambert72(Math.max(...lats)+.0003, Math.max(...lngs)+.0003);
-  const pad=2;
+
+  // Bounding box: iets ruimer dan het gebouw
+  const swL=wgs84ToLambert72(Math.min(...lats)-.0002, Math.min(...lngs)-.0002);
+  const neL=wgs84ToLambert72(Math.max(...lats)+.0002, Math.max(...lngs)+.0002);
+  const pad=3; // 3m marge
   const [xmin,ymin,xmax,ymax]=[swL[0]-pad, swL[1]-pad, neL[0]+pad, neL[1]+pad];
-  // 1 pixel ≈ 1 meter resolutie
-  const mw=Math.min(150,Math.max(10,Math.round(xmax-xmin)));
-  const mh=Math.min(150,Math.max(10,Math.round(ymax-ymin)));
+
+  // Resolutie: 1 pixel = ~1 meter
+  const mw=Math.min(160,Math.max(10,Math.round(xmax-xmin)));
+  const mh=Math.min(160,Math.max(10,Math.round(ymax-ymin)));
   console.log(`DHM bbox L72: ${Math.round(xmin)},${Math.round(ymin)}→${Math.round(xmax)},${Math.round(ymax)}, raster ${mw}×${mh}px`);
 
   const [dsmR,dtmR]=await Promise.all([
@@ -355,11 +377,13 @@ async function analyzeDHM(bc){
     fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DTM_1m"),
   ]);
 
-  // Gebouwcontour omzetten naar Lambert72 voor randmeting
-  const bcL72=bc.map(([lat,lng])=>wgs84ToLambert72(lat,lng));
-
-  const result=computeRoofData(dsmR.data,dtmR.data,dsmR.w,dsmR.h,xmin,ymin,xmax,ymax,bcL72);
-  console.log(`DHM: ${result.rawPoints.length} totaal (${result.edgePts?.length||0} rand/hoek), ${result.faces?.length||0} vlakken`);
+  // Geef buildingCoords (WGS84 Leaflet) mee voor filtering
+  const result=computeRoofData(
+    dsmR.data,dtmR.data,dsmR.w,dsmR.h,
+    xmin,ymin,xmax,ymax,
+    bc  // <── WGS84 Leaflet polygoon voor point-in-polygon filter
+  );
+  console.log(`DHM resultaat: ${result.rawPoints.length} punten (${result.edgePts?.length||0} rand/hoek), ${result.faces?.length||0} vlakken`);
   return result;
 }
 
