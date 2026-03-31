@@ -58,37 +58,95 @@ function getSolarIrr(o,s){
   return t[[15,30,45,60,90].reduce((a,b)=>Math.abs(b-s)<Math.abs(a-s)?b:a)];
 }
 
-// ─── Inline Lambert72 (geen externe lib) ─────────────────────────────────────
-function wgs84ToLambert72(latDeg,lngDeg){
-  const r=d=>d*Math.PI/180, lat=r(latDeg), lng=r(lngDeg);
-  const aW=6378137,fW=1/298.257223563,e2W=2*fW-fW*fW;
-  const NW=aW/Math.sqrt(1-e2W*Math.sin(lat)**2);
-  const X=NW*Math.cos(lat)*Math.cos(lng),Y=NW*Math.cos(lat)*Math.sin(lng),Z=NW*(1-e2W)*Math.sin(lat);
+// ════════════════════════════════════════════════════════════════════════
+//  LAMBERT72 ↔ WGS84  (volledig inline, geen externe bibliotheek)
+//  WGS84 → BD72 (Helmert) → Hayford geografisch → Lambert72 LCC
+//  Lambert72 → Hayford geografisch → BD72 (inv. Helmert) → WGS84
+// ════════════════════════════════════════════════════════════════════════
+const _L72 = (() => {
+  const D2R = Math.PI/180;
+  // Ellipsoïden
+  const aW=6378137, e2W=2/298.257223563-(1/298.257223563)**2;   // WGS84
+  const aI=6378388, fI=1/297, e2I=2*fI-fI**2, eI=Math.sqrt(e2I); // Hayford/Internationaal
+  // Helmert parameters  WGS84→BD72
   const tx=-106.869,ty=52.2978,tz=-103.724;
-  const rx=r(0.3366/3600),ry=r(-0.457/3600),rz=r(1.8422/3600),s=1-1.2747e-6;
-  const Xb=s*(X+rz*Y-ry*Z)+tx,Yb=s*(-rz*X+Y+rx*Z)+ty,Zb=s*(ry*X-rx*Y+Z)+tz;
-  const aI=6378388,fI=1/297,e2I=2*fI-fI*fI,eI=Math.sqrt(e2I);
-  const p=Math.sqrt(Xb*Xb+Yb*Yb);
-  const lng72=Math.atan2(Yb,Xb);
-  let lat72=Math.atan2(Zb,p*(1-e2I));
-  for(let i=0;i<10;i++){const N=aI/Math.sqrt(1-e2I*Math.sin(lat72)**2);lat72=Math.atan2(Zb+e2I*N*Math.sin(lat72),p);}
-  const phi1=r(49.8333333),phi2=r(51.1666667),lam0=r(4.3674867),FE=150000.013,FN=5400088.438;
+  const rx=0.3366/3600*D2R, ry=-0.457/3600*D2R, rz=1.8422/3600*D2R, sc=1-1.2747e-6;
+  // LCC parameters
+  const phi1=49.8333333*D2R, phi2=51.1666667*D2R, lam0=4.3674867*D2R;
+  const FE=150000.013, FN=5400088.438;
   const m_=ph=>Math.cos(ph)/Math.sqrt(1-e2I*Math.sin(ph)**2);
-  const t_=ph=>Math.tan(Math.PI/4-ph/2)*Math.pow((1+eI*Math.sin(ph))/(1-eI*Math.sin(ph)),eI/2);
-  const [m1,m2,t1,t2]=[m_(phi1),m_(phi2),t_(phi1),t_(phi2)];
+  const t_=ph=>Math.tan(Math.PI/4-ph/2)*((1+eI*Math.sin(ph))/(1-eI*Math.sin(ph)))**(eI/2);
+  const m1=m_(phi1),m2=m_(phi2),t1=t_(phi1),t2=t_(phi2);
   const n=(Math.log(m1)-Math.log(m2))/(Math.log(t1)-Math.log(t2));
-  const F=m1/(n*Math.pow(t1,n)),rho=aI*F*Math.pow(t_(lat72),n),theta=n*(lng72-lam0);
-  return [FE+rho*Math.sin(theta),FN-rho*Math.cos(theta)];
-}
+  const F=m1/(n*t1**n);
+  const rho0=aI*F*t_(90*D2R)**n; // ρ bij pool (voor consistentie)
 
-// ─── Inline TIFF parser (Float32) ────────────────────────────────────────────
+  // Hayford geografisch → ECEF (BD72)
+  function hayfToECEF(lat,lng){
+    const N=aI/Math.sqrt(1-e2I*Math.sin(lat)**2);
+    return [N*Math.cos(lat)*Math.cos(lng), N*Math.cos(lat)*Math.sin(lng), N*(1-e2I)*Math.sin(lat)];
+  }
+  // Hayford ECEF → geografisch (iteratief)
+  function ecefToHayf(Xb,Yb,Zb){
+    const p=Math.sqrt(Xb**2+Yb**2), lng=Math.atan2(Yb,Xb);
+    let lat=Math.atan2(Zb,p*(1-e2I));
+    for(let i=0;i<10;i++){const N=aI/Math.sqrt(1-e2I*Math.sin(lat)**2);lat=Math.atan2(Zb+e2I*N*Math.sin(lat),p);}
+    return [lat,lng];
+  }
+
+  function toL72(latDeg,lngDeg){
+    // WGS84 → ECEF
+    const lat=latDeg*D2R, lng=lngDeg*D2R;
+    const N=aW/Math.sqrt(1-e2W*Math.sin(lat)**2);
+    const X=N*Math.cos(lat)*Math.cos(lng), Y=N*Math.cos(lat)*Math.sin(lng), Z=N*(1-e2W)*Math.sin(lat);
+    // Helmert WGS84→BD72
+    const Xb=sc*(X+rz*Y-ry*Z)+tx, Yb=sc*(-rz*X+Y+rx*Z)+ty, Zb=sc*(ry*X-rx*Y+Z)+tz;
+    // BD72 ECEF → Hayford geografisch
+    const [lat72,lng72]=ecefToHayf(Xb,Yb,Zb);
+    // Hayford → Lambert72 LCC
+    const rho=aI*F*t_(lat72)**n, theta=n*(lng72-lam0);
+    return [FE+rho*Math.sin(theta), FN-rho*Math.cos(theta)];
+  }
+
+  function fromL72(E,N_){
+    // Lambert72 → Hayford geografisch (LCC inversie)
+    const dE=E-FE, dN=FN-N_;
+    const rho=Math.sign(n)*Math.sqrt(dE**2+dN**2);
+    const theta=Math.atan2(dE,dN);
+    const t=(rho/(aI*F))**(1/n);
+    // Iteratieve inversie van t_()
+    let lat=Math.PI/2-2*Math.atan(t);
+    for(let i=0;i<15;i++){
+      lat=Math.PI/2-2*Math.atan(t*((1-eI*Math.sin(lat))/(1+eI*Math.sin(lat)))**(eI/2));
+    }
+    const lng=theta/n+lam0;
+    // Hayford geografisch → ECEF (BD72)
+    const [Xb,Yb,Zb]=hayfToECEF(lat,lng);
+    // Inverse Helmert BD72→WGS84 (kleine rotaties: inv ≈ transpose)
+    const Xw=(Xb-tx)/sc + rz*(Yb-ty)/sc - ry*(Zb-tz)/sc;
+    const Yw=(Yb-ty)/sc - rz*(Xb-tx)/sc + rx*(Zb-tz)/sc;
+    const Zw=(Zb-tz)/sc + ry*(Xb-tx)/sc - rx*(Yb-ty)/sc;
+    // WGS84 ECEF → geografisch
+    const p=Math.sqrt(Xw**2+Yw**2), lngW=Math.atan2(Yw,Xw);
+    let latW=Math.atan2(Zw,p*(1-e2W));
+    for(let i=0;i<10;i++){const Nw=aW/Math.sqrt(1-e2W*Math.sin(latW)**2);latW=Math.atan2(Zw+e2W*Nw*Math.sin(latW),p);}
+    return [latW/D2R, lngW/D2R];
+  }
+
+  return {toL72, fromL72};
+})();
+
+const wgs84ToLambert72=(lat,lng)=>_L72.toL72(lat,lng);
+const lambert72ToWgs84=(E,N)=>_L72.fromL72(E,N);
+
+// ─── Inline TIFF parser (Float32 + Int16 + UInt16) ───────────────────────────
 function parseTIFF(buf){
   if(buf.byteLength<8) throw new Error("Buffer te klein");
-  const dv=new DataView(buf),bo=dv.getUint8(0)===0x49;
-  const u16=o=>dv.getUint16(o,bo),u32=o=>dv.getUint32(o,bo);
-  const f32=o=>dv.getFloat32(o,bo),i16=o=>dv.getInt16(o,bo);
+  const dv=new DataView(buf), bo=dv.getUint8(0)===0x49;
+  const u16=o=>dv.getUint16(o,bo), u32=o=>dv.getUint32(o,bo);
+  const f32=o=>dv.getFloat32(o,bo), i16=o=>dv.getInt16(o,bo);
   if((u16(0)!==0x4949&&u16(0)!==0x4D4D)||u16(2)!==42) throw new Error("Geen TIFF");
-  let ifo=u32(4);const nT=u16(ifo);ifo+=2;
+  let ifo=u32(4); const nT=u16(ifo); ifo+=2;
   let W=0,H=0,bps=32,sfmt=3,soffs=[],sbytes=[],toffs=[],tbytes=[],tw=0,th=0;
   const getV=(type,cnt,vp)=>{
     const sz={1:1,2:1,3:2,4:4}[type]||4;
@@ -97,69 +155,123 @@ function parseTIFF(buf){
   };
   for(let i=0;i<nT;i++){
     const t=ifo+i*12,tag=u16(t),type=u16(t+2),cnt=u32(t+4),vs=getV(type,cnt,t+8),v0=vs[0];
-    if(tag===256)W=v0;if(tag===257)H=v0;if(tag===258)bps=v0;
-    if(tag===273)soffs=vs;if(tag===279)sbytes=vs;if(tag===322)tw=v0;if(tag===323)th=v0;
-    if(tag===324)toffs=vs;if(tag===325)tbytes=vs;if(tag===339)sfmt=v0;
+    if(tag===256)W=v0; if(tag===257)H=v0; if(tag===258)bps=v0;
+    if(tag===273)soffs=vs; if(tag===279)sbytes=vs;
+    if(tag===322)tw=v0; if(tag===323)th=v0;
+    if(tag===324)toffs=vs; if(tag===325)tbytes=vs;
+    if(tag===339)sfmt=v0;
   }
   if(!W||!H) throw new Error(`TIFF ${W}×${H} ongeldig`);
-  const bpS=bps/8,data=new Float32Array(W*H).fill(NaN);
-  const rd=o=>sfmt===3&&bps===32?f32(o):sfmt===1&&bps===16?u16(o):sfmt===2&&bps===16?i16(o):f32(o);
+  const bpS=bps/8, data=new Float32Array(W*H).fill(NaN);
+  const rd=o=>sfmt===3&&bps===32?f32(o):sfmt===2&&bps===16?i16(o):u16(o);
   if(toffs.length>0){
     const nTX=Math.ceil(W/tw);
-    toffs.forEach((to,ti)=>{const tc=ti%nTX,tr=Math.floor(ti/nTX);for(let r=0;r<th;r++)for(let c=0;c<tw;c++){const px=tc*tw+c,py=tr*th+r;if(px<W&&py<H)data[py*W+px]=rd(to+(r*tw+c)*bpS);}});
+    toffs.forEach((to,ti)=>{
+      const tc=ti%nTX, tr=Math.floor(ti/nTX);
+      for(let r=0;r<th;r++) for(let c=0;c<tw;c++){
+        const px=tc*tw+c, py=tr*th+r;
+        if(px<W&&py<H) data[py*W+px]=rd(to+(r*tw+c)*bpS);
+      }
+    });
   } else {
-    let idx=0;soffs.forEach((so,si)=>{const ns=Math.round(sbytes[si]/bpS);for(let j=0;j<ns&&idx<W*H;j++)data[idx++]=rd(so+j*bpS);});
+    let idx=0;
+    soffs.forEach((so,si)=>{const ns=Math.round(sbytes[si]/bpS);for(let j=0;j<ns&&idx<W*H;j++)data[idx++]=rd(so+j*bpS);});
   }
   return {data,w:W,h:H};
 }
 
+// ─── WCS fetch ────────────────────────────────────────────────────────────────
 async function fetchWCS(xmin,ymin,xmax,ymax,mw,mh,cov){
-  const p=new URLSearchParams({SERVICE:"WCS",VERSION:"1.0.0",REQUEST:"GetCoverage",COVERAGE:cov,CRS:"EPSG:31370",RESPONSE_CRS:"EPSG:31370",BBOX:`${Math.round(xmin)},${Math.round(ymin)},${Math.round(xmax)},${Math.round(ymax)}`,WIDTH:mw,HEIGHT:mh,FORMAT:"GeoTIFF"});
+  const p=new URLSearchParams({SERVICE:"WCS",VERSION:"1.0.0",REQUEST:"GetCoverage",
+    COVERAGE:cov,CRS:"EPSG:31370",RESPONSE_CRS:"EPSG:31370",
+    BBOX:`${Math.round(xmin)},${Math.round(ymin)},${Math.round(xmax)},${Math.round(ymax)}`,
+    WIDTH:mw,HEIGHT:mh,FORMAT:"GeoTIFF"});
   let lastErr="";
   for(const url of WCS_URLS){
     try{
       const r=await fetch(`${url}?${p}`,{mode:"cors"});
-      if(!r.ok){lastErr=`HTTP ${r.status}`;continue;}
+      if(!r.ok){lastErr=`HTTP ${r.status} van ${url}`;continue;}
       const ct=r.headers.get("content-type")||"";
-      if(ct.includes("xml")||ct.includes("html")){lastErr=`WCS fout: ${(await r.text()).substring(0,100)}`;continue;}
-      return parseTIFF(await r.arrayBuffer());
-    }catch(e){lastErr=e.message;}
+      if(ct.includes("xml")||ct.includes("html")){lastErr=`WCS servicefout: ${(await r.text()).substring(0,80)}`;continue;}
+      const arr=await r.arrayBuffer();
+      console.log(`✅ WCS ${cov}: ${arr.byteLength} bytes van ${url}`);
+      return parseTIFF(arr);
+    }catch(e){lastErr=`${url}: ${e.message}`;}
   }
   throw new Error(lastErr||"Alle WCS endpoints mislukt");
 }
 
-function computeRoofFaces(dsmD,dtmD,w,h,cellSize){
-  const pts=[];
-  for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
-    const i=y*w+x,relH=dsmD[i]-dtmD[i];
-    if(relH<2||relH>35||isNaN(dsmD[i])||isNaN(dtmD[i])) continue;
-    const v=(dy,dx)=>dsmD[(y+dy)*w+(x+dx)];
-    const[a,b,c,d,f,g,hh,ii]=[v(-1,-1),v(-1,0),v(-1,1),v(0,-1),v(0,1),v(1,-1),v(1,0),v(1,1)];
-    if([a,b,c,d,f,g,hh,ii].some(v=>isNaN(v))) continue;
-    const dzdx=((c+2*f+ii)-(a+2*d+g))/(8*cellSize);
-    const dzdy=((g+2*hh+ii)-(a+2*b+c))/(8*cellSize);
-    const slope=Math.atan(Math.sqrt(dzdx**2+dzdy**2))*180/Math.PI;
-    if(slope<6) continue;
-    pts.push({slope,aspect:(90-Math.atan2(-dzdy,dzdx)*180/Math.PI+360)%360,relH});
+// ─── Dakpunt analyse: Horn's methode per pixel, met geo-coördinaten ──────────
+// Geeft faces (samengevatte vlakken) EN rawPoints (alle meetpunten met lat/lng)
+function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax){
+  const cellW=(xmax-xmin)/w, cellH=(ymax-ymin)/h;
+  const rawPoints=[]; // alle individuele dakpixels met positie
+
+  for(let row=1;row<h-1;row++){
+    for(let col=1;col<w-1;col++){
+      const i=row*w+col;
+      const dsm=dsmD[i], dtm=dtmD[i];
+      if(isNaN(dsm)||isNaN(dtm)) continue;
+      const relH=dsm-dtm;
+      if(relH<1.5||relH>40) continue; // grondpunten & uitschieters filteren
+
+      // Horn's methode: slope & aspect
+      const v=(dr,dc)=>{const vi=dsmD[(row+dr)*w+(col+dc)];return isNaN(vi)?dsm:vi;};
+      const[a,b,c,d,f,g,hh,ii]=[v(-1,-1),v(-1,0),v(-1,1),v(0,-1),v(0,1),v(1,-1),v(1,0),v(1,1)];
+      const dzdx=((c+2*f+ii)-(a+2*d+g))/(8*cellW);
+      const dzdy=((g+2*hh+ii)-(a+2*b+c))/(8*cellH);
+      const slopeDeg=Math.atan(Math.sqrt(dzdx**2+dzdy**2))*180/Math.PI;
+      if(slopeDeg<5) continue; // vlakke pixels overslaan
+
+      const aspectDeg=(90-Math.atan2(-dzdy,dzdx)*180/Math.PI+360)%360;
+      const dirIdx=Math.round(aspectDeg/45)%8;
+
+      // Pixel centrum in Lambert72 → WGS84
+      const E=xmin+(col+0.5)*cellW;
+      const N_=ymax-(row+0.5)*cellH; // raster y is omgekeerd
+      const [lat,lng]=lambert72ToWgs84(E,N_);
+
+      rawPoints.push({lat,lng,relH:+relH.toFixed(2),slopeDeg:+slopeDeg.toFixed(1),aspectDeg:+aspectDeg.toFixed(1),dirIdx,dsm:+dsm.toFixed(2),dtm:+dtm.toFixed(2)});
+    }
   }
-  if(pts.length<5) return null;
-  const bins=Array(8).fill(0).map(()=>({n:0,slopes:[],heights:[]}));
-  pts.forEach(({slope,aspect,relH})=>{const b=Math.round(aspect/45)%8;bins[b].n++;bins[b].slopes.push(slope);bins[b].heights.push(relH);});
-  const total=pts.length;
-  return bins.map((b,i)=>({orientation:DIRS8[i],slope:b.n?Math.round(b.slopes.reduce((a,v)=>a+v)/b.n):0,avgH:b.n?+(b.heights.reduce((a,v)=>a+v)/b.n).toFixed(1):0,pct:Math.round(b.n/total*100),n:b.n}))
-    .filter(b=>b.pct>=8).sort((a,b)=>b.n-a.n).slice(0,4);
+
+  if(rawPoints.length<4) return {faces:null, rawPoints};
+
+  // Cluster per windrichting → dakvlakken
+  const bins=Array(8).fill(null).map(()=>({slopes:[],heights:[],n:0}));
+  rawPoints.forEach(p=>{bins[p.dirIdx].slopes.push(p.slopeDeg);bins[p.dirIdx].heights.push(p.relH);bins[p.dirIdx].n++;});
+  const total=rawPoints.length;
+  const faces=bins
+    .map((b,i)=>({
+      orientation:DIRS8[i],
+      slope:b.n?Math.round(b.slopes.reduce((a,v)=>a+v)/b.n):0,
+      avgH:b.n?+(b.heights.reduce((a,v)=>a+v)/b.n).toFixed(1):0,
+      pct:Math.round(b.n/total*100),n:b.n
+    }))
+    .filter(b=>b.pct>=6) // min 6% van dakpunten
+    .sort((a,b)=>b.n-a.n)
+    .slice(0,5);
+
+  return {faces:faces.length?faces:null, rawPoints};
 }
 
 async function analyzeDHM(bc){
-  const lats=bc.map(p=>p[0]),lngs=bc.map(p=>p[1]);
-  const swL=wgs84ToLambert72(Math.min(...lats)-.0001,Math.min(...lngs)-.0001);
-  const neL=wgs84ToLambert72(Math.max(...lats)+.0001,Math.max(...lngs)+.0001);
-  const pad=6,[xmin,ymin,xmax,ymax]=[swL[0]-pad,swL[1]-pad,neL[0]+pad,neL[1]+pad];
-  const mw=Math.min(60,Math.max(8,Math.round(xmax-xmin)));
-  const mh=Math.min(60,Math.max(8,Math.round(ymax-ymin)));
-  const cell=(xmax-xmin)/mw;
-  const[dsmR,dtmR]=await Promise.all([fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DSM_1m"),fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DTM_1m")]);
-  return computeRoofFaces(dsmR.data,dtmR.data,dsmR.w,dsmR.h,cell);
+  const lats=bc.map(p=>p[0]), lngs=bc.map(p=>p[1]);
+  const swL=wgs84ToLambert72(Math.min(...lats)-.0002, Math.min(...lngs)-.0002);
+  const neL=wgs84ToLambert72(Math.max(...lats)+.0002, Math.max(...lngs)+.0002);
+  const pad=4;
+  const [xmin,ymin,xmax,ymax]=[swL[0]-pad, swL[1]-pad, neL[0]+pad, neL[1]+pad];
+  // Hogere resolutie: max 1 pixel per meter
+  const mw=Math.min(120,Math.max(10,Math.round(xmax-xmin)));
+  const mh=Math.min(120,Math.max(10,Math.round(ymax-ymin)));
+  console.log(`DHM bbox L72: ${Math.round(xmin)},${Math.round(ymin)} → ${Math.round(xmax)},${Math.round(ymax)}, raster ${mw}×${mh}px`);
+  const [dsmR,dtmR]=await Promise.all([
+    fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DSM_1m"),
+    fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DTM_1m"),
+  ]);
+  const result=computeRoofData(dsmR.data,dtmR.data,dsmR.w,dsmR.h,xmin,ymin,xmax,ymax);
+  console.log(`DHM: ${result.rawPoints.length} dakpixels, ${result.faces?.length||0} vlakken`);
+  return result;
 }
 
 // ─── Polygoon helpers ────────────────────────────────────────────────────────
@@ -516,6 +628,31 @@ body{background:#f1f5f9;}
 
 // ─── Kaartfuncties ─────────────────────────────────────────────────────────
 const ASP_MAP={N:0,NO:45,O:90,ZO:135,Z:180,ZW:225,W:270,NW:315};
+
+// Kleur per windrichting voor meetpunten
+const DIR_COLORS=["#ef4444","#f97316","#eab308","#22c55e","#16a34a","#0891b2","#2563eb","#9333ea"];
+// label per richting
+const DIR_LABEL=["N","NO","O","ZO","Z","ZW","W","NW"];
+
+// Teken alle individuele LiDAR meetpunten op de kaart
+function drawMeasurementPoints(map,L,points,selFaceIdx,detectedFaces){
+  if(!points||!points.length) return null;
+  const g=L.layerGroup();
+  // Kleur op basis van richting (dirIdx)
+  points.forEach(p=>{
+    const c=DIR_COLORS[p.dirIdx]||"#94a3b8";
+    const isSel=detectedFaces&&detectedFaces.some((f,i)=>i===selFaceIdx&&f.orientation===DIR_LABEL[p.dirIdx]);
+    L.circleMarker([p.lat,p.lng],{
+      radius:isSel?5:3,
+      color:"#fff",weight:isSel?1.5:0.5,
+      fillColor:c,fillOpacity:isSel?0.95:0.7,
+    })
+    .bindTooltip(`<b>${DIR_LABEL[p.dirIdx]} · ${p.slopeDeg}°</b><br>Dakhoogte: ${p.relH}m<br>DSM: ${p.dsm}m · DTM: ${p.dtm}m<br>Aspect: ${Math.round(p.aspectDeg)}°`,{direction:"top"})
+    .addTo(g);
+  });
+  g.addTo(map);
+  return g;
+}
 
 // Clip polygoon naar angulaire sector (radiale slice vanuit centroid)
 function clipPolyToSector(lc,cLat,cLng,aspDeg,halfW){
@@ -946,12 +1083,15 @@ export default function App(){
 
   const[dhmStatus,setDhmStatus]=useState("idle");const[dhmError,setDhmError]=useState("");
   const[detectedFaces,setDetectedFaces]=useState(null);const[selFaceIdx,setSelFaceIdx]=useState(0);
+  const[rawPoints,setRawPoints]=useState([]);
+  const[showPoints,setShowPoints]=useState(true);
 
   const leafRef=useRef(null);const markerRef=useRef(null);
   const selectingRef=useRef(false);
   const baseTileRef=useRef(null); // luchtfoto / kaart base layer  // Fix: bijhoud of suggestie geselecteerd wordt
   const dhmLayerRef=useRef(null);const searchTO=useRef(null);
   const roofLayerRef=useRef(null);const panelLayerRef=useRef(null);
+  const pointsLayerRef=useRef(null);
 
   const[panels,setPanels]=useState(DEFAULT_PANELS);
   const[selPanelId,setSelPanelId]=useState(1);
@@ -1004,6 +1144,16 @@ export default function App(){
     }
   },[buildingCoords,orientation,detectedFaces,selFaceIdx]);
   useEffect(()=>{if(mapReady&&buildingCoords) redrawRoof();},[mapReady,buildingCoords,orientation,detectedFaces,selFaceIdx]);
+
+  // Teken/verwijder meetpunten laag
+  useEffect(()=>{
+    if(!leafRef.current||!window.L) return;
+    const L=window.L,map=leafRef.current;
+    if(pointsLayerRef.current){map.removeLayer(pointsLayerRef.current);pointsLayerRef.current=null;}
+    if(showPoints&&rawPoints.length>0){
+      pointsLayerRef.current=drawMeasurementPoints(map,L,rawPoints,selFaceIdx,detectedFaces);
+    }
+  },[rawPoints,showPoints,selFaceIdx,detectedFaces,mapReady]);
 
   useEffect(()=>{
     if(!panelsDrawn||!buildingCoords||!selPanel||!leafRef.current||!window.L||!coords) return;
@@ -1100,9 +1250,10 @@ export default function App(){
 
     setDhmStatus("loading");
     try{
-      const faces=await analyzeDHM(bc);
+      const {faces,rawPoints:pts}=await analyzeDHM(bc);
+      setRawPoints(pts||[]);
       if(faces?.length>0){setDetectedFaces(faces);setSelFaceIdx(0);setOrientation(faces[0].orientation);setSlope(faces[0].slope);setDhmStatus("ok");}
-      else{setDhmStatus("error");setDhmError("Geen dakvlakken gevonden in LiDAR data (plat dak of kleine bounding box).");}
+      else{setDhmStatus("error");setDhmError(`${pts?.length||0} dakpixels gevonden maar geen duidelijke vlakken. Pas helling/richting handmatig in.`);}
     }catch(e){console.error("DHM:",e);setDhmStatus("error");setDhmError(e.message||"WCS endpoint niet bereikbaar");}
   };
 
@@ -1323,6 +1474,9 @@ export default function App(){
             <button className={`map-btn ${activeLayer==="luchtfoto"?"active":""}`} onClick={()=>setActiveLayer("luchtfoto")}>🛰️ Luchtfoto</button>
             <button className={`map-btn ${activeLayer==="kaart"?"active":""}`} onClick={()=>setActiveLayer("kaart")}>🗺️ Kaart</button>
             <button className={`map-btn ${activeLayer==="dsm"?"active":""}`} onClick={()=>setActiveLayer("dsm")}>📡 DSM Hoogte</button>
+            {rawPoints.length>0&&<button className={`map-btn ${showPoints?"active":""}`} onClick={()=>setShowPoints(s=>!s)}>
+              🔵 LiDAR punten ({rawPoints.length})
+            </button>}
           </div>
           {/* Status pill */}
           {coords&&<div className="status-pill">
