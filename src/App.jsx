@@ -937,7 +937,8 @@ export default function App(){
   const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
   const[coords,setCoords]=useState(null);const[displayName,setDisplayName]=useState("");
   const[slope,setSlope]=useState(35);const[orientation,setOrientation]=useState("Z");
-  const[activeLayer,setActiveLayer]=useState("luchtfoto"); // Start met luchtfotoconst[mapReady,setMapReady]=useState(false);
+  const[activeLayer,setActiveLayer]=useState("luchtfoto"); // Start met luchtfoto
+  const[mapReady,setMapReady]=useState(false);
 
   const[grbStatus,setGrbStatus]=useState("idle");
   const[buildingCoords,setBuildingCoords]=useState(null);
