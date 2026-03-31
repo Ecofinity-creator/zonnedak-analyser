@@ -123,9 +123,11 @@ const _L72 = (() => {
     // Hayford geografisch → ECEF (BD72)
     const [Xb,Yb,Zb]=hayfToECEF(lat,lng);
     // Inverse Helmert BD72→WGS84 (kleine rotaties: inv ≈ transpose)
-    const Xw=(Xb-tx)/sc + rz*(Yb-ty)/sc - ry*(Zb-tz)/sc;
-    const Yw=(Yb-ty)/sc - rz*(Xb-tx)/sc + rx*(Zb-tz)/sc;
-    const Zw=(Zb-tz)/sc + ry*(Xb-tx)/sc - rx*(Yb-ty)/sc;
+    // Correcte inverse Helmert (R^-1 = R^T voor kleine rotaties)
+    // Forward: Xb=sc*(X+rz*Y-ry*Z)+tx → Inverse: X=((Xb-tx)-rz*(Yb-ty)+ry*(Zb-tz))/sc
+    const Xw=((Xb-tx) - rz*(Yb-ty) + ry*(Zb-tz))/sc;
+    const Yw=(rz*(Xb-tx) + (Yb-ty) - rx*(Zb-tz))/sc;
+    const Zw=(-ry*(Xb-tx) + rx*(Yb-ty) + (Zb-tz))/sc;
     // WGS84 ECEF → geografisch
     const p=Math.sqrt(Xw**2+Yw**2), lngW=Math.atan2(Yw,Xw);
     let latW=Math.atan2(Zw,p*(1-e2W));
