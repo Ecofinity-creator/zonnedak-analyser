@@ -301,190 +301,157 @@ async function fetchWCS(xmin,ymin,xmax,ymax,mw,mh,cov){
 }
 
 // ─── Dakpunt analyse: Horn's methode per pixel, met geo-coördinaten ──────────
-// ── Hulpfunctie: interpoleer hoogte op exacte Lambert72 positie (bilineair) ──
-function sampleRaster(data,w,h,xmin,ymin,xmax,ymax,E,N_){
+// ════════════════════════════════════════════════════════════════════════
+//  DAKANALYSE — enkel hoekpunten van het gebouw
+//  1. Bilineaire interpolatie van DSM/DTM op elke hoek (Lambert72)
+//  2. Uit hoogtepatroon → dakvlakken bepalen via lineaire regressie
+// ════════════════════════════════════════════════════════════════════════
+
+// ── Bilineaire interpolatie op exacte L72-positie ─────────────────────────
+function sampleBilinear(data,w,h,xmin,ymin,xmax,ymax,E,N_){
   const cellW=(xmax-xmin)/w, cellH=(ymax-ymin)/h;
-  // Lambert72 → pixel (niet-geheel)
-  const fc=(E-xmin)/cellW-0.5;
-  const fr=(ymax-N_)/cellH-0.5;
+  // Kolom/rij (niet-geheel), rij 0 = bovenkant (ymax)
+  const fc=(E-xmin)/cellW - 0.5;
+  const fr=(ymax-N_)/cellH - 0.5;
   const c0=Math.floor(fc), r0=Math.floor(fr);
-  const tc=fc-c0, tr=fr-r0;
+  const tc=Math.max(0,Math.min(1,fc-c0)), tr=Math.max(0,Math.min(1,fr-r0));
   const get=(r,c)=>{
     const rr=Math.max(0,Math.min(h-1,r)), cc=Math.max(0,Math.min(w-1,c));
     const v=data[rr*w+cc];
-    return (isNaN(v)||v<-999||v>9999)?NaN:v;
+    return (!isNaN(v)&&v>-999&&v<9999)?v:NaN;
   };
-  // Bilineaire interpolatie
-  const v00=get(r0,c0), v01=get(r0,c0+1), v10=get(r0+1,c0), v11=get(r0+1,c0+1);
-  if([v00,v01,v10,v11].some(isNaN)) return NaN;
-  return v00*(1-tc)*(1-tr)+v01*tc*(1-tr)+v10*(1-tc)*tr+v11*tc*tr;
+  const v00=get(r0,c0), v01=get(r0,c0+1);
+  const v10=get(r0+1,c0), v11=get(r0+1,c0+1);
+  // Gebruik beschikbare buren als bilineair niet mogelijk is
+  if(isNaN(v00)&&isNaN(v01)&&isNaN(v10)&&isNaN(v11)) return NaN;
+  const fill=(a,b)=>isNaN(a)?b:isNaN(b)?a:(a+b)/2;
+  const top=fill(v00,v01), bot=fill(v10,v11);
+  if(isNaN(top)&&isNaN(bot)) return NaN;
+  if(isNaN(top)) return bot; if(isNaN(bot)) return top;
+  return top*(1-tr)+bot*tr;
 }
 
-// ── Genereer meetpunten langs gebouwranden EN hoekpunten ─────────────────────
-function buildingEdgePoints(buildingCoordsL72,dsmD,dtmD,w,h,xmin,ymin,xmax,ymax){
-  const edgePoints=[];
-  const cellW=(xmax-xmin)/w, cellH=(ymax-ymin)/h;
-  const stepM=Math.max(cellW,cellH); // 1 punt per celgrootte
-
-  const n=buildingCoordsL72.length;
-  for(let i=0;i<n;i++){
-    const [E0,N0]=buildingCoordsL72[i];
-    const [E1,N1]=buildingCoordsL72[(i+1)%n];
-    const dist=Math.sqrt((E1-E0)**2+(N1-N0)**2);
-    const steps=Math.max(1,Math.ceil(dist/stepM));
-
-    for(let s=0;s<=steps;s++){
-      const t=s/steps;
-      const E=E0+t*(E1-E0), N_=N0+t*(N1-N0);
-      const dsm=sampleRaster(dsmD,w,h,xmin,ymin,xmax,ymax,E,N_);
-      const dtm=sampleRaster(dtmD,w,h,xmin,ymin,xmax,ymax,E,N_);
-      if(isNaN(dsm)||isNaN(dtm)) continue;
-      const relH=dsm-dtm;
-      const [lat,lng]=lambert72ToWgs84(E,N_);
-      const isCorner=(s===0||s===steps);
-      // Randpunten altijd opnemen (ook zonder slope filter)
-      edgePoints.push({
-        lat,lng,
-        relH:+relH.toFixed(2),
-        dsm:+dsm.toFixed(2),
-        dtm:+dtm.toFixed(2),
-        slopeDeg:0, aspectDeg:0, dirIdx:-1,  // -1 = randpunt
-        isCorner, isEdge:true,
-        edgeIdx:i
-      });
-    }
-  }
-  return edgePoints;
-}
-
-// ── WGS84 punt-in-polygoon test ───────────────────────────────────────────────
-// buildingCoords is Leaflet formaat: [[lat,lng], ...]
-// We testen of (lat,lng) binnen die polygoon ligt
-function pointInBuildingWGS84(lat,lng,buildingCoords){
-  let inside=false;
+// ── Meet hoogte op alle hoekpunten van het GRB-gebouw ─────────────────────
+// buildingCoords: Leaflet [[lat,lng], ...]
+// Geeft array van {lat,lng,E,N,dsm,dtm,relH,idx}
+function measureCorners(buildingCoords,dsmD,dtmD,w,h,xmin,ymin,xmax,ymax){
+  const corners=[];
   const n=buildingCoords.length;
-  for(let i=0,j=n-1;i<n;j=i++){
-    const[lati,lngi]=buildingCoords[i];
-    const[latj,lngj]=buildingCoords[j];
-    // Ray-casting in lat/lng ruimte (voldoende nauwkeurig voor gebouwschaal)
-    if((lngi>lng)!==(lngj>lng) &&
-       lat<(latj-lati)*(lng-lngi)/(lngj-lngi)+lati){
-      inside=!inside;
-    }
-  }
-  return inside;
+  // Sluit polygoon: laatste punt = eerste → skip duplicate
+  const pts=buildingCoords[0][0]===buildingCoords[n-1][0]&&
+             buildingCoords[0][1]===buildingCoords[n-1][1]
+    ? buildingCoords.slice(0,-1) : buildingCoords;
+
+  pts.forEach(([lat,lng],idx)=>{
+    const [E,N_]=wgs84ToLambert72(lat,lng);
+    const dsm=sampleBilinear(dsmD,w,h,xmin,ymin,xmax,ymax,E,N_);
+    const dtm=sampleBilinear(dtmD,w,h,xmin,ymin,xmax,ymax,E,N_);
+    const relH=(isNaN(dsm)||isNaN(dtm))?null:+(dsm-dtm).toFixed(2);
+    corners.push({
+      lat,lng,E,N:N_,
+      dsm:isNaN(dsm)?null:+dsm.toFixed(2),
+      dtm:isNaN(dtm)?null:+dtm.toFixed(2),
+      relH,idx,
+      isCorner:true,isEdge:false,dirIdx:-1,slopeDeg:0,aspectDeg:0
+    });
+  });
+  return corners;
 }
 
-// ── Hoofd: raster-analyse + rand/hoekpunten, ENKEL binnen GRB-contour ────────
-function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax,buildingCoordsWGS84){
-  const cellW=(xmax-xmin)/w, cellH=(ymax-ymin)/h;
-  const roofPoints=[];
+// ── Dakvlakken bepalen uit hoekpunten via RANSAC-achtige vlak-fitting ──────
+// Idee: groepeer hoekpunten op hoogte → elke hoogte-groep = één dakvlak
+// Bepaal per vlak de helling (slope) en richting (aspect) via 3-punt-methode
+function facesFromCorners(corners,buildingCoords){
+  const valid=corners.filter(c=>c.relH!==null&&c.relH>0.5&&c.relH<40);
+  if(valid.length<2) return null;
 
-  // Debug: log min/max raster waarden
-  const dsmVals=Array.from(dsmD).filter(v=>!isNaN(v)&&v>-999&&v<9999);
-  const dtmVals=Array.from(dtmD).filter(v=>!isNaN(v)&&v>-999&&v<9999);
-  if(dsmVals.length>0){
-    const dsmMin=Math.min(...dsmVals.slice(0,500));
-    const dsmMax=Math.max(...dsmVals.slice(0,500));
-    const dtmMin=Math.min(...dtmVals.slice(0,500));
-    const dtmMax=Math.max(...dtmVals.slice(0,500));
-    console.log(`DSM raster: min=${dsmMin.toFixed(1)} max=${dsmMax.toFixed(1)} (${dsmVals.length} pixels)`);
-    console.log(`DTM raster: min=${dtmMin.toFixed(1)} max=${dtmMax.toFixed(1)} (${dtmVals.length} pixels)`);
-    console.log(`Verwachte dakhoogte (DSM-DTM): ${(dsmMax-dtmMin).toFixed(1)}m`);
-  } else {
-    console.warn("Raster LEEG — WCS gaf geen bruikbare data terug");
+  // Centroid van het gebouw
+  const lats=buildingCoords.map(p=>p[0]);
+  const lngs=buildingCoords.map(p=>p[1]);
+  const cLat=(Math.min(...lats)+Math.max(...lats))/2;
+  const cLng=(Math.min(...lngs)+Math.max(...lngs))/2;
+
+  const heights=valid.map(c=>c.relH);
+  const minH=Math.min(...heights), maxH=Math.max(...heights);
+  const range=maxH-minH;
+
+  console.log(`Hoekpunten: ${valid.length} geldig, hoogte ${minH.toFixed(1)}–${maxH.toFixed(1)}m (range ${range.toFixed(1)}m)`);
+
+  // Als hoogteverschil < 0.5m: plat dak
+  if(range<0.5){
+    return [{orientation:"Z",slope:5,avgH:+(heights.reduce((a,b)=>a+b)/heights.length).toFixed(1),pct:100,n:valid.length,flat:true}];
   }
 
-  for(let row=0;row<h;row++){
-    for(let col=0;col<w;col++){
-      const i=row*w+col;
-      let dsm=dsmD[i], dtm=dtmD[i];
-      // Nodata waarden opvangen (-9999 of extreme waarden)
-      if(isNaN(dsm)||isNaN(dtm)||dsm<-999||dtm<-999||dsm>9999||dtm>9999) continue;
+  // Verdeel hoekpunten in hoog (nok) en laag (dakvoet) — mediane splitsing
+  const med=(minH+maxH)/2;
+  const highPts=valid.filter(c=>c.relH>=med);
+  const lowPts =valid.filter(c=>c.relH<med);
 
-      // Lambert72 pixelcentrum → WGS84
-      const E=xmin+(col+0.5)*cellW;
-      const N_=ymax-(row+0.5)*cellH;
-      const [lat,lng]=lambert72ToWgs84(E,N_);
+  // Nokrichting: verbindingslijn tussen hoge punten
+  // Dakhelling: richting loodrecht op nok, van nok naar lage punten
+  const faces=[];
 
-      // FILTER: sla pixels buiten GRB-gebouwcontour over
-      if(buildingCoordsWGS84&&!pointInBuildingWGS84(lat,lng,buildingCoordsWGS84)) continue;
+  // Bereken gemiddelde positie hoge/lage punten
+  const avgPos=pts=>({
+    lat:pts.reduce((s,p)=>s+p.lat,0)/pts.length,
+    lng:pts.reduce((s,p)=>s+p.lng,0)/pts.length,
+    h:pts.reduce((s,p)=>s+p.relH,0)/pts.length,
+  });
 
-      const relH=dsm-dtm;
-      if(relH<0.8||relH>40) continue;
+  if(highPts.length>0&&lowPts.length>0){
+    const hiC=avgPos(highPts), loC=avgPos(lowPts);
 
-      // Horn's methode (clamped neighbours)
-      const v=(dr,dc)=>{
-        const rr=Math.max(0,Math.min(h-1,row+dr));
-        const cc=Math.max(0,Math.min(w-1,col+dc));
-        const vi=dsmD[rr*w+cc]; return isNaN(vi)?dsm:vi;
-      };
-      const[a,b,c,d,f,g,hh,ii]=[v(-1,-1),v(-1,0),v(-1,1),v(0,-1),v(0,1),v(1,-1),v(1,0),v(1,1)];
-      const dzdx=((c+2*f+ii)-(a+2*d+g))/(8*cellW);
-      const dzdy=((g+2*hh+ii)-(a+2*b+c))/(8*cellH);
-      const slopeDeg=Math.atan(Math.sqrt(dzdx**2+dzdy**2))*180/Math.PI;
-      const aspectDeg=(90-Math.atan2(-dzdy,dzdx)*180/Math.PI+360)%360;
-      const dirIdx=slopeDeg>=4?Math.round(aspectDeg/45)%8:-1;
+    // Vector van laag naar hoog
+    const mLat=111320, mLng=111320*Math.cos(cLat*Math.PI/180);
+    const dy=(hiC.lat-loC.lat)*mLat;  // noord positief
+    const dx=(hiC.lng-loC.lng)*mLng;  // oost positief
+    const dh=hiC.h-loC.h;
+    const horiz=Math.sqrt(dx**2+dy**2);
 
-      roofPoints.push({lat,lng,
-        relH:+relH.toFixed(2),
-        slopeDeg:+slopeDeg.toFixed(1),
-        aspectDeg:+aspectDeg.toFixed(1),
-        dirIdx,
-        dsm:+dsm.toFixed(2),
-        dtm:+dtm.toFixed(2),
-        isEdge:false,isCorner:false
-      });
+    // Aspect: hoek van "laag→hoog" richting (meteorologisch: 0=N, 90=O, 180=Z, 270=W)
+    // → "dalende richting" van het dak = richting van laag naar hoog omgekeerd
+    // Conventie: aspect = richting waarnaar het dak afloopt (neerwaartse richting)
+    const upAsp=((90-Math.atan2(dy,dx)*180/Math.PI)+360)%360;  // richting hoog
+    const downAsp=(upAsp+180)%360;  // aflooprichting
+
+    const slopeDeg=horiz>0.5?Math.atan(dh/horiz)*180/Math.PI:15;
+    const dirIdx=Math.round(downAsp/45)%8;
+
+    // Nok richting: loodrecht op aflooprichting
+    // Twee dakvlakken: hoog punt → beide kanten af
+    const ridgePts=highPts;
+    const leftPts=lowPts.filter((_,i)=>i<Math.ceil(lowPts.length/2));
+    const rightPts=lowPts.filter((_,i)=>i>=Math.ceil(lowPts.length/2));
+
+    // Hoofdvlak (meeste lage punten aan dezelfde kant)
+    const asp1=downAsp, asp2=(downAsp+180)%360;
+    const dir1=Math.round(asp1/45)%8, dir2=Math.round(asp2/45)%8;
+
+    const halfLow=Math.ceil(lowPts.length/2);
+    faces.push({orientation:DIRS8[dir1],slope:Math.round(slopeDeg),
+      avgH:+(hiC.h+loC.h)/2,pct:Math.round(halfLow/(valid.length)*100)||50,
+      n:highPts.length+halfLow});
+    if(dir2!==dir1){
+      faces.push({orientation:DIRS8[dir2],slope:Math.round(slopeDeg),
+        avgH:+(hiC.h+loC.h)/2,pct:100-Math.round(halfLow/(valid.length)*100)||50,
+        n:valid.length-(highPts.length+halfLow)});
     }
   }
 
-  // ── Rand- en hoekpunten langs GRB-gebouwcontour ──
-  const bcL72=buildingCoordsWGS84
-    ? buildingCoordsWGS84.map(([lat,lng])=>wgs84ToLambert72(lat,lng))
-    : null;
-  const edgePts=bcL72
-    ? buildingEdgePoints(bcL72,dsmD,dtmD,w,h,xmin,ymin,xmax,ymax)
-    : [];
-
-  const rawPoints=[...roofPoints,...edgePts];
-  if(rawPoints.length<4) return {faces:null,rawPoints,edgePts};
-
-  // ── Face-clustering: enkel hellende dakpixels (dirIdx>=0) ──
-  const slopedPts=roofPoints.filter(p=>p.dirIdx>=0);
-  const bins=Array(8).fill(null).map(()=>({slopes:[],heights:[],n:0}));
-  slopedPts.forEach(p=>{
-    bins[p.dirIdx].slopes.push(p.slopeDeg);
-    bins[p.dirIdx].heights.push(p.relH);
-    bins[p.dirIdx].n++;
-  });
-  const total=slopedPts.length||1;
-  const faces=bins
-    .map((b,i)=>({
-      orientation:DIRS8[i],
-      slope:b.n?Math.round(b.slopes.reduce((a,v)=>a+v)/b.n):0,
-      avgH:b.n?+(b.heights.reduce((a,v)=>a+v)/b.n).toFixed(1):0,
-      pct:Math.round(b.n/total*100),n:b.n
-    }))
-    .filter(b=>b.pct>=5)
-    .sort((a,b)=>b.n-a.n)
-    .slice(0,5);
-
-  return {faces:faces.length?faces:null,rawPoints,edgePts};
+  return faces.length?faces:null;
 }
 
 async function analyzeDHM(bc){
-  // bc is buildingCoords: Leaflet [[lat,lng], ...]
   const lats=bc.map(p=>p[0]), lngs=bc.map(p=>p[1]);
-
-  // Bounding box: iets ruimer dan het gebouw
-  const swL=wgs84ToLambert72(Math.min(...lats)-.0002, Math.min(...lngs)-.0002);
-  const neL=wgs84ToLambert72(Math.max(...lats)+.0002, Math.max(...lngs)+.0002);
-  const pad=3; // 3m marge
+  const swL=wgs84ToLambert72(Math.min(...lats)-.0003, Math.min(...lngs)-.0003);
+  const neL=wgs84ToLambert72(Math.max(...lats)+.0003, Math.max(...lngs)+.0003);
+  const pad=4;
   const [xmin,ymin,xmax,ymax]=[swL[0]-pad, swL[1]-pad, neL[0]+pad, neL[1]+pad];
 
-  // Resolutie: 1 pixel = ~1 meter
-  const mw=Math.min(160,Math.max(10,Math.round(xmax-xmin)));
-  const mh=Math.min(160,Math.max(10,Math.round(ymax-ymin)));
+  // Resolutie: min 1px/m maar max 200px
+  const rawW=Math.round(xmax-xmin), rawH=Math.round(ymax-ymin);
+  const mw=Math.min(200,Math.max(12,rawW));
+  const mh=Math.min(200,Math.max(12,rawH));
   console.log(`DHM bbox L72: ${Math.round(xmin)},${Math.round(ymin)}→${Math.round(xmax)},${Math.round(ymax)}, raster ${mw}×${mh}px`);
 
   const [dsmR,dtmR]=await Promise.all([
@@ -492,14 +459,16 @@ async function analyzeDHM(bc){
     fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DTM_1m"),
   ]);
 
-  // Geef buildingCoords (WGS84 Leaflet) mee voor filtering
-  const result=computeRoofData(
-    dsmR.data,dtmR.data,dsmR.w,dsmR.h,
-    xmin,ymin,xmax,ymax,
-    bc  // <── WGS84 Leaflet polygoon voor point-in-polygon filter
-  );
-  console.log(`DHM resultaat: ${result.rawPoints.length} punten (${result.edgePts?.length||0} rand/hoek), ${result.faces?.length||0} vlakken`);
-  return result;
+  // Meet hoekpunten
+  const corners=measureCorners(bc,dsmR.data,dtmR.data,dsmR.w,dsmR.h,xmin,ymin,xmax,ymax);
+  const validCorners=corners.filter(c=>c.relH!==null);
+  console.log(`Hoekpunten: ${corners.length} totaal, ${validCorners.length} met hoogte`);
+  validCorners.forEach(c=>console.log(`  Hoek ${c.idx+1}: lat=${c.lat.toFixed(5)} lng=${c.lng.toFixed(5)} DSM=${c.dsm}m DTM=${c.dtm}m relH=${c.relH}m`));
+
+  // Bepaal dakvlakken uit hoekpunten
+  const faces=facesFromCorners(corners,bc);
+
+  return {faces, rawPoints:corners, edgePts:corners};
 }
 
 // ─── Polygoon helpers ────────────────────────────────────────────────────────
@@ -862,53 +831,60 @@ const DIR_COLORS=["#ef4444","#f97316","#eab308","#22c55e","#16a34a","#0891b2","#
 // label per richting
 const DIR_LABEL=["N","NO","O","ZO","Z","ZW","W","NW"];
 
-// Teken alle LiDAR meetpunten: dakpixels + rand/hoekpunten
+// Teken hoekpunten van het gebouw met hoogte-labels
 function drawMeasurementPoints(map,L,points,selFaceIdx,detectedFaces){
   if(!points||!points.length) return null;
   const g=L.layerGroup();
 
-  points.forEach((p,idx)=>{
-    if(p.isEdge){
-      // ── Rand- of hoekpunt ──
-      const color=p.isCorner?"#f59e0b":"#94a3b8";
-      const radius=p.isCorner?6:3;
-      const marker=L.circleMarker([p.lat,p.lng],{
-        radius,
-        color:p.isCorner?"#1e293b":"#64748b",
-        weight:p.isCorner?2:1,
-        fillColor:color,
-        fillOpacity:p.isCorner?1:0.7,
-      });
-      const label=p.isCorner?`Hoekpunt ${p.edgeIdx+1}`:`Randpunt`;
-      marker.bindTooltip(
-        `<b>${label}</b><br>DSM: ${p.dsm}m · DTM: ${p.dtm}m<br>Hoogte boven maaiveld: <b>${p.relH}m</b>`,
-        {direction:"top",permanent:p.isCorner,offset:[0,-8]}
-      );
-      marker.addTo(g);
+  // Bepaal min/max hoogte voor kleurschaal
+  const heights=points.map(p=>p.relH).filter(h=>h!==null&&h>0);
+  const minH=heights.length?Math.min(...heights):0;
+  const maxH=heights.length?Math.max(...heights):10;
+  const range=Math.max(0.1,maxH-minH);
 
-      // Hoekpunt: extra zichtbaar label
-      if(p.isCorner){
-        L.marker([p.lat,p.lng],{icon:L.divIcon({
-          html:`<div style="background:#f59e0b;color:#fff;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;border:2px solid #1e293b;box-shadow:0 1px 4px rgba(0,0,0,.4);font-family:monospace">${p.edgeIdx+1}</div>`,
-          iconSize:[18,18],iconAnchor:[9,9],className:""
-        })}).bindTooltip(`Hoek ${p.edgeIdx+1} · ${p.relH}m`,{direction:"top"}).addTo(g);
-      }
-    } else {
-      // ── Dakpixel (slope/aspect berekend, of vlak) ──
-      const isFlat=p.dirIdx<0||p.slopeDeg<4;
-      const c=isFlat?"#94a3b8":DIR_COLORS[p.dirIdx];
-      const isSel=!isFlat&&detectedFaces&&detectedFaces[selFaceIdx]?.orientation===DIR_LABEL[p.dirIdx];
-      const dirLabel=isFlat?"Vlak dak":DIR_LABEL[p.dirIdx];
-      L.circleMarker([p.lat,p.lng],{
-        radius:isSel?5:2.5,
-        color:"rgba(255,255,255,0.5)",weight:isSel?1.5:0.4,
-        fillColor:c,fillOpacity:isFlat?0.45:(isSel?0.92:0.72),
-      })
-      .bindTooltip(
-        `<b>${dirLabel} · ${p.slopeDeg}°</b><br>Hoogte boven maaiveld: ${p.relH}m<br>DSM: ${p.dsm}m · DTM: ${p.dtm}m`,
-        {direction:"top"}
-      )
-      .addTo(g);
+  points.forEach((p,i)=>{
+    if(p.relH===null||p.relH===undefined) return; // geen meting
+
+    // Kleur: groen (laag) → rood (hoog)
+    const t=(p.relH-minH)/range;
+    const r=Math.round(34+t*218), gv=Math.round(197-t*181), b=Math.round(94-t*61);
+    const clr=`rgb(${r},${gv},${b})`;
+    const isHigh=p.relH>=(minH+range*0.6);
+
+    // Groot hoekpunt-icoon met hoogte erin
+    L.marker([p.lat,p.lng],{
+      icon:L.divIcon({
+        html:`<div style="
+          background:${clr};
+          color:#fff;
+          border:2.5px solid rgba(255,255,255,0.9);
+          border-radius:50%;
+          width:28px;height:28px;
+          display:flex;align-items:center;justify-content:center;
+          font-size:9px;font-weight:800;
+          box-shadow:0 2px 6px rgba(0,0,0,0.5);
+          font-family:'IBM Plex Mono',monospace;
+          cursor:pointer;
+          white-space:nowrap;
+        ">${p.relH}m</div>`,
+        iconSize:[28,28],iconAnchor:[14,14],className:""
+      }),
+      zIndexOffset:1000
+    })
+    .bindTooltip(`
+      <b>Hoek ${p.idx+1}</b><br>
+      Hoogte boven maaiveld: <b>${p.relH}m</b><br>
+      DSM (oppervlak): ${p.dsm}m<br>
+      DTM (maaiveld):  ${p.dtm}m
+    `,{direction:"top",offset:[0,-16]})
+    .addTo(g);
+
+    // Verbindingslijn naar volgende hoek (dun)
+    const next=points[(i+1)%points.length];
+    if(next&&next.relH!==null){
+      L.polyline([[p.lat,p.lng],[next.lat,next.lng]],{
+        color:"rgba(255,255,255,0.5)",weight:1.5,dashArray:"4,3"
+      }).addTo(g);
     }
   });
 
@@ -1620,17 +1596,38 @@ export default function App(){
             <div style={{display:"flex",alignItems:"center",gap:7}}><div className="spinner cyan"/>WCS + TIFF parser + Horn's methode...</div>
             <div className="dhm-bar"><div className="dhm-bar-fill"/></div>
           </div>}
-          {dhmStatus==="ok"&&detectedFaces&&<div>
-            <div className="info-box dhm-ok" style={{marginBottom:5}}><strong>✅ {detectedFaces.length} dakvlak(ken) gedetecteerd via LiDAR</strong></div>
-            <div className="face-grid">
+          {dhmStatus==="ok"&&<div>
+            {/* Hoekpunten hoogte-tabel */}
+            {rawPoints.length>0&&<div style={{marginBottom:8}}>
+              <div className="info-box dhm-ok" style={{marginBottom:5}}>
+                <strong>✅ {rawPoints.filter(p=>p.relH!==null).length} hoekpunten gemeten</strong>
+                {rawPoints.filter(p=>p.relH!==null).length>0&&<>
+                  {" · "}hoogte {Math.min(...rawPoints.filter(p=>p.relH!==null).map(p=>p.relH)).toFixed(1)}–{Math.max(...rawPoints.filter(p=>p.relH!==null).map(p=>p.relH)).toFixed(1)}m
+                </>}
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:3}}>
+                {rawPoints.filter(p=>p.relH!==null).map((p,i)=>{
+                  const allH=rawPoints.filter(x=>x.relH!==null).map(x=>x.relH);
+                  const minH=Math.min(...allH),maxH=Math.max(...allH),range=Math.max(0.1,maxH-minH);
+                  const t=(p.relH-minH)/range;
+                  const r=Math.round(34+t*218),gv=Math.round(197-t*181),b=Math.round(94-t*61);
+                  return <div key={i} style={{padding:"4px 7px",background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:5,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontSize:8,color:"var(--muted)"}}>Hoek {p.idx+1}</span>
+                    <span style={{fontSize:10,fontWeight:700,color:`rgb(${r},${gv},${b})`}}>{p.relH}m</span>
+                  </div>;
+                })}
+              </div>
+            </div>}
+            {/* Dakvlakken */}
+            {detectedFaces&&<div className="face-grid">
               {detectedFaces.map((f,i)=>{const q=ZONE_Q[f.orientation]||ZONE_Q.Z;const isGood=BEST_SOUTH[f.orientation]!==false;const qC=isGood?q[0]:q[1];return(
                 <button key={i} className={`face-btn ${selFaceIdx===i?"active":""}`} onClick={()=>selectFace(i,detectedFaces)}>
                   <span className="fb-main">{f.orientation} · {f.slope}°</span>
-                  <span className="fb-sub">{f.pct}% · {f.avgH}m hoogte</span>
+                  <span className="fb-sub">{f.avgH}m gem. hoogte</span>
                   <span style={{fontSize:7,color:selFaceIdx===i?"var(--alpha)":qC.c,display:"block",marginTop:2}}>{qC.l}</span>
                 </button>
               );})}
-            </div>
+            </div>}
           </div>}
           {dhmStatus==="error"&&<div className="info-box err">
             <strong>⚠️ LiDAR niet beschikbaar</strong><br/>
@@ -1737,7 +1734,7 @@ export default function App(){
             <button className={`map-btn ${activeLayer==="kaart"?"active":""}`} onClick={()=>setActiveLayer("kaart")}>🗺️ Kaart</button>
             <button className={`map-btn ${activeLayer==="dsm"?"active":""}`} onClick={()=>setActiveLayer("dsm")}>📡 DSM Hoogte</button>
             {rawPoints.length>0&&<button className={`map-btn ${showPoints?"active":""}`} onClick={()=>setShowPoints(s=>!s)}>
-              🔵 LiDAR punten ({rawPoints.length})
+              📍 Hoekpunten ({rawPoints.filter(p=>p.relH!==null).length})
             </button>}
           </div>
           {/* Status pill */}
