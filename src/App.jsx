@@ -202,45 +202,113 @@ async function fetchWCS(xmin,ymin,xmax,ymax,mw,mh,cov){
 }
 
 // ─── Dakpunt analyse: Horn's methode per pixel, met geo-coördinaten ──────────
-// Geeft faces (samengevatte vlakken) EN rawPoints (alle meetpunten met lat/lng)
-function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax){
+// ── Hulpfunctie: interpoleer hoogte op exacte Lambert72 positie (bilineair) ──
+function sampleRaster(data,w,h,xmin,ymin,xmax,ymax,E,N_){
   const cellW=(xmax-xmin)/w, cellH=(ymax-ymin)/h;
-  const rawPoints=[]; // alle individuele dakpixels met positie
+  // Lambert72 → pixel (niet-geheel)
+  const fc=(E-xmin)/cellW-0.5;
+  const fr=(ymax-N_)/cellH-0.5;
+  const c0=Math.floor(fc), r0=Math.floor(fr);
+  const tc=fc-c0, tr=fr-r0;
+  const get=(r,c)=>{
+    const rr=Math.max(0,Math.min(h-1,r)), cc=Math.max(0,Math.min(w-1,c));
+    return data[rr*w+cc];
+  };
+  // Bilineaire interpolatie
+  const v00=get(r0,c0), v01=get(r0,c0+1), v10=get(r0+1,c0), v11=get(r0+1,c0+1);
+  if([v00,v01,v10,v11].some(isNaN)) return NaN;
+  return v00*(1-tc)*(1-tr)+v01*tc*(1-tr)+v10*(1-tc)*tr+v11*tc*tr;
+}
 
-  for(let row=1;row<h-1;row++){
-    for(let col=1;col<w-1;col++){
+// ── Genereer meetpunten langs gebouwranden EN hoekpunten ─────────────────────
+function buildingEdgePoints(buildingCoordsL72,dsmD,dtmD,w,h,xmin,ymin,xmax,ymax){
+  const edgePoints=[];
+  const cellW=(xmax-xmin)/w, cellH=(ymax-ymin)/h;
+  const stepM=Math.max(cellW,cellH); // 1 punt per celgrootte
+
+  const n=buildingCoordsL72.length;
+  for(let i=0;i<n;i++){
+    const [E0,N0]=buildingCoordsL72[i];
+    const [E1,N1]=buildingCoordsL72[(i+1)%n];
+    const dist=Math.sqrt((E1-E0)**2+(N1-N0)**2);
+    const steps=Math.max(1,Math.ceil(dist/stepM));
+
+    for(let s=0;s<=steps;s++){
+      const t=s/steps;
+      const E=E0+t*(E1-E0), N_=N0+t*(N1-N0);
+      const dsm=sampleRaster(dsmD,w,h,xmin,ymin,xmax,ymax,E,N_);
+      const dtm=sampleRaster(dtmD,w,h,xmin,ymin,xmax,ymax,E,N_);
+      if(isNaN(dsm)||isNaN(dtm)) continue;
+      const relH=dsm-dtm;
+      const [lat,lng]=lambert72ToWgs84(E,N_);
+      const isCorner=(s===0||s===steps);
+      // Randpunten altijd opnemen (ook zonder slope filter)
+      edgePoints.push({
+        lat,lng,
+        relH:+relH.toFixed(2),
+        dsm:+dsm.toFixed(2),
+        dtm:+dtm.toFixed(2),
+        slopeDeg:0, aspectDeg:0, dirIdx:-1,  // -1 = randpunt
+        isCorner, isEdge:true,
+        edgeIdx:i
+      });
+    }
+  }
+  return edgePoints;
+}
+
+// ── Hoofd: raster-analyse + rand/hoekpunten + face-clustering ────────────────
+function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax,buildingCoordsL72){
+  const cellW=(xmax-xmin)/w, cellH=(ymax-ymin)/h;
+  const roofPoints=[]; // dakpixels met slope/aspect
+
+  // ── 1. Raster-loop: elke pixel binnen het dak ──
+  for(let row=0;row<h;row++){
+    for(let col=0;col<w;col++){
       const i=row*w+col;
       const dsm=dsmD[i], dtm=dtmD[i];
       if(isNaN(dsm)||isNaN(dtm)) continue;
       const relH=dsm-dtm;
-      if(relH<1.5||relH>40) continue; // grondpunten & uitschieters filteren
+      if(relH<1.5||relH>40) continue;
 
-      // Horn's methode: slope & aspect
-      const v=(dr,dc)=>{const vi=dsmD[(row+dr)*w+(col+dc)];return isNaN(vi)?dsm:vi;};
+      // Horn's methode (gebruik range-controlled neighbours)
+      const v=(dr,dc)=>{
+        const rr=Math.max(0,Math.min(h-1,row+dr));
+        const cc=Math.max(0,Math.min(w-1,col+dc));
+        const vi=dsmD[rr*w+cc]; return isNaN(vi)?dsm:vi;
+      };
       const[a,b,c,d,f,g,hh,ii]=[v(-1,-1),v(-1,0),v(-1,1),v(0,-1),v(0,1),v(1,-1),v(1,0),v(1,1)];
       const dzdx=((c+2*f+ii)-(a+2*d+g))/(8*cellW);
       const dzdy=((g+2*hh+ii)-(a+2*b+c))/(8*cellH);
       const slopeDeg=Math.atan(Math.sqrt(dzdx**2+dzdy**2))*180/Math.PI;
-      if(slopeDeg<5) continue; // vlakke pixels overslaan
+      if(slopeDeg<4) continue; // vlak dak skip
 
       const aspectDeg=(90-Math.atan2(-dzdy,dzdx)*180/Math.PI+360)%360;
       const dirIdx=Math.round(aspectDeg/45)%8;
-
-      // Pixel centrum in Lambert72 → WGS84
       const E=xmin+(col+0.5)*cellW;
-      const N_=ymax-(row+0.5)*cellH; // raster y is omgekeerd
+      const N_=ymax-(row+0.5)*cellH;
       const [lat,lng]=lambert72ToWgs84(E,N_);
 
-      rawPoints.push({lat,lng,relH:+relH.toFixed(2),slopeDeg:+slopeDeg.toFixed(1),aspectDeg:+aspectDeg.toFixed(1),dirIdx,dsm:+dsm.toFixed(2),dtm:+dtm.toFixed(2)});
+      roofPoints.push({lat,lng,relH:+relH.toFixed(2),slopeDeg:+slopeDeg.toFixed(1),
+        aspectDeg:+aspectDeg.toFixed(1),dirIdx,dsm:+dsm.toFixed(2),dtm:+dtm.toFixed(2),
+        isEdge:false,isCorner:false});
     }
   }
 
-  if(rawPoints.length<4) return {faces:null, rawPoints};
+  // ── 2. Rand- en hoekpunten langs GRB-gebouwcontour ──
+  const edgePts = buildingCoordsL72
+    ? buildingEdgePoints(buildingCoordsL72,dsmD,dtmD,w,h,xmin,ymin,xmax,ymax)
+    : [];
 
-  // Cluster per windrichting → dakvlakken
+  // ── 3. Gecombineerde puntenwolk ──
+  const rawPoints=[...roofPoints,...edgePts];
+
+  if(rawPoints.length<4) return {faces:null, rawPoints, edgePts};
+
+  // ── 4. Cluster dakpixels per windrichting voor face-detectie ──
   const bins=Array(8).fill(null).map(()=>({slopes:[],heights:[],n:0}));
-  rawPoints.forEach(p=>{bins[p.dirIdx].slopes.push(p.slopeDeg);bins[p.dirIdx].heights.push(p.relH);bins[p.dirIdx].n++;});
-  const total=rawPoints.length;
+  roofPoints.forEach(p=>{bins[p.dirIdx].slopes.push(p.slopeDeg);bins[p.dirIdx].heights.push(p.relH);bins[p.dirIdx].n++;});
+  const total=roofPoints.length||1;
   const faces=bins
     .map((b,i)=>({
       orientation:DIRS8[i],
@@ -248,29 +316,35 @@ function computeRoofData(dsmD,dtmD,w,h,xmin,ymin,xmax,ymax){
       avgH:b.n?+(b.heights.reduce((a,v)=>a+v)/b.n).toFixed(1):0,
       pct:Math.round(b.n/total*100),n:b.n
     }))
-    .filter(b=>b.pct>=6) // min 6% van dakpunten
+    .filter(b=>b.pct>=6)
     .sort((a,b)=>b.n-a.n)
     .slice(0,5);
 
-  return {faces:faces.length?faces:null, rawPoints};
+  return {faces:faces.length?faces:null, rawPoints, edgePts};
 }
 
 async function analyzeDHM(bc){
   const lats=bc.map(p=>p[0]), lngs=bc.map(p=>p[1]);
-  const swL=wgs84ToLambert72(Math.min(...lats)-.0002, Math.min(...lngs)-.0002);
-  const neL=wgs84ToLambert72(Math.max(...lats)+.0002, Math.max(...lngs)+.0002);
-  const pad=4;
+  // Bounding box met kleine marge
+  const swL=wgs84ToLambert72(Math.min(...lats)-.0003, Math.min(...lngs)-.0003);
+  const neL=wgs84ToLambert72(Math.max(...lats)+.0003, Math.max(...lngs)+.0003);
+  const pad=2;
   const [xmin,ymin,xmax,ymax]=[swL[0]-pad, swL[1]-pad, neL[0]+pad, neL[1]+pad];
-  // Hogere resolutie: max 1 pixel per meter
-  const mw=Math.min(120,Math.max(10,Math.round(xmax-xmin)));
-  const mh=Math.min(120,Math.max(10,Math.round(ymax-ymin)));
-  console.log(`DHM bbox L72: ${Math.round(xmin)},${Math.round(ymin)} → ${Math.round(xmax)},${Math.round(ymax)}, raster ${mw}×${mh}px`);
+  // 1 pixel ≈ 1 meter resolutie
+  const mw=Math.min(150,Math.max(10,Math.round(xmax-xmin)));
+  const mh=Math.min(150,Math.max(10,Math.round(ymax-ymin)));
+  console.log(`DHM bbox L72: ${Math.round(xmin)},${Math.round(ymin)}→${Math.round(xmax)},${Math.round(ymax)}, raster ${mw}×${mh}px`);
+
   const [dsmR,dtmR]=await Promise.all([
     fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DSM_1m"),
     fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DTM_1m"),
   ]);
-  const result=computeRoofData(dsmR.data,dtmR.data,dsmR.w,dsmR.h,xmin,ymin,xmax,ymax);
-  console.log(`DHM: ${result.rawPoints.length} dakpixels, ${result.faces?.length||0} vlakken`);
+
+  // Gebouwcontour omzetten naar Lambert72 voor randmeting
+  const bcL72=bc.map(([lat,lng])=>wgs84ToLambert72(lat,lng));
+
+  const result=computeRoofData(dsmR.data,dtmR.data,dsmR.w,dsmR.h,xmin,ymin,xmax,ymax,bcL72);
+  console.log(`DHM: ${result.rawPoints.length} totaal (${result.edgePts?.length||0} rand/hoek), ${result.faces?.length||0} vlakken`);
   return result;
 }
 
@@ -634,22 +708,54 @@ const DIR_COLORS=["#ef4444","#f97316","#eab308","#22c55e","#16a34a","#0891b2","#
 // label per richting
 const DIR_LABEL=["N","NO","O","ZO","Z","ZW","W","NW"];
 
-// Teken alle individuele LiDAR meetpunten op de kaart
+// Teken alle LiDAR meetpunten: dakpixels + rand/hoekpunten
 function drawMeasurementPoints(map,L,points,selFaceIdx,detectedFaces){
   if(!points||!points.length) return null;
   const g=L.layerGroup();
-  // Kleur op basis van richting (dirIdx)
-  points.forEach(p=>{
-    const c=DIR_COLORS[p.dirIdx]||"#94a3b8";
-    const isSel=detectedFaces&&detectedFaces.some((f,i)=>i===selFaceIdx&&f.orientation===DIR_LABEL[p.dirIdx]);
-    L.circleMarker([p.lat,p.lng],{
-      radius:isSel?5:3,
-      color:"#fff",weight:isSel?1.5:0.5,
-      fillColor:c,fillOpacity:isSel?0.95:0.7,
-    })
-    .bindTooltip(`<b>${DIR_LABEL[p.dirIdx]} · ${p.slopeDeg}°</b><br>Dakhoogte: ${p.relH}m<br>DSM: ${p.dsm}m · DTM: ${p.dtm}m<br>Aspect: ${Math.round(p.aspectDeg)}°`,{direction:"top"})
-    .addTo(g);
+
+  points.forEach((p,idx)=>{
+    if(p.isEdge){
+      // ── Rand- of hoekpunt ──
+      const color=p.isCorner?"#f59e0b":"#94a3b8";
+      const radius=p.isCorner?6:3;
+      const marker=L.circleMarker([p.lat,p.lng],{
+        radius,
+        color:p.isCorner?"#1e293b":"#64748b",
+        weight:p.isCorner?2:1,
+        fillColor:color,
+        fillOpacity:p.isCorner?1:0.7,
+      });
+      const label=p.isCorner?`Hoekpunt ${p.edgeIdx+1}`:`Randpunt`;
+      marker.bindTooltip(
+        `<b>${label}</b><br>DSM: ${p.dsm}m · DTM: ${p.dtm}m<br>Hoogte boven maaiveld: <b>${p.relH}m</b>`,
+        {direction:"top",permanent:p.isCorner,offset:[0,-8]}
+      );
+      marker.addTo(g);
+
+      // Hoekpunt: extra zichtbaar label
+      if(p.isCorner){
+        L.marker([p.lat,p.lng],{icon:L.divIcon({
+          html:`<div style="background:#f59e0b;color:#fff;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;border:2px solid #1e293b;box-shadow:0 1px 4px rgba(0,0,0,.4);font-family:monospace">${p.edgeIdx+1}</div>`,
+          iconSize:[18,18],iconAnchor:[9,9],className:""
+        })}).bindTooltip(`Hoek ${p.edgeIdx+1} · ${p.relH}m`,{direction:"top"}).addTo(g);
+      }
+    } else {
+      // ── Dakpixel (slope/aspect berekend) ──
+      const c=DIR_COLORS[p.dirIdx]||"#94a3b8";
+      const isSel=detectedFaces&&detectedFaces[selFaceIdx]?.orientation===DIR_LABEL[p.dirIdx];
+      L.circleMarker([p.lat,p.lng],{
+        radius:isSel?5:2.5,
+        color:"rgba(255,255,255,0.6)",weight:isSel?1.5:0.5,
+        fillColor:c,fillOpacity:isSel?0.9:0.65,
+      })
+      .bindTooltip(
+        `<b>${DIR_LABEL[p.dirIdx]} · ${p.slopeDeg}°</b><br>Hoogte: ${p.relH}m · DSM ${p.dsm}m · DTM ${p.dtm}m`,
+        {direction:"top"}
+      )
+      .addTo(g);
+    }
   });
+
   g.addTo(map);
   return g;
 }
