@@ -441,6 +441,12 @@ function facesFromCorners(corners,buildingCoords){
   return faces.length?faces:null;
 }
 
+// Alle bekende coverage-naam paren (DSM, DTM) voor DHM Vlaanderen II
+const DHM_PAIRS=[
+  ["DHMVII_DSM_1m","DHMVII_DTM_1m"],       // geoservices + geo.api standaard
+  ["DHMV_DSM_1m",  "DHMV_DTM_1m"],         // alternatief formaat
+];
+
 async function analyzeDHM(bc){
   const lats=bc.map(p=>p[0]), lngs=bc.map(p=>p[1]);
   const swL=wgs84ToLambert72(Math.min(...lats)-.0003, Math.min(...lngs)-.0003);
@@ -448,26 +454,43 @@ async function analyzeDHM(bc){
   const pad=4;
   const [xmin,ymin,xmax,ymax]=[swL[0]-pad, swL[1]-pad, neL[0]+pad, neL[1]+pad];
 
-  // Resolutie: min 1px/m maar max 200px
   const rawW=Math.round(xmax-xmin), rawH=Math.round(ymax-ymin);
   const mw=Math.min(200,Math.max(12,rawW));
   const mh=Math.min(200,Math.max(12,rawH));
   console.log(`DHM bbox L72: ${Math.round(xmin)},${Math.round(ymin)}→${Math.round(xmax)},${Math.round(ymax)}, raster ${mw}×${mh}px`);
 
-  const [dsmR,dtmR]=await Promise.all([
-    fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DSM_1m"),
-    fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DTM_1m"),
-  ]);
+  let dsmR=null, dtmR=null;
 
-  // Meet hoekpunten
+  // Probeer alle bekende coverage-paren totdat we verschil zien
+  for(const [dsmCov,dtmCov] of DHM_PAIRS){
+    try{
+      const [d,t]=await Promise.all([
+        fetchWCS(xmin,ymin,xmax,ymax,mw,mh,dsmCov),
+        fetchWCS(xmin,ymin,xmax,ymax,mw,mh,dtmCov),
+      ]);
+      // Check: zijn DSM en DTM echt verschillend?
+      const dsmSample=Array.from(d.data).filter(v=>!isNaN(v)&&v>0).slice(0,100);
+      const dtmSample=Array.from(t.data).filter(v=>!isNaN(v)&&v>0).slice(0,100);
+      const dsmAvg=dsmSample.reduce((a,b)=>a+b,0)/Math.max(1,dsmSample.length);
+      const dtmAvg=dtmSample.reduce((a,b)=>a+b,0)/Math.max(1,dtmSample.length);
+      const diff=Math.abs(dsmAvg-dtmAvg);
+      console.log(`Coverage ${dsmCov}/${dtmCov}: DSM gem=${dsmAvg.toFixed(1)}, DTM gem=${dtmAvg.toFixed(1)}, verschil=${diff.toFixed(2)}m`);
+      if(diff>=0.5){ dsmR=d; dtmR=t; break; } // bruikbaar verschil
+      if(!dsmR){ dsmR=d; dtmR=t; } // bewaar eerste resultaat als fallback
+    }catch(e){console.warn(`Coverage paar mislukt:`,e.message);}
+  }
+
+  if(!dsmR||!dtmR) throw new Error("Geen WCS data beschikbaar");
+
+  // Meet hoekpunten van het gebouw
   const corners=measureCorners(bc,dsmR.data,dtmR.data,dsmR.w,dsmR.h,xmin,ymin,xmax,ymax);
   const validCorners=corners.filter(c=>c.relH!==null);
-  console.log(`Hoekpunten: ${corners.length} totaal, ${validCorners.length} met hoogte`);
-  validCorners.forEach(c=>console.log(`  Hoek ${c.idx+1}: lat=${c.lat.toFixed(5)} lng=${c.lng.toFixed(5)} DSM=${c.dsm}m DTM=${c.dtm}m relH=${c.relH}m`));
+  console.log(`Hoekpunten: ${corners.length} totaal, ${validCorners.length} met geldig relH`);
+  validCorners.forEach(c=>
+    console.log(`  H${c.idx+1}: DSM=${c.dsm}m DTM=${c.dtm}m → relH=${c.relH}m`)
+  );
 
-  // Bepaal dakvlakken uit hoekpunten
   const faces=facesFromCorners(corners,bc);
-
   return {faces, rawPoints:corners, edgePts:corners};
 }
 
@@ -1384,14 +1407,21 @@ export default function App(){
   useEffect(()=>{if(mapReady&&buildingCoords) redrawRoof();},[mapReady,buildingCoords,orientation,detectedFaces,selFaceIdx]);
 
   // Teken/verwijder meetpunten laag
+  // Auto-toon hoekpunten zodra ze beschikbaar zijn
   useEffect(()=>{
     if(!leafRef.current||!window.L) return;
     const L=window.L,map=leafRef.current;
     if(pointsLayerRef.current){map.removeLayer(pointsLayerRef.current);pointsLayerRef.current=null;}
-    if(showPoints&&rawPoints.length>0){
+    const shouldShow=showPoints&&rawPoints.length>0;
+    if(shouldShow){
       pointsLayerRef.current=drawMeasurementPoints(map,L,rawPoints,selFaceIdx,detectedFaces);
     }
   },[rawPoints,showPoints,selFaceIdx,detectedFaces,mapReady]);
+
+  // Auto-activeer hoekpunten tonen zodra LiDAR klaar is
+  useEffect(()=>{
+    if(dhmStatus==="ok"||dhmStatus==="partial") setShowPoints(true);
+  },[dhmStatus]);
 
   useEffect(()=>{
     if(!panelsDrawn||!buildingCoords||!selPanel||!leafRef.current||!window.L||!coords) return;
@@ -1490,8 +1520,31 @@ export default function App(){
     try{
       const {faces,rawPoints:pts}=await analyzeDHM(bc);
       setRawPoints(pts||[]);
-      if(faces?.length>0){setDetectedFaces(faces);setSelFaceIdx(0);setOrientation(faces[0].orientation);setSlope(faces[0].slope);setDhmStatus("ok");}
-      else{setDhmStatus("error");setDhmError(`${pts?.length||0} dakpixels gevonden maar geen duidelijke vlakken. Pas helling/richting handmatig in.`);}
+      if(faces?.length>0){
+        setDetectedFaces(faces);setSelFaceIdx(0);
+        setOrientation(faces[0].orientation);setSlope(faces[0].slope);
+        setDhmStatus("ok");
+      } else {
+        // Toon hoekpunten altijd — ook als faces-detectie mislukt
+        const validPts=(pts||[]).filter(p=>p.relH!==null&&p.relH>0.5);
+        const hStr=validPts.length>0
+          ?`Hoogtes: ${validPts.map(p=>`H${p.idx+1}=${p.relH}m`).join(", ")}`
+          :`Alle hoeken: relH=0 (DSM≈DTM — WCS geeft identieke waarden terug)`;
+        setDhmStatus(validPts.length>0?"partial":"error");
+        setDhmError(`${(pts||[]).length} hoekpunten gemeten. ${hStr}. Stel helling & richting handmatig in.`);
+        // Toch oriëntatie tonen als er hoogteverschil is
+        if(validPts.length>=2) {
+          const sorted=[...validPts].sort((a,b)=>b.relH-a.relH);
+          // Richting: van hoogste naar laagste hoek
+          const hi=sorted[0], lo=sorted[sorted.length-1];
+          const dLat=(lo.lat-hi.lat)*111320, dLng=(lo.lng-hi.lng)*111320*Math.cos(hi.lat*Math.PI/180);
+          const asp=((90-Math.atan2(dLat,dLng)*180/Math.PI)+360)%360;
+          const dirIdx=Math.round(asp/45)%8;
+          setOrientation(DIRS8[dirIdx]);
+          const horiz=Math.sqrt(dLat**2+dLng**2);
+          if(horiz>0.5) setSlope(Math.round(Math.atan((hi.relH-lo.relH)/horiz)*180/Math.PI));
+        }
+      }
     }catch(e){console.error("DHM:",e);setDhmStatus("error");setDhmError(e.message||"WCS endpoint niet bereikbaar");}
   };
 
@@ -1629,10 +1682,10 @@ export default function App(){
               );})}
             </div>}
           </div>}
-          {dhmStatus==="error"&&<div className="info-box err">
-            <strong>⚠️ LiDAR niet beschikbaar</strong><br/>
+          {(dhmStatus==="error"||dhmStatus==="partial")&&<div className={`info-box ${dhmStatus==="partial"?"warn":"err"}`}>
+            <strong>{dhmStatus==="partial"?"⚠️ Hoekpunten gemeten, vlakken onzeker":"⚠️ LiDAR niet beschikbaar"}</strong><br/>
             <span style={{fontSize:7,wordBreak:"break-all",color:"var(--muted)"}}>{dhmError}</span><br/>
-            Stel helling &amp; richting handmatig in hieronder.
+            Controleer of stel helling &amp; richting handmatig in.
           </div>}
         </div>}
 
