@@ -20,7 +20,14 @@ class ErrorBoundary extends Component {
 const NOMINATIM = "https://nominatim.openstreetmap.org/search";
 const GRB_WFS   = "https://geo.api.vlaanderen.be/GRB/wfs";
 const DHM_WMS   = "https://geoservices.informatievlaanderen.be/raadpleegdiensten/DHMVII/wms";
-const WCS_URLS  = [
+// WMS endpoints voor GetFeatureInfo (eenvoudiger + betrouwbaarder dan WCS+TIFF)
+// GetFeatureInfo geeft direct een JSON/text waarde terug — geen TIFF-parsing nodig
+const DHM_WMS_FI = [
+  "https://geo.api.vlaanderen.be/DHMV/wms",
+  "https://geoservices.informatievlaanderen.be/raadpleegdiensten/DHMVII/wms",
+];
+// WCS behouden voor WMS overlay (kaartlaag)
+const WCS_URLS = [
   "https://geo.api.vlaanderen.be/DHMV/wcs",
   "https://geoservices.informatievlaanderen.be/raadpleegdiensten/DHMVII/wcs",
 ];
@@ -393,84 +400,106 @@ function facesFromCorners(corners,buildingCoords){
   return faces.length?faces:null;
 }
 
-// ── WCS 2.0.1 GetCoverage per punt ───────────────────────────────────────────
-// Haalt hoogte op voor één enkel Lambert72-punt via een 3×3-pixel WCS-aanvraag
-// Robuuster dan een groot raster: één aanvraag per corner, minder parseerfouten
-async function fetchHeightAtPoint(E, N_, covDSM, covDTM){
-  const d=2; // 2m marge rond het punt
-  const bbox=`${(E-d).toFixed(1)},${(N_-d).toFixed(1)},${(E+d).toFixed(1)},${(N_+d).toFixed(1)}`;
+// ════════════════════════════════════════════════════════════════════════
+//  HOOGTE PER PUNT — WMS GetFeatureInfo (geen TIFF-parsing!)
+//  Stuurt een kleine WMS-aanvraag en leest de hoogte uit de JSON-respons.
+//  GetFeatureInfo is CORS-vriendelijk en geeft direct een numerieke waarde.
+// ════════════════════════════════════════════════════════════════════════
 
-  // Probeer WCS 2.0.1 (modernste, beste CORS-ondersteuning)
-  const wcs2params=(cov)=>`SERVICE=WCS&VERSION=2.0.1&REQUEST=GetCoverage`+
-    `&COVERAGEID=${cov}&FORMAT=image/tiff`+
-    `&SUBSETTINGCRS=http://www.opengis.net/def/crs/EPSG/0/31370`+
-    `&OUTPUTCRS=http://www.opengis.net/def/crs/EPSG/0/31370`+
-    `&SUBSET=E(${(E-d).toFixed(1)},${(E+d).toFixed(1)})`+
-    `&SUBSET=N(${(N_-d).toFixed(1)},${(N_+d).toFixed(1)})`+
-    `&SCALESIZE=E(3),N(3)`;
-
-  // WCS 1.0.0 als fallback
-  const wcs1params=(cov)=>new URLSearchParams({
-    SERVICE:"WCS",VERSION:"1.0.0",REQUEST:"GetCoverage",COVERAGE:cov,
-    CRS:"EPSG:31370",RESPONSE_CRS:"EPSG:31370",BBOX:bbox,
-    WIDTH:"3",HEIGHT:"3",FORMAT:"GeoTIFF"
-  }).toString();
-
-  const tryFetch=async(url)=>{
-    const r=await fetch(url,{mode:"cors"});
-    if(!r.ok) throw new Error(`HTTP ${r.status}`);
-    const ct=(r.headers.get("content-type")||"").toLowerCase();
-    if(ct.includes("xml")||ct.includes("html")){
-      const txt=await r.text();
-      throw new Error(`WCS fout: ${txt.substring(0,80)}`);
-    }
-    const arr=await r.arrayBuffer();
-    if(arr.byteLength<50) throw new Error(`Respons te klein: ${arr.byteLength}b`);
-    return parseTIFF(arr);
+// Haal hoogte op voor ONE punt via WMS GetFeatureInfo
+// E, N: Lambert72 coördinaten
+// layer: WMS-laagnaam (bijv. "DHMVII_DSM_1m" of "DHMVII_DTM_1m")
+async function getHeightWMS(E, N_, layer){
+  // Maak een tiny bounding box van 10×10m rond het punt
+  const s=5; // 5m half-width → 10×10m bbox
+  const bbox=`${(E-s).toFixed(1)},${(N_-s).toFixed(1)},${(E+s).toFixed(1)},${(N_+s).toFixed(1)}`;
+  // I=J=2 = pixel (2,2) in een 5×5 grid = het middelpunt
+  const baseParams = {
+    SERVICE:"WMS", VERSION:"1.3.0", REQUEST:"GetFeatureInfo",
+    LAYERS:layer, QUERY_LAYERS:layer,
+    CRS:"EPSG:31370", BBOX:bbox,
+    WIDTH:"5", HEIGHT:"5",
+    I:"2", J:"2",
+    INFO_FORMAT:"application/json",
   };
 
-  // Probeer elke combinatie van endpoint + WCS versie
-  let lastErr="";
-  for(const url of WCS_URLS){
-    // Probeer WCS 2.0.1 eerst (betere CORS bij geo.api)
-    for(const [dsmParams,dtmParams] of [
-      [wcs2params(covDSM),wcs2params(covDTM)],
-      [wcs1params(covDSM),wcs1params(covDTM)],
-    ]){
+  // Probeer ook text/plain als JSON niet werkt
+  const infoFormats = ["application/json","text/plain","text/xml"];
+
+  for(const wmsUrl of DHM_WMS_FI){
+    for(const fmt of infoFormats){
       try{
-        const [dsmT,dtmT]=await Promise.all([
-          tryFetch(`${url}?${dsmParams}`),
-          tryFetch(`${url}?${dtmParams}`),
-        ]);
-        // Lees centrale pixel (index 4 van 3×3 = midden)
-        const dsm=dsmT.data[4], dtm=dtmT.data[4];
-        if(isNaN(dsm)||isNaN(dtm)) throw new Error(`Centrale pixel NaN`);
-        if(dsm<-999||dtm<-999) throw new Error(`Nodata waarden`);
-        return {dsm:+dsm.toFixed(2), dtm:+dtm.toFixed(2)};
-      }catch(e){lastErr=e.message;}
+        const p=new URLSearchParams({...baseParams, INFO_FORMAT:fmt});
+        const r=await fetch(`${wmsUrl}?${p}`, {mode:"cors"});
+        if(!r.ok) continue;
+        const ct=(r.headers.get("content-type")||"").toLowerCase();
+        if(ct.includes("xml")&&!fmt.includes("xml")) continue;
+        const txt=await r.text();
+
+        // Parse JSON response
+        if(fmt==="application/json"||ct.includes("json")){
+          try{
+            const j=JSON.parse(txt);
+            // GeoServer stijl: features[0].properties.GRAY_INDEX
+            const feat=j.features?.[0];
+            if(feat){
+              const props=feat.properties||{};
+              const val=props.GRAY_INDEX??props.value??props.Value??
+                        props[layer]??Object.values(props)[0];
+              if(val!==null&&val!==undefined){
+                const n=parseFloat(String(val));
+                if(!isNaN(n)&&n>-999&&n<9999){
+                  console.log(`WMS ${layer} @ (${Math.round(E)},${Math.round(N_)}): ${n}m [JSON]`);
+                  return n;
+                }
+              }
+            }
+          }catch(_){}
+        }
+
+        // Parse text/plain response (MapServer stijl: "value_0 = 34.72")
+        if(fmt==="text/plain"||ct.includes("text/plain")||ct.includes("text/html")){
+          const m=txt.match(/=\s*([-\d.]+)/);
+          if(m){
+            const n=parseFloat(m[1]);
+            if(!isNaN(n)&&n>-999&&n<9999){
+              console.log(`WMS ${layer} @ (${Math.round(E)},${Math.round(N_)}): ${n}m [text]`);
+              return n;
+            }
+          }
+        }
+      }catch(e){
+        console.debug(`getHeightWMS ${layer} ${wmsUrl} ${fmt}: ${e.message}`);
+      }
     }
   }
-  // Tweede poging met alternatieve coverage namen
-  const altDSM=covDSM.replace("DHMVII_","DHMV_"), altDTM=covDTM.replace("DHMVII_","DHMV_");
-  if(altDSM!==covDSM){
-    try{return await fetchHeightAtPoint(E,N_,altDSM,altDTM);}catch(e){lastErr=e.message;}
-  }
-  console.warn(`fetchHeightAtPoint (${E.toFixed(0)},${N_.toFixed(0)}) mislukt: ${lastErr}`);
+  console.warn(`getHeightWMS ${layer} @ (${Math.round(E)},${Math.round(N_)}): geen waarde`);
   return null;
 }
 
 async function analyzeDHM(bc){
-  // Meet elke hoek afzonderlijk — robuuster dan één groot raster
-  console.log(`DHM analyse: ${bc.length} hoekpunten`);
+  console.log(`DHM analyse via WMS GetFeatureInfo: ${bc.length} hoekpunten`);
 
-  const corners=await Promise.all(bc.map(async([lat,lng],idx)=>{
-    const [E,N_]=wgs84ToLambert72(lat,lng);
-    const result=await fetchHeightAtPoint(E,N_,"DHMVII_DSM_1m","DHMVII_DTM_1m");
-    const dsm=result?.dsm??null, dtm=result?.dtm??null;
-    const relH=(dsm!==null&&dtm!==null)?+(dsm-dtm).toFixed(2):null;
-    console.log(`  Hoek ${idx+1}: L72=(${E.toFixed(0)},${N_.toFixed(0)}) DSM=${dsm} DTM=${dtm} relH=${relH}`);
-    return {lat,lng,E,N:N_,dsm,dtm,relH,idx,isCorner:true,isEdge:false,dirIdx:-1,slopeDeg:0,aspectDeg:0};
-  }));
+  // Meet elke hoek parallel (max 5 tegelijk om rate-limiting te vermijden)
+  const BATCH=3;
+  const corners=[];
+  for(let i=0;i<bc.length;i+=BATCH){
+    const batch=bc.slice(i,i+BATCH);
+    const results=await Promise.all(batch.map(async([lat,lng],bi)=>{
+      const idx=i+bi;
+      const [E,N_]=wgs84ToLambert72(lat,lng);
+      // DSM en DTM parallel ophalen
+      const [dsm,dtm]=await Promise.all([
+        getHeightWMS(E,N_,"DHMVII_DSM_1m"),
+        getHeightWMS(E,N_,"DHMVII_DTM_1m"),
+      ]);
+      const relH=(dsm!==null&&dtm!==null)?+(dsm-dtm).toFixed(2):null;
+      console.log(`  Hoek ${idx+1}: DSM=${dsm} DTM=${dtm} → relH=${relH}m`);
+      return {lat,lng,E,N:N_,dsm,dtm,relH,idx,
+        isCorner:true,isEdge:false,dirIdx:-1,slopeDeg:0,aspectDeg:0};
+    }));
+    corners.push(...results);
+  }
 
   const valid=corners.filter(c=>c.relH!==null&&c.relH>0.3);
   console.log(`Resultaat: ${valid.length}/${corners.length} hoeken met hoogte > 0.3m`);
@@ -478,6 +507,7 @@ async function analyzeDHM(bc){
   const faces=facesFromCorners(corners,bc);
   return {faces, rawPoints:corners, edgePts:corners};
 }
+
 
 // ─── Polygoon helpers ────────────────────────────────────────────────────────
 function pointInPoly(pt,poly){
