@@ -188,59 +188,68 @@ function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts,buildingWidthM,rid
   // ridgeAngleDeg = hoek van de nok (langste as) in graden t.o.v. Noord (0–180°)
   // De twee dakhellingen zijn haaks: ridgeAngleDeg+90 en ridgeAngleDeg-90
 
-  const relHVals=[], pixelSides=[]; // 'left' of 'right' van de nok
-
-  // Rotatiematrix: projecteer elk pixel op de nokas
+  // Rotatiematrix voor projectie haaks op de nok
   const ridgeRad=ridgeAngleDeg*Math.PI/180;
   const cosR=Math.cos(ridgeRad), sinR=Math.sin(ridgeRad);
-  // Loodrechte component op de nokrichting (geografisch):
-  // Nokrichting (t.o.v. Noord, kloksgewijs): eenheidsvector = (sinR, cosR) in (Oost, Noord)
-  // Rechts-loodrechte (90° kloksgewijs): (cosR, -sinR) in (Oost, Noord)
-  // dx = Oost-component (positief = Oost), dy = Noord-component (positief = Noord)
-  // Projectie op rechts-loodrechte: crossComp = dx*cosR - dy*sinR
-  // Positief = rechts van nok (Oost-zijde voor NNO-nok), negatief = links (West-zijde)
-  // Centroid van rastercoördinaten binnen gebouwcontour
-  let sumX=0,sumY=0,cnt=0;
+
+  // Stap 1: verzamel alle dakpixels + centroïde berekening
+  const dakPts=[]; // {crossComp: meters van nok, relH: hoogte boven DTM}
+  let sumCx=0,sumCy=0,cnt=0;
   for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
     if(bldRasterPts&&bldRasterPts.length>=3&&!pointInPoly([x,y],bldRasterPts)) continue;
     const i=y*w+x,relH=dsmD[i]-dtmD[i];
     if(relH<1.5||relH>40||isNaN(dsmD[i])||isNaN(dtmD[i])) continue;
-    sumX+=x;sumY+=y;cnt++;
+    sumCx+=x;sumCy+=y;cnt++;
   }
   if(cnt<10) return null;
-  const cxR=sumX/cnt,cyR=sumY/cnt;
+  const cxR=sumCx/cnt,cyR=sumCy/cnt;
 
   for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
     if(bldRasterPts&&bldRasterPts.length>=3&&!pointInPoly([x,y],bldRasterPts)) continue;
     const i=y*w+x,relH=dsmD[i]-dtmD[i];
     if(relH<1.5||relH>40||isNaN(dsmD[i])||isNaN(dtmD[i])) continue;
-    relHVals.push(relH);
-    // Project pixel op de dwarsas van de nok (loodrechte component)
-    // In GeoTIFF: Y groeit omlaag, dus Y-as is gespiegeld t.o.v. geografisch noord
-    const dx=x-cxR, dy=cyR-y; // dy gespiegeld zodat +dy = Noord
-    // Dwarscomponent (haaks op nok): positief = rechts van nok, negatief = links
-    const crossComp=dx*cosR-dy*sinR; // correct: loodrecht op nok
-    pixelSides.push(crossComp>=0?'right':'left');
+    // Loodrechte afstand tot de nokas in meters
+    // crossComp = projectie op de rechts-loodrechte: (cosR, -sinR) in (Oost, Noord)
+    const dx=x-cxR, dy=cyR-y; // dy gespiegeld: +dy = Noord (GeoTIFF Y omgekeerd)
+    const crossComp=(dx*cosR-dy*sinR)*cellSize; // meter vanaf nok
+    dakPts.push({crossComp,relH});
+  }
+  if(dakPts.length<10) return null;
+
+  // Stap 2: slope via regressie van relH op |crossComp|
+  // Zadeldak: relH = nok_hoogte - tan(slope) × |crossComp|
+  // => regresseer relH op absComp = -|crossComp|, verwacht negatieve helling = -tan(slope)
+  // Dit is onafhankelijk van gebouwbreedte en DTM-fouten onder het gebouw.
+  let n=0,sX=0,sY=0,sXX=0,sXY=0;
+  dakPts.forEach(({crossComp,relH})=>{
+    const absComp=Math.abs(crossComp); // afstand tot nok
+    n++;sX+=absComp;sY+=relH;sXX+=absComp*absComp;sXY+=absComp*relH;
+  });
+  const denom=n*sXX-sX*sX;
+  let slope=20; // fallback
+  let nokH=0,slopeStdVal=5;
+  if(Math.abs(denom)>0.001){
+    const beta=(n*sXY-sX*sY)/denom; // d(relH)/d(absComp) — negatief voor zadeldak
+    const alpha=(sY-beta*sX)/n;     // intercept = nok hoogte
+    nokH=+alpha.toFixed(1);
+    // beta negatief: hellingshoek = atan(|beta|)
+    slope=Math.max(3,Math.min(60,Math.round(Math.atan(Math.abs(beta))*180/Math.PI)));
+    // Residuals voor kwaliteitsindicatie
+    const residuals=dakPts.map(p=>(p.relH-(alpha+beta*Math.abs(p.crossComp)))**2);
+    const rmse=Math.sqrt(residuals.reduce((a,v)=>a+v,0)/n);
+    slopeStdVal=+rmse.toFixed(2);
+    console.info(`[ZonneDak] Regressie: beta=${beta.toFixed(3)}m/m → slope=${slope}° nok_relH=${nokH}m RMSE=${rmse.toFixed(2)}m (n=${n})`);
+  } else {
+    console.warn('[ZonneDak] Regressie: onvoldoende variatie in crossComp, gebruik fallback slope');
   }
 
-  if(relHVals.length<10) return null;
-
-  // Slope via hoogteprofiel: p10→p90 hoogtebereik / halve breedte
-  const sorted=[...relHVals].sort((a,b)=>a-b);
-  const p10=sorted[Math.floor(sorted.length*0.10)];
-  const p90=sorted[Math.floor(sorted.length*0.90)];
-  const heightRange=p90-p10;
-  const halfWidth=(buildingWidthM||20)/2;
-  const slope=Math.max(3,Math.min(60,Math.round(Math.atan(heightRange/halfWidth)*180/Math.PI)));
-  console.info(`[ZonneDak] Hoogteprofiel: p10=${p10.toFixed(2)}m p90=${p90.toFixed(2)}m range=${heightRange.toFixed(2)}m halfW=${halfWidth.toFixed(1)}m slope=${slope}°`);
-
-  // Twee vlakken: rechts en links van de nok
-  const leftN=pixelSides.filter(s=>s==='left').length;
-  const rightN=pixelSides.filter(s=>s==='right').length;
+  // Stap 3: verdeel pixels links/rechts van nok
+  const leftN=dakPts.filter(p=>p.crossComp<0).length;
+  const rightN=dakPts.filter(p=>p.crossComp>=0).length;
   const total=leftN+rightN;
+  const avgH=+(sY/n).toFixed(1);
 
   // Aspect van elk vlak: haaks op nokrichting
-  // "rechts" van nok kijkt in richting ridgeAngleDeg+90°, "links" in ridgeAngleDeg-90°
   const rightAspect=((ridgeAngleDeg+90)%360+360)%360;
   const leftAspect =((ridgeAngleDeg-90)%360+360)%360;
 
@@ -248,20 +257,22 @@ function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts,buildingWidthM,rid
   if(rightN>=total*0.08){
     const pct=Math.round(rightN/total*100);
     const dirIdx=Math.round(rightAspect/45)%8;
-    const conf=Math.min(1,Math.max(0,0.6*(pct/50)+0.4*(slope>=5&&slope<=60?1:0.3)));
-    faces.push({orientation:DIRS8[dirIdx],slope,avgH:+((p10+p90)/2).toFixed(1),
-                pct,n:rightN,slopeStd:0,confidence:+conf.toFixed(2),
+    const conf=Math.min(1,Math.max(0,
+      0.5*(pct/50)+0.3*(slope>=5&&slope<=60?1:0.3)+0.2*(slopeStdVal<0.5?1:slopeStdVal<1?0.7:0.4)));
+    faces.push({orientation:DIRS8[dirIdx],slope,avgH,pct,n:rightN,
+                slopeStd:slopeStdVal,confidence:+conf.toFixed(2),
                 status:"auto",aspectDeg:+rightAspect.toFixed(1)});
   }
   if(leftN>=total*0.08){
     const pct=Math.round(leftN/total*100);
     const dirIdx=Math.round(leftAspect/45)%8;
-    const conf=Math.min(1,Math.max(0,0.6*(pct/50)+0.4*(slope>=5&&slope<=60?1:0.3)));
-    faces.push({orientation:DIRS8[dirIdx],slope,avgH:+((p10+p90)/2).toFixed(1),
-                pct,n:leftN,slopeStd:0,confidence:+conf.toFixed(2),
+    const conf=Math.min(1,Math.max(0,
+      0.5*(pct/50)+0.3*(slope>=5&&slope<=60?1:0.3)+0.2*(slopeStdVal<0.5?1:slopeStdVal<1?0.7:0.4)));
+    faces.push({orientation:DIRS8[dirIdx],slope,avgH,pct,n:leftN,
+                slopeStd:slopeStdVal,confidence:+conf.toFixed(2),
                 status:"auto",aspectDeg:+leftAspect.toFixed(1)});
   }
-  console.info(`[ZonneDak] GRB-aspect: nok=${ridgeAngleDeg.toFixed(1)}° → vlakken: ${faces.map(f=>`${f.orientation}·${f.slope}°·${f.pct}%`).join(' / ')}`);
+  console.info(`[ZonneDak] GRB-aspect: nok=${ridgeAngleDeg.toFixed(1)}° → ${faces.map(f=>`${f.orientation}·${f.slope}°·${f.pct}%`).join(' / ')}`);
   return faces.length>=1?faces.sort((a,b)=>b.n-a.n):null;
 }
 
