@@ -145,12 +145,43 @@ async function fetchWCS(xmin,ymin,xmax,ymax,mw,mh,cov){
   throw new Error(lastErr||"Alle WCS endpoints mislukt");
 }
 
-// ─── computeRoofFaces: clipping + filtering + face-merging ───────────────────
-// Verbeteringen t.o.v. vorige versie:
-//   1. slope > 70° wordt gefilterd (muren en randpixels, geen dak)
-//   2. Naburige bins met gelijkaardige helling worden samengevoegd
-//      zodat een zadeldak als 2 vlakken verschijnt, niet als 3–4 fragmenten
-//   3. Minimumdrempel verhoogd naar 10% per vlak (was 8%)
+// ─── computeRoofFaces: circulaire k-means i.p.v. 45°-histogram ───────────────
+// Het 8-bins histogram werkt slecht voor schuingeoriënteerde gebouwen:
+// een zadeldak op een NO-ZW as wordt gesplitst over 3–4 bins.
+// K-means op aspect-waarden vindt de dominante richtingen ongeacht rotatie.
+function circularMean(angles){
+  // Gemiddelde van hoeken (in graden) op de cirkel
+  const s=angles.reduce((a,v)=>a+Math.sin(v*Math.PI/180),0);
+  const c=angles.reduce((a,v)=>a+Math.cos(v*Math.PI/180),0);
+  return((Math.atan2(s,c)*180/Math.PI)+360)%360;
+}
+function circularDist(a,b){
+  // Kortste afstand tussen twee hoeken op de cirkel (0–180)
+  return Math.abs(((a-b+180+360)%360)-180);
+}
+
+function kMeansAspect(pts,k,maxIter=30){
+  if(pts.length<k) return null;
+  // Initialiseer centroids gelijkmatig verdeeld
+  let centroids=Array.from({length:k},(_,i)=>(360/k)*i);
+  let clusters=null;
+  for(let iter=0;iter<maxIter;iter++){
+    clusters=Array.from({length:k},()=>[]);
+    pts.forEach(p=>{
+      let minD=Infinity,minK=0;
+      centroids.forEach((c,ki)=>{const d=circularDist(p.aspect,c);if(d<minD){minD=d;minK=ki;}});
+      clusters[minK].push(p);
+    });
+    const newC=clusters.map((cl,ki)=>{
+      if(!cl.length) return centroids[ki];
+      return circularMean(cl.map(p=>p.aspect));
+    });
+    if(centroids.every((c,i)=>circularDist(c,newC[i])<0.5)) break;
+    centroids=newC;
+  }
+  return{centroids,clusters};
+}
+
 function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts){
   const pts=[];
   for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
@@ -163,77 +194,56 @@ function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts){
     const dzdx=((c+2*f+ii)-(a+2*d+g))/(8*cellSize);
     const dzdy=((g+2*hh+ii)-(a+2*b+c))/(8*cellSize);
     const slope=Math.atan(Math.sqrt(dzdx**2+dzdy**2))*180/Math.PI;
-    // FIX: filter muren en randpixels (slope > 70° is geen dak)
+    // Filter muren en randpixels (slope > 70° of < 5°)
     if(slope<5||slope>70) continue;
     pts.push({slope,aspect:(90-Math.atan2(-dzdy,dzdx)*180/Math.PI+360)%360,relH});
   }
-  if(pts.length<5) return null;
+  if(pts.length<10) return null;
 
-  // Stap 1: bin in 8 richtingen
-  const bins=Array(8).fill(0).map(()=>({n:0,slopes:[],heights:[]}));
-  pts.forEach(({slope,aspect,relH})=>{const b=Math.round(aspect/45)%8;bins[b].n++;bins[b].slopes.push(slope);bins[b].heights.push(relH);});
   const total=pts.length;
 
-  // Stap 2: bereken statistieken per bin
-  const rawFaces=bins.map((b,i)=>{
-    if(!b.n) return null;
-    const avgSlope=b.slopes.reduce((a,v)=>a+v)/b.n;
-    const slopeStd=Math.sqrt(b.slopes.reduce((a,v)=>a+(v-avgSlope)**2,0)/b.n);
-    const pct=b.n/total;
-    return {binIdx:i,orientation:DIRS8[i],slope:avgSlope,slopeStd,
-            avgH:b.heights.reduce((a,v)=>a+v)/b.n,n:b.n,pct};
-  }).filter(Boolean);
+  // ── K-means: probeer k=2 (zadeldak), dan k=4 (schilddak) ──────────────────
+  // Kies k op basis van hoe goed de clusters het dak beschrijven
+  let bestFaces=null;
 
-  // Stap 3: merge naburige bins met gelijkaardige helling
-  // Aanpak: iteratief, merge de twee meest gelijkaardige buren
-  //   - "gelijkaardig" = |slope_a - slope_b| < 12° EN bins zijn buren (±1 positie in de 8-cirkel)
-  const SLOPE_MERGE_THRESH=12; // graden
-  let merged=[...rawFaces];
-  let changed=true;
-  while(changed){
-    changed=false;
-    for(let i=0;i<merged.length;i++){
-      for(let j=i+1;j<merged.length;j++){
-        const a=merged[i],b=merged[j];
-        // Controleer of bins buren zijn in de 8-richting cirkel
-        const binDiff=Math.min(Math.abs(a.binIdx-b.binIdx),8-Math.abs(a.binIdx-b.binIdx));
-        if(binDiff>1) continue; // Niet naburig
-        // Controleer gelijkaardige helling
-        if(Math.abs(a.slope-b.slope)>SLOPE_MERGE_THRESH) continue;
-        // Merge: gewogen gemiddelden
-        const totalN=a.n+b.n;
-        const newSlope=(a.slope*a.n+b.slope*b.n)/totalN;
-        const newH=(a.avgH*a.n+b.avgH*b.n)/totalN;
-        const newPct=a.pct+b.pct;
-        // Kies de bin met het meeste pixels als vertegenwoordiger
-        const repr=a.n>=b.n?a:b;
-        merged[i]={...repr,slope:newSlope,avgH:newH,pct:newPct,n:totalN,
-                   slopeStd:Math.max(a.slopeStd,b.slopeStd)};
-        merged.splice(j,1);
-        changed=true;
-        break;
-      }
-      if(changed) break;
-    }
-  }
+  for(const k of[2,4]){
+    const result=kMeansAspect(pts,k);
+    if(!result) continue;
 
-  // Stap 4: filter en sorteer
-  return merged
-    .filter(f=>f.pct>=0.10) // Minimaal 10% van dakpixels
-    .sort((a,b)=>b.n-a.n)
-    .slice(0,4)
-    .map(f=>{
-      const pct=Math.round(f.pct*100);
-      const slope=Math.round(f.slope);
-      const slopeStd=+f.slopeStd.toFixed(1);
+    const faces=result.clusters.map((cl,ki)=>{
+      if(cl.length<5) return null;
+      const pct=cl.length/total;
+      if(pct<0.08) return null; // Min 8% van pixels
+      const avgSlope=cl.reduce((a,p)=>a+p.slope,0)/cl.length;
+      const slopeStd=Math.sqrt(cl.reduce((a,p)=>a+(p.slope-avgSlope)**2,0)/cl.length);
+      const avgH=cl.reduce((a,p)=>a+p.relH,0)/cl.length;
+      const aspect=result.centroids[ki];
+      // Gebruik DIRS8 voor label: kies dichtstbijzijnde windrichting
+      const dirIdx=Math.round(aspect/45)%8;
+      const slope=Math.round(avgSlope);
       const conf=Math.min(1,Math.max(0,
         0.4*(1-Math.min(slopeStd/20,1))+
-        0.4*Math.min(f.pct/0.2,1)+           // 20% aandeel = volle score
+        0.4*Math.min(pct/0.2,1)+
         0.2*(slope>=10&&slope<=65?1:0.3)
       ));
-      return {orientation:f.orientation,slope,avgH:+f.avgH.toFixed(1),
-              pct,n:f.n,slopeStd,confidence:+conf.toFixed(2),status:"auto"};
-    });
+      return{orientation:DIRS8[dirIdx],slope,avgH:+avgH.toFixed(1),
+             pct:Math.round(pct*100),n:cl.length,slopeStd:+slopeStd.toFixed(1),
+             confidence:+conf.toFixed(2),status:"auto",aspectDeg:+aspect.toFixed(1)};
+    }).filter(Boolean);
+
+    if(!faces.length) continue;
+
+    // Kies k=2 als het twee coherente vlakken geeft (typisch zadeldak)
+    // Kies k=4 als k=2 te hoge slopeStd geeft (complex dak)
+    const avgStd=faces.reduce((a,f)=>a+f.slopeStd,0)/faces.length;
+    if(!bestFaces||faces.length>=bestFaces.length||avgStd<bestFaces.reduce((a,f)=>a+f.slopeStd,0)/bestFaces.length){
+      bestFaces=faces;
+    }
+    // Stop bij k=2 als slopeStd laag genoeg (goed geclustered zadeldak)
+    if(k===2&&avgStd<12) break;
+  }
+
+  return bestFaces&&bestFaces.length?bestFaces.sort((a,b)=>b.n-a.n):null;
 }
 
 // ─── analyzeDHM: met diagnostiek, plat-dak-detectie en fallback ──────────────
