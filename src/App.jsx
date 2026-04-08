@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, Component } from "react";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  ZonneDak Analyzer — App.jsx  (GECORRIGEERDE VERSIE)
@@ -1024,12 +1024,37 @@ function CustomerPanel({customer,setCustomer,tlToken,setTlToken}){
 // ═══════════════════════════════════════════════════════════════════════════
 //  MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════
+// ─── ErrorBoundary — named export vereist door main.jsx ──────────────────────
+// React class component — error boundaries kunnen niet als function component.
+// Component is geïmporteerd bovenaan via: import { ..., Component } from "react"
+
+export class ErrorBoundary extends Component {
+  constructor(props){super(props);this.state={hasError:false,error:null};}
+  static getDerivedStateFromError(error){return{hasError:true,error};}
+  componentDidCatch(error,info){console.error("[ZonneDak ErrorBoundary]",error,info);}
+  render(){
+    if(this.state.hasError){
+      return(
+        <div style={{padding:32,fontFamily:"'IBM Plex Mono',monospace",color:"#dc2626",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,margin:16}}>
+          <div style={{fontWeight:700,fontSize:16,marginBottom:8}}>⚠️ Applicatiefout</div>
+          <div style={{fontSize:11,marginBottom:12}}>{this.state.error?.message||"Onbekende fout"}</div>
+          <button onClick={()=>this.setState({hasError:false,error:null})} style={{padding:"6px 12px",background:"#dc2626",color:"#fff",border:"none",borderRadius:4,cursor:"pointer",fontFamily:"inherit",fontSize:10}}>
+            Opnieuw proberen
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App(){
   const[activeTab,setActiveTab]=useState("configuratie");
   const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
   const[coords,setCoords]=useState(null);const[displayName,setDisplayName]=useState("");
   const[slope,setSlope]=useState(35);const[orientation,setOrientation]=useState("Z");
-  const[activeLayer,setActiveLayer]=useState("luchtfoto"); // Start met luchtfotoconst[mapReady,setMapReady]=useState(false);
+  const[activeLayer,setActiveLayer]=useState("luchtfoto"); // Start met luchtfoto
+  const[mapReady,setMapReady]=useState(false); // FIX: was per ongeluk in commentaar opgeslokt
 
   const[grbStatus,setGrbStatus]=useState("idle");
   const[buildingCoords,setBuildingCoords]=useState(null);
