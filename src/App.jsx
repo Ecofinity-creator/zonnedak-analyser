@@ -145,47 +145,95 @@ async function fetchWCS(xmin,ymin,xmax,ymax,mw,mh,cov){
   throw new Error(lastErr||"Alle WCS endpoints mislukt");
 }
 
-// ─── FIX BUG-02 + BUG-04: computeRoofFaces met gebouwcontour-clipping ────────
-// Vorige versie analyseerde de volledige bounding-box, inclusief buurgebouwen
-// en vegetatie. Nu worden rasterpixels eerst gefilterd op de gebouwcontour
-// (omgezet naar rastercoördinaten). Tevens confidence score per vlak.
-// bldRasterPts: optionele array van [col,row] hoekpunten van gebouwcontour in rastercoördinaten
+// ─── computeRoofFaces: clipping + filtering + face-merging ───────────────────
+// Verbeteringen t.o.v. vorige versie:
+//   1. slope > 70° wordt gefilterd (muren en randpixels, geen dak)
+//   2. Naburige bins met gelijkaardige helling worden samengevoegd
+//      zodat een zadeldak als 2 vlakken verschijnt, niet als 3–4 fragmenten
+//   3. Minimumdrempel verhoogd naar 10% per vlak (was 8%)
 function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts){
   const pts=[];
   for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
-    // FIX BUG-04: clip op gebouwcontour — sla pixels buiten het gebouw over
     if(bldRasterPts&&bldRasterPts.length>=3&&!pointInPoly([x,y],bldRasterPts)) continue;
     const i=y*w+x,relH=dsmD[i]-dtmD[i];
-    // FIX: hoogte boven maaiveld (DSM−DTM). Drempel verlaagd naar 1.5m (was 2m)
     if(relH<1.5||relH>40||isNaN(dsmD[i])||isNaN(dtmD[i])) continue;
     const v=(dy,dx)=>dsmD[(y+dy)*w+(x+dx)];
     const[a,b,c,d,f,g,hh,ii]=[v(-1,-1),v(-1,0),v(-1,1),v(0,-1),v(0,1),v(1,-1),v(1,0),v(1,1)];
     if([a,b,c,d,f,g,hh,ii].some(v=>isNaN(v))) continue;
-    // Horn's methode voor slope/aspect — correct
     const dzdx=((c+2*f+ii)-(a+2*d+g))/(8*cellSize);
     const dzdy=((g+2*hh+ii)-(a+2*b+c))/(8*cellSize);
     const slope=Math.atan(Math.sqrt(dzdx**2+dzdy**2))*180/Math.PI;
-    if(slope<6) continue;
+    // FIX: filter muren en randpixels (slope > 70° is geen dak)
+    if(slope<5||slope>70) continue;
     pts.push({slope,aspect:(90-Math.atan2(-dzdy,dzdx)*180/Math.PI+360)%360,relH});
   }
   if(pts.length<5) return null;
+
+  // Stap 1: bin in 8 richtingen
   const bins=Array(8).fill(0).map(()=>({n:0,slopes:[],heights:[]}));
   pts.forEach(({slope,aspect,relH})=>{const b=Math.round(aspect/45)%8;bins[b].n++;bins[b].slopes.push(slope);bins[b].heights.push(relH);});
   const total=pts.length;
-  return bins.map((b,i)=>{
+
+  // Stap 2: bereken statistieken per bin
+  const rawFaces=bins.map((b,i)=>{
     if(!b.n) return null;
     const avgSlope=b.slopes.reduce((a,v)=>a+v)/b.n;
     const slopeStd=Math.sqrt(b.slopes.reduce((a,v)=>a+(v-avgSlope)**2,0)/b.n);
-    const pct=Math.round(b.n/total*100);
-    // FIX: confidence score per vlak (0–1) op basis van hellingsconsistentie + puntdichtheid
-    const conf=Math.min(1,Math.max(0,
-      0.4*(1-Math.min(slopeStd/20,1))+       // Hellingsconsistentie
-      0.4*Math.min(b.n/(total*0.15),1)+       // Aandeel dakpixels
-      0.2*(avgSlope>=10&&avgSlope<=65?1:0.3)  // Realistische hellingshoek
-    ));
-    return {orientation:DIRS8[i],slope:Math.round(avgSlope),avgH:+(b.heights.reduce((a,v)=>a+v)/b.n).toFixed(1),pct,n:b.n,slopeStd:+slopeStd.toFixed(1),confidence:+conf.toFixed(2),status:"auto"};
-  })
-  .filter(b=>b&&b.pct>=8).sort((a,b)=>b.n-a.n).slice(0,4);
+    const pct=b.n/total;
+    return {binIdx:i,orientation:DIRS8[i],slope:avgSlope,slopeStd,
+            avgH:b.heights.reduce((a,v)=>a+v)/b.n,n:b.n,pct};
+  }).filter(Boolean);
+
+  // Stap 3: merge naburige bins met gelijkaardige helling
+  // Aanpak: iteratief, merge de twee meest gelijkaardige buren
+  //   - "gelijkaardig" = |slope_a - slope_b| < 12° EN bins zijn buren (±1 positie in de 8-cirkel)
+  const SLOPE_MERGE_THRESH=12; // graden
+  let merged=[...rawFaces];
+  let changed=true;
+  while(changed){
+    changed=false;
+    for(let i=0;i<merged.length;i++){
+      for(let j=i+1;j<merged.length;j++){
+        const a=merged[i],b=merged[j];
+        // Controleer of bins buren zijn in de 8-richting cirkel
+        const binDiff=Math.min(Math.abs(a.binIdx-b.binIdx),8-Math.abs(a.binIdx-b.binIdx));
+        if(binDiff>1) continue; // Niet naburig
+        // Controleer gelijkaardige helling
+        if(Math.abs(a.slope-b.slope)>SLOPE_MERGE_THRESH) continue;
+        // Merge: gewogen gemiddelden
+        const totalN=a.n+b.n;
+        const newSlope=(a.slope*a.n+b.slope*b.n)/totalN;
+        const newH=(a.avgH*a.n+b.avgH*b.n)/totalN;
+        const newPct=a.pct+b.pct;
+        // Kies de bin met het meeste pixels als vertegenwoordiger
+        const repr=a.n>=b.n?a:b;
+        merged[i]={...repr,slope:newSlope,avgH:newH,pct:newPct,n:totalN,
+                   slopeStd:Math.max(a.slopeStd,b.slopeStd)};
+        merged.splice(j,1);
+        changed=true;
+        break;
+      }
+      if(changed) break;
+    }
+  }
+
+  // Stap 4: filter en sorteer
+  return merged
+    .filter(f=>f.pct>=0.10) // Minimaal 10% van dakpixels
+    .sort((a,b)=>b.n-a.n)
+    .slice(0,4)
+    .map(f=>{
+      const pct=Math.round(f.pct*100);
+      const slope=Math.round(f.slope);
+      const slopeStd=+f.slopeStd.toFixed(1);
+      const conf=Math.min(1,Math.max(0,
+        0.4*(1-Math.min(slopeStd/20,1))+
+        0.4*Math.min(f.pct/0.2,1)+           // 20% aandeel = volle score
+        0.2*(slope>=10&&slope<=65?1:0.3)
+      ));
+      return {orientation:f.orientation,slope,avgH:+f.avgH.toFixed(1),
+              pct,n:f.n,slopeStd,confidence:+conf.toFixed(2),status:"auto"};
+    });
 }
 
 // ─── analyzeDHM: met diagnostiek, plat-dak-detectie en fallback ──────────────
@@ -193,11 +241,14 @@ async function analyzeDHM(bc){
   const lats=bc.map(p=>p[0]),lngs=bc.map(p=>p[1]);
   const swL=wgs84ToLambert72(Math.min(...lats)-.0001,Math.min(...lngs)-.0001);
   const neL=wgs84ToLambert72(Math.max(...lats)+.0001,Math.max(...lngs)+.0001);
-  const pad=6,[xmin,ymin,xmax,ymax]=[swL[0]-pad,swL[1]-pad,neL[0]+pad,neL[1]+pad];
-  // Min. 20×20 pixels voor betrouwbare slope-detectie (was min 8)
-  const mw=Math.min(80,Math.max(20,Math.round(xmax-xmin)));
-  const mh=Math.min(80,Math.max(20,Math.round(ymax-ymin)));
-  const cell=(xmax-xmin)/mw;
+  const pad=5,[xmin,ymin,xmax,ymax]=[swL[0]-pad,swL[1]-pad,neL[0]+pad,neL[1]+pad];
+  // Gebruik 1m/pixel resolutie (native DHM Vlaanderen II resolutie)
+  // Maximaal 120×120px om WCS niet te overbelasten
+  // Dit is cruciaal: te weinig pixels → Horn's methode geeft te steile hellingen
+  const bboxW=xmax-xmin, bboxH=ymax-ymin;
+  const mw=Math.min(120,Math.max(20,Math.round(bboxW)));  // 1px per meter
+  const mh=Math.min(120,Math.max(20,Math.round(bboxH)));  // 1px per meter
+  const cell=bboxW/mw; // Cel in meter — idealiter ~1m
 
   console.info(`[ZonneDak] DHM analyse: bbox ${Math.round(xmax-xmin)}×${Math.round(ymax-ymin)}m, raster ${mw}×${mh}px, cel ${cell.toFixed(2)}m`);
 
