@@ -188,22 +188,80 @@ function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts){
   .filter(b=>b&&b.pct>=8).sort((a,b)=>b.n-a.n).slice(0,4);
 }
 
-// FIX BUG-04: gebouwcontour doorgeven aan computeRoofFaces voor clipping
+// ─── analyzeDHM: met diagnostiek, plat-dak-detectie en fallback ──────────────
 async function analyzeDHM(bc){
   const lats=bc.map(p=>p[0]),lngs=bc.map(p=>p[1]);
   const swL=wgs84ToLambert72(Math.min(...lats)-.0001,Math.min(...lngs)-.0001);
   const neL=wgs84ToLambert72(Math.max(...lats)+.0001,Math.max(...lngs)+.0001);
   const pad=6,[xmin,ymin,xmax,ymax]=[swL[0]-pad,swL[1]-pad,neL[0]+pad,neL[1]+pad];
-  const mw=Math.min(60,Math.max(8,Math.round(xmax-xmin)));
-  const mh=Math.min(60,Math.max(8,Math.round(ymax-ymin)));
+  // Min. 20×20 pixels voor betrouwbare slope-detectie (was min 8)
+  const mw=Math.min(80,Math.max(20,Math.round(xmax-xmin)));
+  const mh=Math.min(80,Math.max(20,Math.round(ymax-ymin)));
   const cell=(xmax-xmin)/mw;
-  const[dsmR,dtmR]=await Promise.all([fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DSM_1m"),fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DTM_1m")]);
-  // FIX: converteer gebouwcontour [lat,lng] → Lambert72 [x,y] → rastercoördinaten [col,row]
+
+  console.info(`[ZonneDak] DHM analyse: bbox ${Math.round(xmax-xmin)}×${Math.round(ymax-ymin)}m, raster ${mw}×${mh}px, cel ${cell.toFixed(2)}m`);
+
+  const[dsmR,dtmR]=await Promise.all([
+    fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DSM_1m"),
+    fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DTM_1m")
+  ]);
+
+  // ── Diagnostiek: controleer of DSM en DTM werkelijk verschillen ──
+  const validPairs=[];
+  for(let i=0;i<dsmR.data.length;i++){
+    if(!isNaN(dsmR.data[i])&&!isNaN(dtmR.data[i])){
+      validPairs.push(dsmR.data[i]-dtmR.data[i]);
+    }
+  }
+  const maxRelH=validPairs.length?Math.max(...validPairs):0;
+  const avgRelH=validPairs.length?validPairs.reduce((a,v)=>a+v,0)/validPairs.length:0;
+  const aboveRoof=validPairs.filter(v=>v>=1.5).length;
+
+  console.info(`[ZonneDak] DHM diagnostiek: ${validPairs.length} pixels, maxRelH=${maxRelH.toFixed(2)}m, avgRelH=${avgRelH.toFixed(2)}m, boven 1.5m: ${aboveRoof}`);
+
+  // ── Detecteer plat dak (DSM≈DTM maar gebouw WEL aanwezig) ──────────────────
+  // Als maxRelH > 0.5m maar < 1.5m: gebouw aanwezig maar plat dak (drainage-helling)
+  // Als maxRelH < 0.1m: WCS geeft identieke data of echt maaiveld
+  if(aboveRoof===0){
+    const heeftGebouwhoogte=maxRelH>0.3; // Gebouw hoogte gedetecteerd, maar onder drempel
+    if(heeftGebouwhoogte){
+      // Plat dak gedetecteerd — geef één vlak terug met 0-5° helling
+      const gemH=+avgRelH.toFixed(1);
+      console.info(`[ZonneDak] Plat dak gedetecteerd: maxRelH=${maxRelH.toFixed(2)}m`);
+      return [{
+        orientation:"Z",slope:3,avgH:gemH,pct:100,n:aboveRoof||validPairs.length,
+        slopeStd:1,confidence:0.55,status:"auto",isFlatRoof:true,
+        maxRelH:+maxRelH.toFixed(2)
+      }];
+    }
+    // maxRelH < 0.3m: WCS probleem of geen gebouw op deze locatie
+    const dsmUniek=new Set(dsmR.data.filter(v=>!isNaN(v)).map(v=>Math.round(v*10))).size;
+    const dtmUniek=new Set(dtmR.data.filter(v=>!isNaN(v)).map(v=>Math.round(v*10))).size;
+    if(dsmUniek<5){
+      throw new Error(`WCS geeft constante waarden terug (DSM: ${dsmUniek} unieke waarden). Probeer later opnieuw.`);
+    }
+    throw new Error(`DSM≈DTM: hoogteverschil < 0.3m (max ${maxRelH.toFixed(2)}m). Plat maaiveld of WCS-probleem. Stel helling manueel in.`);
+  }
+
+  // Gebouwcontour omzetten naar rastercoördinaten
   const bldRasterPts=bc.map(([lat,lng])=>{
     const [lx,ly]=wgs84ToLambert72(lat,lng);
     return [(lx-xmin)/cell,(ly-ymin)/cell];
   });
-  return computeRoofFaces(dsmR.data,dtmR.data,dsmR.w,dsmR.h,cell,bldRasterPts);
+
+  const faces=computeRoofFaces(dsmR.data,dtmR.data,dsmR.w,dsmR.h,cell,bldRasterPts);
+
+  // Als geen hellende vlakken gevonden maar gebouwhoogte WEL aanwezig → plat dak
+  if(!faces||faces.length===0){
+    console.info(`[ZonneDak] Geen hellende vlakken (slope<6°), maar gebouwhoogte=${maxRelH.toFixed(2)}m → plat dak`);
+    return [{
+      orientation:"Z",slope:3,avgH:+avgRelH.toFixed(1),pct:100,n:aboveRoof,
+      slopeStd:1,confidence:0.6,status:"auto",isFlatRoof:true,
+      maxRelH:+maxRelH.toFixed(2)
+    }];
+  }
+
+  return faces;
 }
 
 // ─── Polygoon helpers ────────────────────────────────────────────────────────
@@ -1232,9 +1290,25 @@ export default function App(){
     setDhmStatus("loading");
     try{
       const faces=await analyzeDHM(bc);
-      if(faces?.length>0){setDetectedFaces(faces);setSelFaceIdx(0);setOrientation(faces[0].orientation);setSlope(faces[0].slope);setDhmStatus("ok");}
-      else{setDhmStatus("error");setDhmError("Geen dakvlakken gevonden in LiDAR data (plat dak of kleine bounding box).");}
-    }catch(e){console.error("DHM:",e);setDhmStatus("error");setDhmError(e.message||"WCS endpoint niet bereikbaar");}
+      if(faces?.length>0){
+        setDetectedFaces(faces);
+        setSelFaceIdx(0);
+        setOrientation(faces[0].orientation);
+        setSlope(faces[0].slope);
+        setDhmStatus("ok");
+        // Log plat-dak detectie
+        if(faces[0].isFlatRoof){
+          console.info("[ZonneDak] Plat dak auto-gedetecteerd: helling ingesteld op 3°");
+        }
+      } else {
+        setDhmStatus("error");
+        setDhmError("Geen dakvlakken gevonden. Stel helling & richting handmatig in.");
+      }
+    }catch(e){
+      console.error("DHM:",e);
+      setDhmStatus("error");
+      setDhmError(e.message||"WCS endpoint niet bereikbaar");
+    }
   };
 
   const calculate=async()=>{
@@ -1350,10 +1424,16 @@ export default function App(){
           </div>}
           {dhmStatus==="ok"&&detectedFaces&&<div>
             <div className="info-box dhm-ok" style={{marginBottom:5}}>
-              <strong>✅ {detectedFaces.length} dakvlak(ken) gedetecteerd via LiDAR</strong>
-              <span style={{display:"block",marginTop:3,fontSize:7,color:"var(--muted)"}}>
-                Gebouwcontour-geclipped · Horn's methode · EPSG:31370
-              </span>
+              {detectedFaces[0]?.isFlatRoof
+                ?<><strong>🏢 Plat dak gedetecteerd via LiDAR</strong>
+                  <span style={{display:"block",marginTop:3,fontSize:7,color:"var(--muted)"}}>
+                    Gebouwhoogte: {detectedFaces[0].maxRelH}m · Helling auto op 3° · EPSG:31370
+                  </span></>
+                :<><strong>✅ {detectedFaces.length} dakvlak(ken) gedetecteerd via LiDAR</strong>
+                  <span style={{display:"block",marginTop:3,fontSize:7,color:"var(--muted)"}}>
+                    Gebouwcontour-geclipped · Horn's methode · EPSG:31370
+                  </span></>
+              }
             </div>
             <div className="face-grid">
               {detectedFaces.map((f,i)=>{
@@ -1362,19 +1442,18 @@ export default function App(){
                 const qC=isGood?q[0]:q[1];
                 const conf=f.confidence??0;
                 const confColor=conf>=0.7?"var(--green)":conf>=0.4?"var(--amber)":"var(--red)";
-                // FIX BUG-03: toon 3D schuine oppervlakte per vlak
                 const face2d=(detectedArea||80)*(f.pct/100);
                 const face3d=compute3dArea(face2d,f.slope);
                 return(
                   <button key={i} className={`face-btn ${selFaceIdx===i?"active":""}`} onClick={()=>selectFace(i,detectedFaces)}>
-                    <span className="fb-main">{f.orientation} · {f.slope}°</span>
-                    <span className="fb-sub">{f.pct}% · {f.avgH}m hoogte</span>
-                    {/* FIX: toon 3D-oppervlakte en confidence */}
+                    <span className="fb-main">{f.isFlatRoof?"🏢 ":""}{f.orientation} · {f.slope}°</span>
+                    <span className="fb-sub">{f.pct}% · {f.avgH}m hoogte{f.maxRelH?` · max ${f.maxRelH}m`:""}</span>
                     <span style={{fontSize:7,color:"var(--blue)",display:"block",marginTop:1}}>
                       3D: {face3d.toFixed(0)}m² <span style={{color:"var(--muted)"}}>(2D: {face2d.toFixed(0)}m²)</span>
                     </span>
-                    <span style={{fontSize:7,color:selFaceIdx===i?"var(--alpha)":qC.c,display:"block"}}>{qC.l}</span>
-                    {/* Confidence indicator */}
+                    <span style={{fontSize:7,color:selFaceIdx===i?"var(--alpha)":qC.c,display:"block"}}>
+                      {f.isFlatRoof?"Plat dak — pas helling aan indien nodig":qC.l}
+                    </span>
                     <span style={{fontSize:7,color:confColor,display:"block"}}>
                       {conf>=0.7?"✅":conf>=0.4?"⚠️":"❌"} conf: {Math.round(conf*100)}%
                       {conf<0.4&&" — controleer manueel"}
