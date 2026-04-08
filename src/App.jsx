@@ -148,19 +148,6 @@ async function fetchWCS(xmin,ymin,xmax,ymax,mw,mh,cov){
 // ─── Hulpfuncties voor dakanalyse ────────────────────────────────────────────
 
 // 3×3 box-filter op DSM (vermindert ruis voor aspectbepaling)
-function smoothDSM(dsmD,w,h){
-  const out=new Float32Array(dsmD.length).fill(NaN);
-  for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
-    let s=0,n=0;
-    for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){
-      const v=dsmD[(y+dy)*w+(x+dx)];
-      if(!isNaN(v)){s+=v;n++;}
-    }
-    if(n>4) out[y*w+x]=s/n;
-  }
-  return out;
-}
-
 // PCA op gebouwpolygoon → kortste as = breedte dwars op de nok
 function buildingWidthFromPolygon(lamPts){
   if(lamPts.length<3) return 10; // fallback
@@ -179,135 +166,97 @@ function buildingWidthFromPolygon(lamPts){
   return Math.min(w1,w2); // kortste dimensie = breedte dwars op de nok
 }
 
-function circularMean(angles){
-  const s=angles.reduce((a,v)=>a+Math.sin(v*Math.PI/180),0);
-  const c=angles.reduce((a,v)=>a+Math.cos(v*Math.PI/180),0);
-  return((Math.atan2(s,c)*180/Math.PI)+360)%360;
-}
-function circularDist(a,b){
-  return Math.abs(((a-b+180+360)%360)-180);
-}
-
 // ─── Circulaire k-means met exhaustieve initialisatie ────────────────────────
 // Lokale minima zijn het hoofdprobleem: als centroids verkeerd starten,
 // splitst k-means één helling in twee clusters.
 // Oplossing: probeer ALLE 8 startposities (elke 45°) en kies de beste.
 // 8 × 30 iteraties = triviaal goedkoop voor <500 punten.
-function runKMeans(pts,centroids,maxIter){
-  const k=centroids.length;let c=[...centroids];let clusters=null;
-  for(let iter=0;iter<maxIter;iter++){
-    clusters=Array.from({length:k},()=>[]);
-    pts.forEach(p=>{let minD=Infinity,minK=0;c.forEach((ci,ki)=>{const d=circularDist(p.aspect,ci);if(d<minD){minD=d;minK=ki;}});clusters[minK].push(p);});
-    const newC=clusters.map((cl,ki)=>cl.length?circularMean(cl.map(p=>p.aspect)):c[ki]);
-    if(c.every((ci,i)=>circularDist(ci,newC[i])<0.3)) break;
-    c=newC;
+// ─── Circulaire hulpfuncties (niet meer gebruikt voor aspect-clustering) ─────
+// ─── computeRoofFaces: GRB-footprint voor aspect, LiDAR voor slope ─────────────
+// Kernprincipe: bij zachte hellingen (≤30°) is de DSM-gradiënt te zwak om
+// betrouwbaar aspect te bepalen (SNR < 2 bij 15°, DHM-ruis ±15cm).
+// Oplossing: gebruik de GEBOUWCONTOUR (GRB) voor aspect, LiDAR enkel voor slope.
+//
+// Algoritme:
+//   1. PCA van GRB-polygoon → langste as = nokrichting
+//   2. De twee dakhellingen liggen HAAKS op de nokrichting
+//   3. Elk interior-dakpixel wordt toegewezen aan links/rechts van de nokas
+//   4. Slope via hoogteprofiel (p10-p90 relH / halve breedte) — stabiel bij elke helling
+//
+// Dit werkt voor elke helling ≥ 3° en elke gebouworiëntatie.
+function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts,buildingWidthM,ridgeAngleDeg){
+  // ridgeAngleDeg = hoek van de nok (langste as) in graden t.o.v. Noord (0–180°)
+  // De twee dakhellingen zijn haaks: ridgeAngleDeg+90 en ridgeAngleDeg-90
+
+  const relHVals=[], pixelSides=[]; // 'left' of 'right' van de nok
+
+  // Rotatiematrix: projecteer elk pixel op de nokas
+  const ridgeRad=ridgeAngleDeg*Math.PI/180;
+  const cosR=Math.cos(ridgeRad), sinR=Math.sin(ridgeRad);
+  // Centroid van rastercoördinaten binnen gebouwcontour
+  let sumX=0,sumY=0,cnt=0;
+  for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
+    if(bldRasterPts&&bldRasterPts.length>=3&&!pointInPoly([x,y],bldRasterPts)) continue;
+    const i=y*w+x,relH=dsmD[i]-dtmD[i];
+    if(relH<1.5||relH>40||isNaN(dsmD[i])||isNaN(dtmD[i])) continue;
+    sumX+=x;sumY+=y;cnt++;
   }
-  const variance=clusters.reduce((sum,cl,ki)=>sum+cl.reduce((s,p)=>s+circularDist(p.aspect,c[ki])**2,0),0)/(pts.length||1);
-  return{centroids:c,clusters,variance};
-}
-function kMeansAspect(pts,k,maxIter=30){
-  if(pts.length<k) return null;
-  let best=null;
-  if(k===2){
-    for(let s=0;s<360;s+=45){
-      const r=runKMeans(pts,[s,(s+180)%360],maxIter);
-      if(!best||r.variance<best.variance) best=r;
-    }
-  } else {
-    for(let offset=0;offset<90;offset+=22.5){
-      const c=Array.from({length:k},(_,i)=>(offset+i*(360/k))%360);
-      const r=runKMeans(pts,c,maxIter);
-      if(!best||r.variance<best.variance) best=r;
-    }
-  }
-  return best;
-}
-
-// buildFacesFromClusters gebruikt de GLOBALE hellingsschatting (hoogteprofiel-methode)
-// ipv per-pixel slope, wat onbetrouwbaar is voor zachte hellingen
-function buildFacesFromClusters(result,total,globalSlope){
-  return result.clusters.map((cl,ki)=>{
-    if(cl.length<5) return null;
-    const pct=cl.length/total;
-    if(pct<0.08) return null;
-    const avgH=cl.reduce((a,p)=>a+p.relH,0)/cl.length;
-    const aspect=result.centroids[ki];
-    const dirIdx=Math.round(aspect/45)%8;
-    const slope=globalSlope; // Robuuste schatting op basis van hoogteprofiel
-    const conf=Math.min(1,Math.max(0,0.5*Math.min(pct/0.2,1)+0.5*(slope>=5&&slope<=65?1:0.3)));
-    return{orientation:DIRS8[dirIdx],slope,avgH:+avgH.toFixed(1),
-           pct:Math.round(pct*100),n:cl.length,slopeStd:0,
-           confidence:+conf.toFixed(2),status:"auto",aspectDeg:+aspect.toFixed(1)};
-  }).filter(Boolean);
-}
-
-// ─── computeRoofFaces: aspect via uitgevlakt DSM + slope via hoogteprofiel ───
-// Kernprincipe:
-//   ASPECT  → Horn's methode op uitgevlakt DSM (ruis in richting ≪ ruis in magnitude)
-//   SLOPE   → hoogtebereik (p10–p90 relH) / halve gebouwbreedte (robuust voor zachte daken)
-// Dit werkt voor hellingen vanaf ~5° ipv de vorige aanpak (betrouwbaar > 25°).
-function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts,buildingWidthM){
-  // Stap 1: vlak de DSM uit voor stabiele aspectbepaling
-  const sDSM=smoothDSM(dsmD,w,h);
-
-  const aspectPts=[]; // voor k-means aspect
-  const relHVals=[];  // voor slope via hoogteprofiel
+  if(cnt<10) return null;
+  const cxR=sumX/cnt,cyR=sumY/cnt;
 
   for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
-    // Clip op gebouwcontour
     if(bldRasterPts&&bldRasterPts.length>=3&&!pointInPoly([x,y],bldRasterPts)) continue;
-    const i=y*w+x;
-    const relH=dsmD[i]-dtmD[i];
+    const i=y*w+x,relH=dsmD[i]-dtmD[i];
     if(relH<1.5||relH>40||isNaN(dsmD[i])||isNaN(dtmD[i])) continue;
-
-    relHVals.push(relH); // bewaar voor hoogteprofiel-slope
-
-    // Controleer dat alle buren ook op het dak liggen (geen randpixels)
-    const allOnRoof=[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]
-      .every(([dy,dx])=>{const ni=(y+dy)*w+(x+dx);const rh=dsmD[ni]-dtmD[ni];return!isNaN(rh)&&rh>=1.0;});
-    if(!allOnRoof) continue;
-
-    // Aspect via Horn op uitgevlakt DSM (geen slope-filter — gradiëntrichting is stabiel)
-    const sv=(dy,dx)=>sDSM[(y+dy)*w+(x+dx)];
-    const[a,b,c,d,f,g,hh,ii]=[sv(-1,-1),sv(-1,0),sv(-1,1),sv(0,-1),sv(0,1),sv(1,-1),sv(1,0),sv(1,1)];
-    if([a,b,c,d,f,g,hh,ii].some(isNaN)) continue;
-    const dzdx=((c+2*f+ii)-(a+2*d+g))/8; // gradiënt in hoogte/pixel (geen celSize nodig voor richting)
-    const dzdy=((g+2*hh+ii)-(a+2*b+c))/8;
-    const gradMag=Math.sqrt(dzdx**2+dzdy**2);
-    if(gradMag<0.02) continue; // te vlak voor betrouwbare aspectbepaling
-    const aspect=(90-Math.atan2(-dzdy,dzdx)*180/Math.PI+360)%360;
-    aspectPts.push({aspect,relH});
+    relHVals.push(relH);
+    // Project pixel op de dwarsas van de nok (loodrechte component)
+    // In GeoTIFF: Y groeit omlaag, dus Y-as is gespiegeld t.o.v. geografisch noord
+    const dx=x-cxR, dy=cyR-y; // dy gespiegeld zodat +dy = Noord
+    // Dwarscomponent (haaks op nok): positief = rechts van nok, negatief = links
+    const crossComp=-dx*sinR+dy*cosR;
+    pixelSides.push(crossComp>=0?'right':'left');
   }
 
-  if(aspectPts.length<10||relHVals.length<10) return null;
+  if(relHVals.length<10) return null;
 
-  // Stap 2: schat helling via hoogteprofiel (onafhankelijk van pixelruis)
-  // Formule: slope = atan((p90_relH - p10_relH) / (buildingWidth / 2))
-  // Dit werkt voor elke hellingshoek ≥ ~3°, ook bij ruizige DSM
-  relHVals.sort((a,b)=>a-b);
-  const p10=relHVals[Math.floor(relHVals.length*0.10)];
-  const p90=relHVals[Math.floor(relHVals.length*0.90)];
+  // Slope via hoogteprofiel: p10→p90 hoogtebereik / halve breedte
+  const sorted=[...relHVals].sort((a,b)=>a-b);
+  const p10=sorted[Math.floor(sorted.length*0.10)];
+  const p90=sorted[Math.floor(sorted.length*0.90)];
   const heightRange=p90-p10;
   const halfWidth=(buildingWidthM||20)/2;
-  const globalSlope=Math.max(3,Math.round(Math.atan(heightRange/halfWidth)*180/Math.PI));
-  console.info(`[ZonneDak] Hoogteprofiel: p10=${p10.toFixed(2)}m p90=${p90.toFixed(2)}m range=${heightRange.toFixed(2)}m halfWidth=${halfWidth.toFixed(1)}m → slope=${globalSlope}°`);
+  const slope=Math.max(3,Math.min(60,Math.round(Math.atan(heightRange/halfWidth)*180/Math.PI)));
+  console.info(`[ZonneDak] Hoogteprofiel: p10=${p10.toFixed(2)}m p90=${p90.toFixed(2)}m range=${heightRange.toFixed(2)}m halfW=${halfWidth.toFixed(1)}m slope=${slope}°`);
 
-  const total=aspectPts.length;
+  // Twee vlakken: rechts en links van de nok
+  const leftN=pixelSides.filter(s=>s==='left').length;
+  const rightN=pixelSides.filter(s=>s==='right').length;
+  const total=leftN+rightN;
 
-  // Stap 3: k-means op aspect voor vlakoriëntatie
-  const r2=kMeansAspect(aspectPts,2);
-  const faces2=r2?buildFacesFromClusters(r2,total,globalSlope):[];
-  const minPct2=faces2.length>=2?Math.min(...faces2.map(f=>f.pct)):0;
-  if(faces2.length>=2&&minPct2>=10){
-    console.info(`[ZonneDak] k=2 zadeldak: ${faces2.map(f=>`${f.orientation}·${f.slope}°·${f.pct}%`).join(' / ')}`);
-    return faces2.sort((a,b)=>b.n-a.n);
+  // Aspect van elk vlak: haaks op nokrichting
+  // "rechts" van nok kijkt in richting ridgeAngleDeg+90°, "links" in ridgeAngleDeg-90°
+  const rightAspect=((ridgeAngleDeg+90)%360+360)%360;
+  const leftAspect =((ridgeAngleDeg-90)%360+360)%360;
+
+  const faces=[];
+  if(rightN>=total*0.08){
+    const pct=Math.round(rightN/total*100);
+    const dirIdx=Math.round(rightAspect/45)%8;
+    const conf=Math.min(1,Math.max(0,0.6*(pct/50)+0.4*(slope>=5&&slope<=60?1:0.3)));
+    faces.push({orientation:DIRS8[dirIdx],slope,avgH:+((p10+p90)/2).toFixed(1),
+                pct,n:rightN,slopeStd:0,confidence:+conf.toFixed(2),
+                status:"auto",aspectDeg:+rightAspect.toFixed(1)});
   }
-  const r4=kMeansAspect(aspectPts,4);
-  const faces4=r4?buildFacesFromClusters(r4,total,globalSlope).filter(f=>f.pct>=8):[];
-  if(faces4.length>=2){
-    return faces4.sort((a,b)=>b.n-a.n).slice(0,4);
+  if(leftN>=total*0.08){
+    const pct=Math.round(leftN/total*100);
+    const dirIdx=Math.round(leftAspect/45)%8;
+    const conf=Math.min(1,Math.max(0,0.6*(pct/50)+0.4*(slope>=5&&slope<=60?1:0.3)));
+    faces.push({orientation:DIRS8[dirIdx],slope,avgH:+((p10+p90)/2).toFixed(1),
+                pct,n:leftN,slopeStd:0,confidence:+conf.toFixed(2),
+                status:"auto",aspectDeg:+leftAspect.toFixed(1)});
   }
-  return(faces2.length?faces2:faces4).sort((a,b)=>b.n-a.n);
+  console.info(`[ZonneDak] GRB-aspect: nok=${ridgeAngleDeg.toFixed(1)}° → vlakken: ${faces.map(f=>`${f.orientation}·${f.slope}°·${f.pct}%`).join(' / ')}`);
+  return faces.length>=1?faces.sort((a,b)=>b.n-a.n):null;
 }
 
 // ─── analyzeDHM: met diagnostiek, plat-dak-detectie en fallback ──────────────
@@ -360,12 +309,25 @@ async function analyzeDHM(bc){
     return[(lx-xmin)/cell,(ymax-ly)/cell]; // ← Y-flip gecorrigeerd
   });
 
-  // Gebouwbreedte via PCA op Lambert72 polygoon (voor hoogteprofiel-slope)
+  // GRB-polygoon → gebouwbreedte + nokrichting via PCA
   const lamPts=bc.map(([lat,lng])=>wgs84ToLambert72(lat,lng));
   const buildingWidthM=buildingWidthFromPolygon(lamPts);
-  console.info(`[ZonneDak] Gebouwbreedte PCA: ${buildingWidthM.toFixed(1)}m`);
 
-  const faces=computeRoofFaces(dsmR.data,dtmR.data,dsmR.w,dsmR.h,cell,bldRasterPts,buildingWidthM);
+  // Nokrichting = langste as van de gebouwcontour (PCA)
+  // In Lambert72: X = Oost, Y = Noord. Hoek t.o.v. Noord (geografisch azimut).
+  const cx2=lamPts.reduce((s,p)=>s+p[0],0)/lamPts.length;
+  const cy2=lamPts.reduce((s,p)=>s+p[1],0)/lamPts.length;
+  let cxx=0,cxy=0,cyy=0;
+  lamPts.forEach(([x,y])=>{const dx=x-cx2,dy=y-cy2;cxx+=dx*dx;cxy+=dx*dy;cyy+=dy*dy;});
+  cxx/=lamPts.length;cxy/=lamPts.length;cyy/=lamPts.length;
+  // Eigenvector van grootste eigenwaarde = langste as (nokrichting)
+  // Hoek van deze as t.o.v. de X-as (Oost): atan2(eigvec_y, eigvec_x)
+  const pcaAng=Math.atan2(2*cxy,cxx-cyy)/2; // hoek t.o.v. Oost in radialen
+  // Geografisch azimut (t.o.v. Noord, met de klok mee): 90° - hoek_tov_Oost
+  const ridgeAngleDeg=((90-pcaAng*180/Math.PI)+360)%180; // 0–180° (nok is bidirectioneel)
+  console.info(`[ZonneDak] PCA: gebouwbreedte=${buildingWidthM.toFixed(1)}m nokrichting=${ridgeAngleDeg.toFixed(1)}°`);
+
+  const faces=computeRoofFaces(dsmR.data,dtmR.data,dsmR.w,dsmR.h,cell,bldRasterPts,buildingWidthM,ridgeAngleDeg);
 
   if(!faces||faces.length===0){
     return[{orientation:"Z",slope:3,avgH:+avgRelH.toFixed(1),pct:100,n:aboveRoof,
