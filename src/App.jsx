@@ -193,6 +193,12 @@ function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts,buildingWidthM,rid
   // Rotatiematrix: projecteer elk pixel op de nokas
   const ridgeRad=ridgeAngleDeg*Math.PI/180;
   const cosR=Math.cos(ridgeRad), sinR=Math.sin(ridgeRad);
+  // Loodrechte component op de nokrichting (geografisch):
+  // Nokrichting (t.o.v. Noord, kloksgewijs): eenheidsvector = (sinR, cosR) in (Oost, Noord)
+  // Rechts-loodrechte (90° kloksgewijs): (cosR, -sinR) in (Oost, Noord)
+  // dx = Oost-component (positief = Oost), dy = Noord-component (positief = Noord)
+  // Projectie op rechts-loodrechte: crossComp = dx*cosR - dy*sinR
+  // Positief = rechts van nok (Oost-zijde voor NNO-nok), negatief = links (West-zijde)
   // Centroid van rastercoördinaten binnen gebouwcontour
   let sumX=0,sumY=0,cnt=0;
   for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
@@ -213,7 +219,7 @@ function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts,buildingWidthM,rid
     // In GeoTIFF: Y groeit omlaag, dus Y-as is gespiegeld t.o.v. geografisch noord
     const dx=x-cxR, dy=cyR-y; // dy gespiegeld zodat +dy = Noord
     // Dwarscomponent (haaks op nok): positief = rechts van nok, negatief = links
-    const crossComp=-dx*sinR+dy*cosR;
+    const crossComp=dx*cosR-dy*sinR; // correct: loodrecht op nok
     pixelSides.push(crossComp>=0?'right':'left');
   }
 
