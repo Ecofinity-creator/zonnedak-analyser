@@ -145,137 +145,169 @@ async function fetchWCS(xmin,ymin,xmax,ymax,mw,mh,cov){
   throw new Error(lastErr||"Alle WCS endpoints mislukt");
 }
 
-// ─── computeRoofFaces: circulaire k-means i.p.v. 45°-histogram ───────────────
-// Het 8-bins histogram werkt slecht voor schuingeoriënteerde gebouwen:
-// een zadeldak op een NO-ZW as wordt gesplitst over 3–4 bins.
-// K-means op aspect-waarden vindt de dominante richtingen ongeacht rotatie.
+// ─── Hulpfuncties voor dakanalyse ────────────────────────────────────────────
+
+// 3×3 box-filter op DSM (vermindert ruis voor aspectbepaling)
+function smoothDSM(dsmD,w,h){
+  const out=new Float32Array(dsmD.length).fill(NaN);
+  for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
+    let s=0,n=0;
+    for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){
+      const v=dsmD[(y+dy)*w+(x+dx)];
+      if(!isNaN(v)){s+=v;n++;}
+    }
+    if(n>4) out[y*w+x]=s/n;
+  }
+  return out;
+}
+
+// PCA op gebouwpolygoon → kortste as = breedte dwars op de nok
+function buildingWidthFromPolygon(lamPts){
+  if(lamPts.length<3) return 10; // fallback
+  const cx=lamPts.reduce((s,p)=>s+p[0],0)/lamPts.length;
+  const cy=lamPts.reduce((s,p)=>s+p[1],0)/lamPts.length;
+  let cxx=0,cxy=0,cyy=0;
+  lamPts.forEach(([x,y])=>{const dx=x-cx,dy=y-cy;cxx+=dx*dx;cxy+=dx*dy;cyy+=dy*dy;});
+  cxx/=lamPts.length;cxy/=lamPts.length;cyy/=lamPts.length;
+  // Principale assen via eigenvectoren 2×2 matrix
+  const ang=Math.atan2(2*cxy,cxx-cyy)/2;
+  // Projecteer alle punten op beide assen en neem de breedte van de kortste as
+  const proj1=lamPts.map(([x,y])=>(x-cx)*Math.cos(ang)+(y-cy)*Math.sin(ang));
+  const proj2=lamPts.map(([x,y])=>-(x-cx)*Math.sin(ang)+(y-cy)*Math.cos(ang));
+  const w1=Math.max(...proj1)-Math.min(...proj1);
+  const w2=Math.max(...proj2)-Math.min(...proj2);
+  return Math.min(w1,w2); // kortste dimensie = breedte dwars op de nok
+}
+
 function circularMean(angles){
-  // Gemiddelde van hoeken (in graden) op de cirkel
   const s=angles.reduce((a,v)=>a+Math.sin(v*Math.PI/180),0);
   const c=angles.reduce((a,v)=>a+Math.cos(v*Math.PI/180),0);
   return((Math.atan2(s,c)*180/Math.PI)+360)%360;
 }
 function circularDist(a,b){
-  // Kortste afstand tussen twee hoeken op de cirkel (0–180)
   return Math.abs(((a-b+180+360)%360)-180);
 }
 
-function kMeansAspect(pts,k,maxIter=30){
-  if(pts.length<k) return null;
-
-  // Slimme initialisatie voor k=2: vind de twee meest tegenovergestelde richtingen
-  // (dichtstbij 180° van elkaar) → werkt goed voor zadeldaken
-  let centroids;
-  if(k===2){
-    // Bereken gewogen circulair gemiddelde per 45°-bin als startpunt
-    const bins=Array(8).fill(0);
-    pts.forEach(p=>{bins[Math.round(p.aspect/45)%8]+=1;});
-    const dominant=bins.indexOf(Math.max(...bins));
-    const domAsp=dominant*45;
-    // Centroid 1 = dominante richting, centroid 2 = tegenovergestelde richting
-    centroids=[domAsp,(domAsp+180)%360];
-  } else {
-    centroids=Array.from({length:k},(_,i)=>(360/k)*i);
-  }
-
-  let clusters=null;
+// ─── Circulaire k-means met exhaustieve initialisatie ────────────────────────
+// Lokale minima zijn het hoofdprobleem: als centroids verkeerd starten,
+// splitst k-means één helling in twee clusters.
+// Oplossing: probeer ALLE 8 startposities (elke 45°) en kies de beste.
+// 8 × 30 iteraties = triviaal goedkoop voor <500 punten.
+function runKMeans(pts,centroids,maxIter){
+  const k=centroids.length;let c=[...centroids];let clusters=null;
   for(let iter=0;iter<maxIter;iter++){
     clusters=Array.from({length:k},()=>[]);
-    pts.forEach(p=>{
-      let minD=Infinity,minK=0;
-      centroids.forEach((c,ki)=>{const d=circularDist(p.aspect,c);if(d<minD){minD=d;minK=ki;}});
-      clusters[minK].push(p);
-    });
-    const newC=clusters.map((cl,ki)=>{
-      if(!cl.length) return centroids[ki];
-      return circularMean(cl.map(p=>p.aspect));
-    });
-    if(centroids.every((c,i)=>circularDist(c,newC[i])<0.5)) break;
-    centroids=newC;
+    pts.forEach(p=>{let minD=Infinity,minK=0;c.forEach((ci,ki)=>{const d=circularDist(p.aspect,ci);if(d<minD){minD=d;minK=ki;}});clusters[minK].push(p);});
+    const newC=clusters.map((cl,ki)=>cl.length?circularMean(cl.map(p=>p.aspect)):c[ki]);
+    if(c.every((ci,i)=>circularDist(ci,newC[i])<0.3)) break;
+    c=newC;
   }
-  return{centroids,clusters};
+  const variance=clusters.reduce((sum,cl,ki)=>sum+cl.reduce((s,p)=>s+circularDist(p.aspect,c[ki])**2,0),0)/(pts.length||1);
+  return{centroids:c,clusters,variance};
+}
+function kMeansAspect(pts,k,maxIter=30){
+  if(pts.length<k) return null;
+  let best=null;
+  if(k===2){
+    for(let s=0;s<360;s+=45){
+      const r=runKMeans(pts,[s,(s+180)%360],maxIter);
+      if(!best||r.variance<best.variance) best=r;
+    }
+  } else {
+    for(let offset=0;offset<90;offset+=22.5){
+      const c=Array.from({length:k},(_,i)=>(offset+i*(360/k))%360);
+      const r=runKMeans(pts,c,maxIter);
+      if(!best||r.variance<best.variance) best=r;
+    }
+  }
+  return best;
 }
 
-function buildFacesFromClusters(result,total){
+// buildFacesFromClusters gebruikt de GLOBALE hellingsschatting (hoogteprofiel-methode)
+// ipv per-pixel slope, wat onbetrouwbaar is voor zachte hellingen
+function buildFacesFromClusters(result,total,globalSlope){
   return result.clusters.map((cl,ki)=>{
     if(cl.length<5) return null;
     const pct=cl.length/total;
     if(pct<0.08) return null;
-    const avgSlope=cl.reduce((a,p)=>a+p.slope,0)/cl.length;
-    const slopeStd=Math.sqrt(cl.reduce((a,p)=>a+(p.slope-avgSlope)**2,0)/cl.length);
     const avgH=cl.reduce((a,p)=>a+p.relH,0)/cl.length;
     const aspect=result.centroids[ki];
     const dirIdx=Math.round(aspect/45)%8;
-    const slope=Math.round(avgSlope);
-    const conf=Math.min(1,Math.max(0,
-      0.4*(1-Math.min(slopeStd/20,1))+
-      0.4*Math.min(pct/0.2,1)+
-      0.2*(slope>=10&&slope<=65?1:0.3)
-    ));
+    const slope=globalSlope; // Robuuste schatting op basis van hoogteprofiel
+    const conf=Math.min(1,Math.max(0,0.5*Math.min(pct/0.2,1)+0.5*(slope>=5&&slope<=65?1:0.3)));
     return{orientation:DIRS8[dirIdx],slope,avgH:+avgH.toFixed(1),
-           pct:Math.round(pct*100),n:cl.length,slopeStd:+slopeStd.toFixed(1),
+           pct:Math.round(pct*100),n:cl.length,slopeStd:0,
            confidence:+conf.toFixed(2),status:"auto",aspectDeg:+aspect.toFixed(1)};
   }).filter(Boolean);
 }
 
-function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts){
-  const pts=[];
+// ─── computeRoofFaces: aspect via uitgevlakt DSM + slope via hoogteprofiel ───
+// Kernprincipe:
+//   ASPECT  → Horn's methode op uitgevlakt DSM (ruis in richting ≪ ruis in magnitude)
+//   SLOPE   → hoogtebereik (p10–p90 relH) / halve gebouwbreedte (robuust voor zachte daken)
+// Dit werkt voor hellingen vanaf ~5° ipv de vorige aanpak (betrouwbaar > 25°).
+function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts,buildingWidthM){
+  // Stap 1: vlak de DSM uit voor stabiele aspectbepaling
+  const sDSM=smoothDSM(dsmD,w,h);
+
+  const aspectPts=[]; // voor k-means aspect
+  const relHVals=[];  // voor slope via hoogteprofiel
+
   for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
+    // Clip op gebouwcontour
     if(bldRasterPts&&bldRasterPts.length>=3&&!pointInPoly([x,y],bldRasterPts)) continue;
-    const i=y*w+x,relH=dsmD[i]-dtmD[i];
+    const i=y*w+x;
+    const relH=dsmD[i]-dtmD[i];
     if(relH<1.5||relH>40||isNaN(dsmD[i])||isNaN(dtmD[i])) continue;
 
-    // ── KERN FIX: Controleer alle 8 buurpixels ───────────────────────────────
-    // Een randpixel van het gebouw heeft buren op maaiveldniveau (relH ≈ 0m).
-    // Horn's methode ziet dan een overgang van bv. 8m → 0m over 1 pixel = 45-80°.
-    // Door te eisen dat alle buren ook boven maaiveld liggen (relH ≥ 1m)
-    // blijven enkel de ECHTE dakpixels over en worden wandovergangen gefilterd.
-    const vr=(dy,dx)=>{
-      const ni=(y+dy)*w+(x+dx);
-      return dsmD[ni]-dtmD[ni];
-    };
-    const neighborRelH=[vr(-1,-1),vr(-1,0),vr(-1,1),vr(0,-1),vr(0,1),vr(1,-1),vr(1,0),vr(1,1)];
-    if(neighborRelH.some(h=>isNaN(h)||h<1.0)) continue; // Randpixel → overslaan
+    relHVals.push(relH); // bewaar voor hoogteprofiel-slope
 
-    const v=(dy,dx)=>dsmD[(y+dy)*w+(x+dx)];
-    const[a,b,c,d,f,g,hh,ii]=[v(-1,-1),v(-1,0),v(-1,1),v(0,-1),v(0,1),v(1,-1),v(1,0),v(1,1)];
-    const dzdx=((c+2*f+ii)-(a+2*d+g))/(8*cellSize);
-    const dzdy=((g+2*hh+ii)-(a+2*b+c))/(8*cellSize);
-    const slope=Math.atan(Math.sqrt(dzdx**2+dzdy**2))*180/Math.PI;
-    // Behoud enkel realistische dakhellingen (5°–65°)
-    // Platte daken worden apart gedetecteerd in analyzeDHM
-    if(slope<5||slope>65) continue;
-    pts.push({slope,aspect:(90-Math.atan2(-dzdy,dzdx)*180/Math.PI+360)%360,relH});
+    // Controleer dat alle buren ook op het dak liggen (geen randpixels)
+    const allOnRoof=[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]
+      .every(([dy,dx])=>{const ni=(y+dy)*w+(x+dx);const rh=dsmD[ni]-dtmD[ni];return!isNaN(rh)&&rh>=1.0;});
+    if(!allOnRoof) continue;
+
+    // Aspect via Horn op uitgevlakt DSM (geen slope-filter — gradiëntrichting is stabiel)
+    const sv=(dy,dx)=>sDSM[(y+dy)*w+(x+dx)];
+    const[a,b,c,d,f,g,hh,ii]=[sv(-1,-1),sv(-1,0),sv(-1,1),sv(0,-1),sv(0,1),sv(1,-1),sv(1,0),sv(1,1)];
+    if([a,b,c,d,f,g,hh,ii].some(isNaN)) continue;
+    const dzdx=((c+2*f+ii)-(a+2*d+g))/8; // gradiënt in hoogte/pixel (geen celSize nodig voor richting)
+    const dzdy=((g+2*hh+ii)-(a+2*b+c))/8;
+    const gradMag=Math.sqrt(dzdx**2+dzdy**2);
+    if(gradMag<0.02) continue; // te vlak voor betrouwbare aspectbepaling
+    const aspect=(90-Math.atan2(-dzdy,dzdx)*180/Math.PI+360)%360;
+    aspectPts.push({aspect,relH});
   }
-  if(pts.length<10) return null;
 
-  const total=pts.length;
+  if(aspectPts.length<10||relHVals.length<10) return null;
 
-  // ── Stap 1: probeer k=2 (zadeldak — meest voorkomend in Vlaanderen) ──────────
-  const r2=kMeansAspect(pts,2);
-  const faces2=r2?buildFacesFromClusters(r2,total):[];
+  // Stap 2: schat helling via hoogteprofiel (onafhankelijk van pixelruis)
+  // Formule: slope = atan((p90_relH - p10_relH) / (buildingWidth / 2))
+  // Dit werkt voor elke hellingshoek ≥ ~3°, ook bij ruizige DSM
+  relHVals.sort((a,b)=>a-b);
+  const p10=relHVals[Math.floor(relHVals.length*0.10)];
+  const p90=relHVals[Math.floor(relHVals.length*0.90)];
+  const heightRange=p90-p10;
+  const halfWidth=(buildingWidthM||20)/2;
+  const globalSlope=Math.max(3,Math.round(Math.atan(heightRange/halfWidth)*180/Math.PI));
+  console.info(`[ZonneDak] Hoogteprofiel: p10=${p10.toFixed(2)}m p90=${p90.toFixed(2)}m range=${heightRange.toFixed(2)}m halfWidth=${halfWidth.toFixed(1)}m → slope=${globalSlope}°`);
 
-  // k=2 is goed als:
-  //   - Beide vlakken minstens 15% van pixels bevatten (symmetrisch dak)
-  //   - OF het kleinste vlak minstens 10% heeft (licht asymmetrisch, maar nog zadeldak)
+  const total=aspectPts.length;
+
+  // Stap 3: k-means op aspect voor vlakoriëntatie
+  const r2=kMeansAspect(aspectPts,2);
+  const faces2=r2?buildFacesFromClusters(r2,total,globalSlope):[];
   const minPct2=faces2.length>=2?Math.min(...faces2.map(f=>f.pct)):0;
   if(faces2.length>=2&&minPct2>=10){
-    // Goed zadeldak gedetecteerd — stop hier
     console.info(`[ZonneDak] k=2 zadeldak: ${faces2.map(f=>`${f.orientation}·${f.slope}°·${f.pct}%`).join(' / ')}`);
     return faces2.sort((a,b)=>b.n-a.n);
   }
-
-  // ── Stap 2: fallback naar k=4 voor complexere daken (schilddak, mansarde) ───
-  const r4=kMeansAspect(pts,4);
-  const faces4=r4?buildFacesFromClusters(r4,total).filter(f=>f.pct>=8):[];
-
+  const r4=kMeansAspect(aspectPts,4);
+  const faces4=r4?buildFacesFromClusters(r4,total,globalSlope).filter(f=>f.pct>=8):[];
   if(faces4.length>=2){
-    console.info(`[ZonneDak] k=4 complex dak: ${faces4.map(f=>`${f.orientation}·${f.slope}°·${f.pct}%`).join(' / ')}`);
     return faces4.sort((a,b)=>b.n-a.n).slice(0,4);
   }
-
-  // ── Stap 3: als alles mislukt, geef k=2 terug ook al is het niet perfect ────
-  return (faces2.length?faces2:faces4).sort((a,b)=>b.n-a.n);
+  return(faces2.length?faces2:faces4).sort((a,b)=>b.n-a.n);
 }
 
 // ─── analyzeDHM: met diagnostiek, plat-dak-detectie en fallback ──────────────
@@ -284,86 +316,61 @@ async function analyzeDHM(bc){
   const swL=wgs84ToLambert72(Math.min(...lats)-.0001,Math.min(...lngs)-.0001);
   const neL=wgs84ToLambert72(Math.max(...lats)+.0001,Math.max(...lngs)+.0001);
   const pad=5,[xmin,ymin,xmax,ymax]=[swL[0]-pad,swL[1]-pad,neL[0]+pad,neL[1]+pad];
-  // Gebruik 1m/pixel resolutie (native DHM Vlaanderen II resolutie)
-  // Maximaal 120×120px om WCS niet te overbelasten
-  // Dit is cruciaal: te weinig pixels → Horn's methode geeft te steile hellingen
-  const bboxW=xmax-xmin, bboxH=ymax-ymin;
-  const mw=Math.min(120,Math.max(20,Math.round(bboxW)));  // 1px per meter
-  const mh=Math.min(120,Math.max(20,Math.round(bboxH)));  // 1px per meter
-  const cell=bboxW/mw; // Cel in meter — idealiter ~1m
+  const bboxW=xmax-xmin,bboxH=ymax-ymin;
+  const mw=Math.min(120,Math.max(20,Math.round(bboxW)));
+  const mh=Math.min(120,Math.max(20,Math.round(bboxH)));
 
-  console.info(`[ZonneDak] DHM analyse: bbox ${Math.round(xmax-xmin)}×${Math.round(ymax-ymin)}m, raster ${mw}×${mh}px, cel ${cell.toFixed(2)}m`);
+  console.info(`[ZonneDak] DHM bbox ${Math.round(bboxW)}×${Math.round(bboxH)}m, raster ${mw}×${mh}px`);
 
   const[dsmR,dtmR]=await Promise.all([
     fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DSM_1m"),
     fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DTM_1m")
   ]);
 
-  // FIX: gebruik de ECHTE afmetingen van de teruggekeerde raster voor cellSize
-  // De WCS kan een ander aantal pixels teruggeven dan aangevraagd (bijv. afgerond)
-  // Als cellSize fout is, geeft Horn's methode systematisch te steile of vlakke hellingen
-  const actualCell=bboxW/dsmR.w;
-  const cell=actualCell;
-  console.info(`[ZonneDak] Raster afmetingen: gevraagd ${mw}×${mh}, gekregen ${dsmR.w}×${dsmR.h}, cel ${cell.toFixed(3)}m/px`);
+  // Gebruik echte rasterafmetingen voor correcte cellSize
+  const cell=bboxW/dsmR.w;
+  console.info(`[ZonneDak] Raster gekregen ${dsmR.w}×${dsmR.h}px, cel=${cell.toFixed(3)}m/px`);
 
-  // ── Diagnostiek: controleer of DSM en DTM werkelijk verschillen ──
+  // Diagnostiek: hoogtebereik in de bbox
   const validPairs=[];
   for(let i=0;i<dsmR.data.length;i++){
-    if(!isNaN(dsmR.data[i])&&!isNaN(dtmR.data[i])){
-      validPairs.push(dsmR.data[i]-dtmR.data[i]);
-    }
+    if(!isNaN(dsmR.data[i])&&!isNaN(dtmR.data[i])) validPairs.push(dsmR.data[i]-dtmR.data[i]);
   }
   const maxRelH=validPairs.length?Math.max(...validPairs):0;
   const avgRelH=validPairs.length?validPairs.reduce((a,v)=>a+v,0)/validPairs.length:0;
   const aboveRoof=validPairs.filter(v=>v>=1.5).length;
+  console.info(`[ZonneDak] maxRelH=${maxRelH.toFixed(2)}m avgRelH=${avgRelH.toFixed(2)}m boven1.5m=${aboveRoof}`);
 
-  console.info(`[ZonneDak] DHM diagnostiek: ${validPairs.length} pixels, maxRelH=${maxRelH.toFixed(2)}m, avgRelH=${avgRelH.toFixed(2)}m, boven 1.5m: ${aboveRoof}`);
-
-  // ── Detecteer plat dak (DSM≈DTM maar gebouw WEL aanwezig) ──────────────────
-  // Als maxRelH > 0.5m maar < 1.5m: gebouw aanwezig maar plat dak (drainage-helling)
-  // Als maxRelH < 0.1m: WCS geeft identieke data of echt maaiveld
+  // Plat dak of WCS-probleem?
   if(aboveRoof===0){
-    const heeftGebouwhoogte=maxRelH>0.3; // Gebouw hoogte gedetecteerd, maar onder drempel
-    if(heeftGebouwhoogte){
-      // Plat dak gedetecteerd — geef één vlak terug met 0-5° helling
-      const gemH=+avgRelH.toFixed(1);
-      console.info(`[ZonneDak] Plat dak gedetecteerd: maxRelH=${maxRelH.toFixed(2)}m`);
-      return [{
-        orientation:"Z",slope:3,avgH:gemH,pct:100,n:aboveRoof||validPairs.length,
-        slopeStd:1,confidence:0.55,status:"auto",isFlatRoof:true,
-        maxRelH:+maxRelH.toFixed(2)
-      }];
+    if(maxRelH>0.3){
+      return[{orientation:"Z",slope:3,avgH:+avgRelH.toFixed(1),pct:100,
+              n:validPairs.length,slopeStd:1,confidence:0.55,status:"auto",
+              isFlatRoof:true,maxRelH:+maxRelH.toFixed(2)}];
     }
-    // maxRelH < 0.3m: WCS probleem of geen gebouw op deze locatie
-    const dsmUniek=new Set(dsmR.data.filter(v=>!isNaN(v)).map(v=>Math.round(v*10))).size;
-    const dtmUniek=new Set(dtmR.data.filter(v=>!isNaN(v)).map(v=>Math.round(v*10))).size;
-    if(dsmUniek<5){
-      throw new Error(`WCS geeft constante waarden terug (DSM: ${dsmUniek} unieke waarden). Probeer later opnieuw.`);
-    }
-    throw new Error(`DSM≈DTM: hoogteverschil < 0.3m (max ${maxRelH.toFixed(2)}m). Plat maaiveld of WCS-probleem. Stel helling manueel in.`);
+    const dsmUniq=new Set(dsmR.data.filter(v=>!isNaN(v)).map(v=>Math.round(v*10))).size;
+    if(dsmUniq<5) throw new Error(`WCS geeft constante waarden (${dsmUniq} uniek). Probeer later.`);
+    throw new Error(`DSM≈DTM: max hoogteverschil ${maxRelH.toFixed(2)}m. Stel helling manueel in.`);
   }
 
-  // Gebouwcontour omzetten naar rastercoördinaten
+  // FIX Y-FLIP: GeoTIFF oorsprong is NW-hoek (rij 0 = ymax).
+  // Correcte conversie: row = (ymax - ly) / cell  (NIET ly - ymin)
   const bldRasterPts=bc.map(([lat,lng])=>{
-    const [lx,ly]=wgs84ToLambert72(lat,lng);
-    return [(lx-xmin)/cell,(ly-ymin)/cell];
+    const[lx,ly]=wgs84ToLambert72(lat,lng);
+    return[(lx-xmin)/cell,(ymax-ly)/cell]; // ← Y-flip gecorrigeerd
   });
 
-  const faces=computeRoofFaces(dsmR.data,dtmR.data,dsmR.w,dsmR.h,cell,bldRasterPts);
+  // Gebouwbreedte via PCA op Lambert72 polygoon (voor hoogteprofiel-slope)
+  const lamPts=bc.map(([lat,lng])=>wgs84ToLambert72(lat,lng));
+  const buildingWidthM=buildingWidthFromPolygon(lamPts);
+  console.info(`[ZonneDak] Gebouwbreedte PCA: ${buildingWidthM.toFixed(1)}m`);
 
-  // Log diagnostiek over het aantal gevonden punten
-  console.info(`[ZonneDak] Dakpixels na filtering: ${faces?faces.reduce((a,f)=>a+f.n,0):0} interior-punten (rand-effect gefilterd)`);
+  const faces=computeRoofFaces(dsmR.data,dtmR.data,dsmR.w,dsmR.h,cell,bldRasterPts,buildingWidthM);
 
-  // Als geen hellende vlakken gevonden maar gebouwhoogte WEL aanwezig → plat dak
   if(!faces||faces.length===0){
-    console.info(`[ZonneDak] Geen hellende vlakken (slope<6°), maar gebouwhoogte=${maxRelH.toFixed(2)}m → plat dak`);
-    return [{
-      orientation:"Z",slope:3,avgH:+avgRelH.toFixed(1),pct:100,n:aboveRoof,
-      slopeStd:1,confidence:0.6,status:"auto",isFlatRoof:true,
-      maxRelH:+maxRelH.toFixed(2)
-    }];
+    return[{orientation:"Z",slope:3,avgH:+avgRelH.toFixed(1),pct:100,n:aboveRoof,
+            slopeStd:1,confidence:0.6,status:"auto",isFlatRoof:true,maxRelH:+maxRelH.toFixed(2)}];
   }
-
   return faces;
 }
 
