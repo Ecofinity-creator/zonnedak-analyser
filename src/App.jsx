@@ -928,8 +928,7 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,editFaceIdx,o
     }
   });
 
-  g.addTo(map); // ← KRITIEK: was vergeten, daardoor verschenen polygonen nooit op kaart
-  return g;
+  return g; // redrawRoof roept g.addTo(map) aan
 }
 
 // Genummerde dakvlaksectoren tekenen (LiDAR-gedetecteerde richtingen)
@@ -1574,6 +1573,36 @@ export default function App(){
       console.error("DHM:",e);
       setDhmStatus("error");
       setDhmError(e.message||"WCS endpoint niet bereikbaar");
+
+      // Fallback: genereer twee dakvlakken vanuit GRB-footprint via PCA
+      // Slope = handmatige waarde (slider), oriëntatie = GRB nok-richting
+      // Zo krijgt de gebruiker toch de correcte geometrie om te bewerken
+      if(bc&&bc.length>=3){
+        try{
+          const lamPts=bc.map(([lt,ln])=>wgs84ToLambert72(lt,ln));
+          const cx2=lamPts.reduce((s,p)=>s+p[0],0)/lamPts.length;
+          const cy2=lamPts.reduce((s,p)=>s+p[1],0)/lamPts.length;
+          let cxx=0,cxy=0,cyy=0;
+          lamPts.forEach(([x,y])=>{const dx=x-cx2,dy=y-cy2;cxx+=dx*dx;cxy+=dx*dy;cyy+=dy*dy;});
+          cxx/=lamPts.length;cxy/=lamPts.length;cyy/=lamPts.length;
+          const pcaAng=Math.atan2(2*cxy,cxx-cyy)/2;
+          const ridgeAngleDeg=((90-pcaAng*180/Math.PI)+360)%180;
+          const rightAspect=((ridgeAngleDeg+90)%360+360)%360;
+          const leftAspect =((ridgeAngleDeg-90)%360+360)%360;
+          const fallbackFaces=[
+            {orientation:DIRS8[Math.round(rightAspect/45)%8],slope,avgH:0,pct:50,n:0,
+             slopeStd:0,confidence:0.3,status:"auto",ridgeAngleDeg,
+             aspectDeg:+rightAspect.toFixed(1)},
+            {orientation:DIRS8[Math.round(leftAspect/45)%8],slope,avgH:0,pct:50,n:0,
+             slopeStd:0,confidence:0.3,status:"auto",ridgeAngleDeg,
+             aspectDeg:+leftAspect.toFixed(1)},
+          ];
+          setDetectedFaces(fallbackFaces);
+          setSelFaceIdx(0);
+          setOrientation(fallbackFaces[0].orientation);
+          console.info(`[ZonneDak] GRB-fallback: nok=${ridgeAngleDeg.toFixed(1)}° → ${fallbackFaces.map(f=>f.orientation).join('/')}`);
+        }catch(pcaErr){console.warn("PCA fallback mislukt:",pcaErr);}
+      }
     }
   };
 
