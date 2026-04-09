@@ -892,25 +892,42 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,editFaceIdx,o
 
     // Editeerbare vertices als editMode actief is voor dit vlak
     if(editMode&&fi===editFaceIdx){
+      // Houd een lokale kopie van de polygoonpunten bij voor live kaartupdate
+      const liveLatLngs=f.polygon.map(pt=>L.latLng(pt[0],pt[1]));
+
+      // Zoek de polygon layer voor dit vlak om hem live te updaten
+      let facePoly=null;
+      g.eachLayer(layer=>{if(layer instanceof L.Polygon&&!facePoly) facePoly=layer;});
+
       f.polygon.forEach((pt,vi)=>{
         const marker=L.circleMarker([pt[0],pt[1]],{
-          radius:7, color:"#1e293b", fillColor:"#fff",
-          fillOpacity:1, weight:2, className:"vertex-handle"
+          radius:8, color:"#1e293b", fillColor:"#f59e0b",
+          fillOpacity:1, weight:2.5, className:"vertex-handle",
+          zIndexOffset:1000
         })
-        .bindTooltip(`Versleep hoekpunt ${vi+1}`,{direction:"top"})
+        .bindTooltip(`Punt ${vi+1} · versleep`,{direction:"top",offset:[0,-5]})
         .addTo(g);
 
         marker.on("mousedown",function(e){
+          L.DomEvent.stop(e); // voorkom map-drag
           map.dragging.disable();
+          map.getContainer().style.cursor="grabbing";
+
           const onMove=function(me){
             const ll=me.latlng;
             marker.setLatLng(ll);
+            liveLatLngs[vi]=ll;
+            // Update de Leaflet polygon direct — GEEN React state, GEEN re-render
+            if(facePoly) facePoly.setLatLngs(liveLatLngs);
+            // Sla op in ref voor later
             if(onVertexDrag) onVertexDrag(fi,vi,[ll.lat,ll.lng]);
           };
           const onUp=function(){
             map.off("mousemove",onMove);
             map.off("mouseup",onUp);
             map.dragging.enable();
+            map.getContainer().style.cursor="";
+            // Nu pas React state updaten (drag klaar)
             if(onVertexDragEnd) onVertexDragEnd(fi,vi);
           };
           map.on("mousemove",onMove);
@@ -1363,26 +1380,33 @@ export default function App(){
     setSelFaceIdx(idx);setOrientation(f.orientation);setSlope(f.slope);
   },[detectedFaces]);
 
-  // Hoekpunt drag handler — update detectedFaces in real-time
+  // Ref voor drag-posities — geen state-update tijdens drag (voorkomt re-render die drag breekt)
+  const draggedPolygonsRef=useRef(null);
+
   const onVertexDrag=useCallback((faceIdx,vertexIdx,newLatLng)=>{
-    setDetectedFaces(prev=>{
-      if(!prev) return prev;
-      const updated=prev.map((f,fi)=>{
-        if(fi!==faceIdx||!f.polygon) return f;
-        const newPoly=[...f.polygon];
-        newPoly[vertexIdx]=[newLatLng[0],newLatLng[1]];
-        // Herbereken 2D oppervlakte direct
-        const area2d=Math.round(polyAreaLambert72(newPoly));
-        const area3d=compute3dArea(area2d,f.slope);
-        return {...f,polygon:newPoly,area2d_manual:area2d,area3d_manual:area3d,status:"manual"};
-      });
-      return updated;
-    });
-  },[]);
+    // Sla op in ref, NIET in state — geen re-render tijdens drag
+    if(!draggedPolygonsRef.current){
+      draggedPolygonsRef.current=detectedFaces?detectedFaces.map(f=>f.polygon?[...f.polygon]:null):null;
+    }
+    if(draggedPolygonsRef.current?.[faceIdx]){
+      draggedPolygonsRef.current[faceIdx][vertexIdx]=[newLatLng[0],newLatLng[1]];
+    }
+  },[detectedFaces]);
 
   const onVertexDragEnd=useCallback(()=>{
-    // Hereken kaartlaag na drag
-    redrawRoofRef.current&&redrawRoofRef.current();
+    // Nu pas state updaten (drag is klaar, re-render mag)
+    if(!draggedPolygonsRef.current) return;
+    setDetectedFaces(prev=>{
+      if(!prev) return prev;
+      return prev.map((f,fi)=>{
+        const newPoly=draggedPolygonsRef.current?.[fi];
+        if(!newPoly||newPoly===f.polygon) return f;
+        const area2d=Math.round(polyAreaLambert72(newPoly));
+        const area3d=+compute3dArea(area2d,f.slope).toFixed(1);
+        return {...f,polygon:newPoly,area2d_manual:area2d,area3d_manual:area3d,status:"manual"};
+      });
+    });
+    draggedPolygonsRef.current=null;
   },[]);
 
   const redrawRoofRef=useRef(null);
@@ -1394,28 +1418,22 @@ export default function App(){
     if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;setPanelsDrawn(false);}
 
     if(detectedFaces&&detectedFaces.length>0){
-      // Genereer polygonen als ze er nog niet zijn
+      // Genereer polygonen als ze er nog niet zijn (eerste keer na analyse)
       const ridgeAngle=detectedFaces[0]?.ridgeAngleDeg;
-      const facesWithPoly=detectedFaces.every(f=>f.polygon)
-        ? detectedFaces
-        : generateFacePolygons(buildingCoords, detectedFaces, ridgeAngle);
-
-      // Sla polygonen op in state als ze nieuw gegenereerd zijn
+      let facesToDraw=detectedFaces;
       if(!detectedFaces[0]?.polygon){
-        setDetectedFaces(facesWithPoly);
-        return; // useEffect zal opnieuw renderen
+        facesToDraw=generateFacePolygons(buildingCoords, detectedFaces, ridgeAngle);
+        // Update state asynchroon — geen early return meer, teken direct
+        setTimeout(()=>setDetectedFaces(facesToDraw),0);
       }
 
       const g=L.layerGroup();
-      // Dakcontour
       L.polygon(buildingCoords,{color:"#e07b00",fillOpacity:0,weight:2,dashArray:"5,3"}).addTo(g);
       drawFacePolygons(
-        map,L,facesWithPoly,selFaceIdx,
-        (idx)=>{setSelFaceIdx(idx);setOrientation(facesWithPoly[idx].orientation);setSlope(facesWithPoly[idx].slope);},
+        map,L,facesToDraw,selFaceIdx,
+        (idx)=>{setSelFaceIdx(idx);setOrientation(facesToDraw[idx].orientation);setSlope(facesToDraw[idx].slope);},
         editMode,editFaceIdx,onVertexDrag,onVertexDragEnd
       );
-      // Voeg alles toe aan één layer group
-      const allLayers=map._layers;
       roofLayerRef.current=g;
       g.addTo(map);
     } else {
@@ -1631,15 +1649,14 @@ export default function App(){
           <div className="sl">Locatie</div>
           <div style={{display:"flex",flexDirection:"column",gap:5}}>
             <div className="sugg-wrap">
-                {/* FIX dubbel klikken: mouseDown stopt blur, click selecteert */}
               <input className="inp" placeholder="Adres in Vlaanderen..." value={query}
                 onChange={e=>{setQuery(e.target.value);setShowSuggs(true);}}
-                onFocus={()=>setSuggs(s=>s)}
-                onBlur={()=>{if(!selectingRef.current)setShowSuggs(false);selectingRef.current=false;}}/>
+                onFocus={()=>setShowSuggs(true)}
+                onBlur={()=>setTimeout(()=>setShowSuggs(false),150)}/>
               {showSuggs&&suggs.length>0&&<div className="sugg">
                 {suggs.map((s,i)=><div key={i} className="sugg-item"
-                  onMouseDown={e=>{e.preventDefault();selectingRef.current=true;}}
-                  onClick={()=>{selectingRef.current=false;selectAddr(s);}}>
+                  onMouseDown={e=>e.preventDefault()}
+                  onClick={()=>{setShowSuggs(false);setSuggs([]);selectAddr(s);}}>
                   {s.display_name}
                 </div>)}
               </div>}
