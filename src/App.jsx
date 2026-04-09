@@ -928,7 +928,8 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,editFaceIdx,o
     }
   });
 
-  return g; // redrawRoof roept g.addTo(map) aan
+  g.addTo(map); // KRITIEK: voeg toe aan kaart hier (redrawRoof gebruikt return value voor removeLayer)
+  return g;
 }
 
 // Genummerde dakvlaksectoren tekenen (LiDAR-gedetecteerde richtingen)
@@ -1762,7 +1763,18 @@ export default function App(){
             {/* Dakvlak editor knoppen */}
             <div style={{display:"flex",gap:5,marginTop:6,flexWrap:"wrap"}}>
               {!editMode?(
-                <button className="btn sec sm" style={{flex:1}} onClick={()=>{setEditMode(true);setEditFaceIdx(selFaceIdx);}}>
+                <button className="btn sec sm" style={{flex:1}} onClick={()=>{
+                  // Zorg dat polygonen gegenereerd zijn vóór edit mode start
+                  if(!detectedFaces[selFaceIdx]?.polygon){
+                    const ridgeAngle=detectedFaces[0]?.ridgeAngleDeg;
+                    const withPolys=generateFacePolygons(buildingCoords,detectedFaces,ridgeAngle);
+                    setDetectedFaces(withPolys);
+                    // Kleine vertraging zodat state update doorgekomen is
+                    setTimeout(()=>{setEditMode(true);setEditFaceIdx(selFaceIdx);},50);
+                  } else {
+                    setEditMode(true);setEditFaceIdx(selFaceIdx);
+                  }
+                }}>
                   ✏️ Dakvlak aanpassen
                 </button>
               ):(
