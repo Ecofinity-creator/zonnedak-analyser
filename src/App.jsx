@@ -869,8 +869,8 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,editFaceIdx,o
     const color=isGood?q[0].c:q[1].c;
     const isSel=fi===selFaceIdx;
 
-    // Polygon
-    L.polygon(f.polygon,{
+    // Polygon — sla referentie op voor live vertex-drag update
+    const facePoly=L.polygon(f.polygon,{
       color:isSel?'#1e293b':color,
       fillColor:color,
       fillOpacity:isSel?.65:.35,
@@ -890,26 +890,20 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,editFaceIdx,o
       iconSize:[26,26],iconAnchor:[13,13],className:""
     })}).on("click",()=>onSelect(fi)).addTo(g);
 
-    // Editeerbare vertices als editMode actief is voor dit vlak
+    // Editeerbare vertices — oranje bolletjes op elke hoek
     if(editMode&&fi===editFaceIdx){
-      // Houd een lokale kopie van de polygoonpunten bij voor live kaartupdate
       const liveLatLngs=f.polygon.map(pt=>L.latLng(pt[0],pt[1]));
-
-      // Zoek de polygon layer voor dit vlak om hem live te updaten
-      let facePoly=null;
-      g.eachLayer(layer=>{if(layer instanceof L.Polygon&&!facePoly) facePoly=layer;});
 
       f.polygon.forEach((pt,vi)=>{
         const marker=L.circleMarker([pt[0],pt[1]],{
-          radius:8, color:"#1e293b", fillColor:"#f59e0b",
-          fillOpacity:1, weight:2.5, className:"vertex-handle",
-          zIndexOffset:1000
+          radius:9, color:"#1e293b", fillColor:"#f59e0b",
+          fillOpacity:1, weight:2.5, zIndexOffset:1000
         })
-        .bindTooltip(`Punt ${vi+1} · versleep`,{direction:"top",offset:[0,-5]})
+        .bindTooltip(`Punt ${vi+1} · versleep`,{direction:"top",offset:[0,-8]})
         .addTo(g);
 
         marker.on("mousedown",function(e){
-          L.DomEvent.stop(e); // voorkom map-drag
+          L.DomEvent.stop(e);
           map.dragging.disable();
           map.getContainer().style.cursor="grabbing";
 
@@ -917,9 +911,7 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,editFaceIdx,o
             const ll=me.latlng;
             marker.setLatLng(ll);
             liveLatLngs[vi]=ll;
-            // Update de Leaflet polygon direct — GEEN React state, GEEN re-render
-            if(facePoly) facePoly.setLatLngs(liveLatLngs);
-            // Sla op in ref voor later
+            facePoly.setLatLngs(liveLatLngs); // Live polygon update, geen React re-render
             if(onVertexDrag) onVertexDrag(fi,vi,[ll.lat,ll.lng]);
           };
           const onUp=function(){
@@ -927,8 +919,7 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,editFaceIdx,o
             map.off("mouseup",onUp);
             map.dragging.enable();
             map.getContainer().style.cursor="";
-            // Nu pas React state updaten (drag klaar)
-            if(onVertexDragEnd) onVertexDragEnd(fi,vi);
+            if(onVertexDragEnd) onVertexDragEnd(fi,vi); // React state update pas hier
           };
           map.on("mousemove",onMove);
           map.on("mouseup",onUp);
@@ -937,6 +928,7 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,editFaceIdx,o
     }
   });
 
+  g.addTo(map); // ← KRITIEK: was vergeten, daardoor verschenen polygonen nooit op kaart
   return g;
 }
 
@@ -1380,33 +1372,37 @@ export default function App(){
     setSelFaceIdx(idx);setOrientation(f.orientation);setSlope(f.slope);
   },[detectedFaces]);
 
-  // Ref voor drag-posities — geen state-update tijdens drag (voorkomt re-render die drag breekt)
+  // Stabiele refs voor drag handlers — geen dependency-cyclus met redrawRoof
+  const detectedFacesRef=useRef(detectedFaces);
+  useEffect(()=>{detectedFacesRef.current=detectedFaces;},[detectedFaces]);
+
   const draggedPolygonsRef=useRef(null);
 
+  // Stabiele callback — geen re-render tijdens drag
   const onVertexDrag=useCallback((faceIdx,vertexIdx,newLatLng)=>{
-    // Sla op in ref, NIET in state — geen re-render tijdens drag
     if(!draggedPolygonsRef.current){
-      draggedPolygonsRef.current=detectedFaces?detectedFaces.map(f=>f.polygon?[...f.polygon]:null):null;
+      const faces=detectedFacesRef.current;
+      draggedPolygonsRef.current=faces?faces.map(f=>f.polygon?[...f.polygon.map(p=>[...p])]:null):null;
     }
     if(draggedPolygonsRef.current?.[faceIdx]){
       draggedPolygonsRef.current[faceIdx][vertexIdx]=[newLatLng[0],newLatLng[1]];
     }
-  },[detectedFaces]);
+  },[]); // Lege deps — stabiele referentie, gebruikt ref intern
 
   const onVertexDragEnd=useCallback(()=>{
-    // Nu pas state updaten (drag is klaar, re-render mag)
     if(!draggedPolygonsRef.current) return;
+    const newPolygons=draggedPolygonsRef.current;
+    draggedPolygonsRef.current=null;
     setDetectedFaces(prev=>{
       if(!prev) return prev;
       return prev.map((f,fi)=>{
-        const newPoly=draggedPolygonsRef.current?.[fi];
-        if(!newPoly||newPoly===f.polygon) return f;
+        const newPoly=newPolygons[fi];
+        if(!newPoly) return f;
         const area2d=Math.round(polyAreaLambert72(newPoly));
         const area3d=+compute3dArea(area2d,f.slope).toFixed(1);
         return {...f,polygon:newPoly,area2d_manual:area2d,area3d_manual:area3d,status:"manual"};
       });
     });
-    draggedPolygonsRef.current=null;
   },[]);
 
   const redrawRoofRef=useRef(null);
@@ -1414,7 +1410,11 @@ export default function App(){
   const redrawRoof=useCallback(()=>{
     if(!leafRef.current||!buildingCoords||!window.L) return;
     const L=window.L,map=leafRef.current;
-    if(roofLayerRef.current){map.removeLayer(roofLayerRef.current);roofLayerRef.current=null;}
+    if(roofLayerRef.current){
+      if(typeof roofLayerRef.current.remove==="function") roofLayerRef.current.remove();
+      else map.removeLayer(roofLayerRef.current);
+      roofLayerRef.current=null;
+    }
     if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;setPanelsDrawn(false);}
 
     if(detectedFaces&&detectedFaces.length>0){
@@ -1423,23 +1423,30 @@ export default function App(){
       let facesToDraw=detectedFaces;
       if(!detectedFaces[0]?.polygon){
         facesToDraw=generateFacePolygons(buildingCoords, detectedFaces, ridgeAngle);
-        // Update state asynchroon — geen early return meer, teken direct
         setTimeout(()=>setDetectedFaces(facesToDraw),0);
       }
 
-      const g=L.layerGroup();
-      L.polygon(buildingCoords,{color:"#e07b00",fillOpacity:0,weight:2,dashArray:"5,3"}).addTo(g);
-      drawFacePolygons(
+      // Gebouwcontour (oranje stippellijn)
+      const outlineLayer=L.polygon(buildingCoords,{color:"#e07b00",fillOpacity:0,weight:2,dashArray:"5,3"}).addTo(map);
+
+      // drawFacePolygons voegt nu zelf g.addTo(map) uit — geeft de groep terug
+      const faceGroup=drawFacePolygons(
         map,L,facesToDraw,selFaceIdx,
         (idx)=>{setSelFaceIdx(idx);setOrientation(facesToDraw[idx].orientation);setSlope(facesToDraw[idx].slope);},
         editMode,editFaceIdx,onVertexDrag,onVertexDragEnd
       );
-      roofLayerRef.current=g;
-      g.addTo(map);
+
+      // Sla beide lagen op als één groep zodat removeLayer werkt
+      roofLayerRef.current={
+        remove:()=>{
+          map.removeLayer(outlineLayer);
+          if(faceGroup) map.removeLayer(faceGroup);
+        }
+      };
     } else {
       roofLayerRef.current=drawRealRoof(map,L,buildingCoords,orientation);
     }
-  },[buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,editFaceIdx,onVertexDrag,onVertexDragEnd]);
+  },[buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,editFaceIdx]);
 
   redrawRoofRef.current=redrawRoof;
 
@@ -1495,16 +1502,21 @@ export default function App(){
     } else {dhmLayerRef.current=null;}
   },[activeLayer,mapReady]);
 
+  const justSelectedRef=useRef(false); // Voorkom herzoeken na adresselectie
+
   useEffect(()=>{
     if(!query||query.length<3){setSuggs([]);return;}
+    // Sla zoeken over als suggestions verborgen zijn (= net geselecteerd)
+    if(!showSuggs) return;
     clearTimeout(searchTO.current);
     searchTO.current=setTimeout(async()=>{
       try{const r=await fetch(`${NOMINATIM}?q=${encodeURIComponent(query)}&format=json&limit=6&countrycodes=be`);setSuggs(await r.json());setShowSuggs(true);}catch{}
     },350);
-  },[query]);
+  },[query,showSuggs]);
 
   const selectAddr=async(item)=>{
-    // FIX: direct instellen zonder blur-problemen
+    clearTimeout(searchTO.current); // Stop lopende zoekactie
+    justSelectedRef.current=true;   // Sla volgende query-effect over
     setShowSuggs(false);setSuggs([]);
     setQuery(item.display_name.split(",").slice(0,3).join(","));
     const lat=parseFloat(item.lat),lng=parseFloat(item.lon);
