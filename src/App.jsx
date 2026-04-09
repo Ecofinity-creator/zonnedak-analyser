@@ -347,10 +347,12 @@ async function analyzeDHM(bc){
   const faces=computeRoofFaces(dsmR.data,dtmR.data,dsmR.w,dsmR.h,cell,bldRasterPts,buildingWidthM,ridgeAngleDeg);
 
   if(!faces||faces.length===0){
-    return[{orientation:"Z",slope:3,avgH:+avgRelH.toFixed(1),pct:100,n:aboveRoof,
-            slopeStd:1,confidence:0.6,status:"auto",isFlatRoof:true,maxRelH:+maxRelH.toFixed(2)}];
+    const flatFace={orientation:"Z",slope:3,avgH:+avgRelH.toFixed(1),pct:100,n:aboveRoof,
+            slopeStd:1,confidence:0.6,status:"auto",isFlatRoof:true,maxRelH:+maxRelH.toFixed(2)};
+    return[flatFace]; // polygon wordt later toegevoegd via buildingCoords
   }
-  return faces;
+  // Sla nokrichting op in elke face zodat polygon-generatie hem later kan gebruiken
+  return faces.map(f=>({...f,ridgeAngleDeg}));
 }
 
 // ─── Polygoon helpers ────────────────────────────────────────────────────────
@@ -747,6 +749,12 @@ body{background:#f1f5f9;}
 .tl-result{padding:7px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:5px;cursor:pointer;transition:background .15s;font-size:10px;}
 .tl-result:hover{background:var(--amber-light);border-color:var(--amber);}
 .tl-result.selected{background:var(--amber-light);border-color:var(--amber);}
+
+/* Dakvlak editor */
+.roof-editor-bar{position:absolute;bottom:60px;left:50%;transform:translateX(-50%);z-index:1000;background:rgba(255,255,255,.97);border:1px solid var(--border-dark);border-radius:8px;padding:8px 12px;display:flex;align-items:center;gap:8px;box-shadow:var(--shadow-md);font-family:'IBM Plex Mono',monospace;font-size:9px;}
+.roof-editor-bar .edit-title{font-weight:600;color:var(--text);}
+.vertex-handle{cursor:grab!important;}
+.vertex-handle:active{cursor:grabbing!important;}
 `;
 
 // ─── Kaartfuncties ─────────────────────────────────────────────────────────
@@ -773,63 +781,152 @@ function clipPolyToSector(lc,cLat,cLng,aspDeg,halfW){
   return result.length>=2?[[cLat,cLng],...result]:null;
 }
 
-// Genummerde dakvlaksectoren tekenen (LiDAR-gedetecteerde richtingen)
-function drawFaceSectors(map,L,lc,faces,selFaceIdx,onSelect){
-  if(!lc||!faces||!faces.length) return null;
-  const lats=lc.map(p=>p[0]),lngs=lc.map(p=>p[1]);
+// ─── Dakpolygonen genereren uit GRB-footprint + nokrichting ────────────────────
+// Splitst de GRB-footprint langs de noklijn in 2 (zadeldak) of behoudt
+// de volledige footprint per vlak (schilddak: 4 driehoeken vanuit middelpunt).
+// Geeft per face een array van [lat,lng] hoekpunten terug.
+function generateFacePolygons(lc, faces, ridgeAngleDeg){
+  if(!lc||!faces||!faces.length) return faces.map(f=>({...f,polygon:lc}));
+
+  const lats=lc.map(p=>p[0]), lngs=lc.map(p=>p[1]);
   const cLat=(Math.min(...lats)+Math.max(...lats))/2;
   const cLng=(Math.min(...lngs)+Math.max(...lngs))/2;
-  const dLat=(Math.max(...lats)-Math.min(...lats));
-  const dLng=(Math.max(...lngs)-Math.min(...lngs));
+
+  if(faces.length===1){
+    return [{...faces[0],polygon:lc}];
+  }
+
+  // Voor 2 vlakken (zadeldak): splits langs de noklijn
+  // Noklijn = door centroïde, richting ridgeAngleDeg
+  // Gebruik crossComp-teken om punt links/rechts te bepalen
+  if(faces.length===2){
+    const ridgeRad=(ridgeAngleDeg||0)*Math.PI/180;
+    const cosR=Math.cos(ridgeRad),sinR=Math.sin(ridgeRad);
+    // Zijde 0 = rechts (aspectDeg van face 0), zijde 1 = links
+    const side=(lat,lng)=>{
+      const dx=lng-cLng, dy=lat-cLat; // geografisch: dy=Noord, dx=Oost
+      return dx*cosR-dy*sinR>=0?0:1;
+    };
+    const polys=[[],[]];
+    const n=lc.length;
+    for(let i=0;i<n;i++){
+      const a=lc[i], b=lc[(i+1)%n];
+      const sA=side(a[0],a[1]), sB=side(b[0],b[1]);
+      polys[sA].push(a);
+      if(sA!==sB){
+        // Snijpunt met de noklijn (via lineaire interpolatie)
+        // Noklijn: door (cLat,cLng) met richting (sinR, cosR)
+        // Rand: van a naar b
+        const dlat=b[0]-a[0],dlng=b[1]-a[1];
+        // crossComp(t) = (a_lng+t*dlng-cLng)*cosR - (a_lat+t*dlat-cLat)*sinR = 0
+        const denom=dlng*cosR-dlat*sinR;
+        if(Math.abs(denom)>1e-12){
+          const t=((cLng-a[1])*cosR-(cLat-a[0])*sinR)/denom;
+          if(t>0&&t<1){
+            const cut=[a[0]+t*dlat, a[1]+t*dlng];
+            polys[sA].push(cut);
+            polys[sB].push(cut);
+          }
+        }
+      }
+    }
+    return faces.map((f,i)=>({...f,polygon:polys[i]&&polys[i].length>=3?polys[i]:lc}));
+  }
+
+  // Voor 3-4 vlakken (schilddak): driehoeken vanuit centroïde
+  // Elk vlak krijgt de edges die het dichtst bij zijn aspect-richting liggen
+  const n=lc.length;
+  const edgeFace=[];
+  for(let i=0;i<n;i++){
+    const a=lc[i],b=lc[(i+1)%n];
+    const eLat=(a[0]+b[0])/2-cLat, eLng=(a[1]+b[1])/2-cLng;
+    const eAsp=((Math.atan2(eLng,eLat)*180/Math.PI)+360)%360;
+    let bestF=0,bestD=360;
+    faces.forEach((f,fi)=>{
+      const asp=ASP_MAP[f.orientation]||0;
+      const d=Math.abs(((eAsp-asp+180+360)%360)-180);
+      if(d<bestD){bestD=d;bestF=fi;}
+    });
+    edgeFace.push(bestF);
+  }
+  const polys=faces.map(()=>[]);
+  for(let i=0;i<n;i++){
+    const fi=edgeFace[i];
+    polys[fi].push(lc[i],lc[(i+1)%n],[cLat,cLng]);
+  }
+  return faces.map((f,i)=>({...f,polygon:polys[i]&&polys[i].length>=3?polys[i]:lc}));
+}
+
+// ─── Dakpolygonen tekenen op de kaart (editeerbaar) ─────────────────────────
+function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,editFaceIdx,onVertexDrag,onVertexDragEnd){
+  if(!faces||!faces.length) return null;
   const g=L.layerGroup();
 
-  // Sorteer op aspect en bepaal sector grenzen
-  const withAsp=faces.map((f,origIdx)=>({...f,asp:ASP_MAP[f.orientation]||0,origIdx}));
-  withAsp.sort((a,b)=>a.asp-b.asp);
-  const n=withAsp.length;
-
-  withAsp.forEach((f,si)=>{
-    const prev=withAsp[(si-1+n)%n],next=withAsp[(si+1)%n];
-    // Halveer de hoek met buren
-    let startAsp=((f.asp+prev.asp+(f.asp<prev.asp?360:0))/2)%360;
-    let endAsp=((f.asp+next.asp+(f.asp>next.asp?360:0))/2)%360;
-    let halfW=((endAsp-startAsp+360)%360)/2;
-    if(halfW<15) halfW=22.5; // minimum sector breedte
-
+  faces.forEach((f,fi)=>{
+    if(!f.polygon||f.polygon.length<3) return;
     const q=ZONE_Q[f.orientation]||ZONE_Q.Z;
     const isGood=BEST_SOUTH[f.orientation]!==false;
     const color=isGood?q[0].c:q[1].c;
-    const isSel=f.origIdx===selFaceIdx;
+    const isSel=fi===selFaceIdx;
 
-    // Sector polygoon
-    const sec=clipPolyToSector(lc,cLat,cLng,f.asp,halfW);
-    if(sec&&sec.length>=3){
-      L.polygon(sec,{
-        color:isSel?'#1e293b':color,
-        fillColor:color,
-        fillOpacity:isSel?.65:.38,
-        weight:isSel?3:1.5,
-        opacity:0.9,
-        dashArray:null
-      })
-      .bindTooltip(`<b>${si+1}. ${f.orientation} · ${f.slope}°</b><br>${q[isGood?0:1].l}<br>${f.pct}% van dak`,{sticky:true,direction:"top"})
-      .on("click",()=>onSelect(f.origIdx))
-      .addTo(g);
-    }
+    // Polygon
+    L.polygon(f.polygon,{
+      color:isSel?'#1e293b':color,
+      fillColor:color,
+      fillOpacity:isSel?.65:.35,
+      weight:isSel?2.5:1.5,
+      opacity:0.9,
+    })
+    .bindTooltip(`<b>${fi+1}. ${f.orientation} · ${f.slope}°</b><br>${(q[isGood?0:1]||{l:''}).l}<br>${f.pct}% van dak`,{sticky:true,direction:"top"})
+    .on("click",()=>onSelect(fi))
+    .addTo(g);
 
-    // Genummerd label: positioneer in richting van aspect
-    const aspRad=(90-f.asp)*Math.PI/180;
-    const labelLat=cLat+dLat*0.32*Math.sin(f.asp*Math.PI/180);
-    const labelLng=cLng+dLng*0.32*Math.cos((90-f.asp)*Math.PI/180);
-    L.marker([labelLat,labelLng],{icon:L.divIcon({
-      html:`<div style="width:26px;height:26px;background:${color};border:${isSel?"3px solid #1e293b":"2px solid rgba(255,255,255,.8)"};border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:12px;color:#fff;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4);user-select:none">${si+1}</div>`,
+    // Nummerlabel op centroïde van polygoon
+    const pLats=f.polygon.map(p=>p[0]),pLngs=f.polygon.map(p=>p[1]);
+    const pCLat=(Math.min(...pLats)+Math.max(...pLats))/2;
+    const pCLng=(Math.min(...pLngs)+Math.max(...pLngs))/2;
+    L.marker([pCLat,pCLng],{icon:L.divIcon({
+      html:`<div style="width:26px;height:26px;background:${color};border:${isSel?"3px solid #1e293b":"2px solid rgba(255,255,255,.8)"};border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:12px;color:#fff;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4);user-select:none">${fi+1}</div>`,
       iconSize:[26,26],iconAnchor:[13,13],className:""
-    })}).on("click",()=>onSelect(f.origIdx)).addTo(g);
+    })}).on("click",()=>onSelect(fi)).addTo(g);
+
+    // Editeerbare vertices als editMode actief is voor dit vlak
+    if(editMode&&fi===editFaceIdx){
+      f.polygon.forEach((pt,vi)=>{
+        const marker=L.circleMarker([pt[0],pt[1]],{
+          radius:7, color:"#1e293b", fillColor:"#fff",
+          fillOpacity:1, weight:2, className:"vertex-handle"
+        })
+        .bindTooltip(`Versleep hoekpunt ${vi+1}`,{direction:"top"})
+        .addTo(g);
+
+        marker.on("mousedown",function(e){
+          map.dragging.disable();
+          const onMove=function(me){
+            const ll=me.latlng;
+            marker.setLatLng(ll);
+            if(onVertexDrag) onVertexDrag(fi,vi,[ll.lat,ll.lng]);
+          };
+          const onUp=function(){
+            map.off("mousemove",onMove);
+            map.off("mouseup",onUp);
+            map.dragging.enable();
+            if(onVertexDragEnd) onVertexDragEnd(fi,vi);
+          };
+          map.on("mousemove",onMove);
+          map.on("mouseup",onUp);
+        });
+      });
+    }
   });
 
-  // Dakcontour
-  L.polygon(lc,{color:"#e07b00",fillOpacity:0,weight:2.5,dashArray:"6,3"}).addTo(g);
-  g.addTo(map);return g;
+  return g;
+}
+
+// Genummerde dakvlaksectoren tekenen (LiDAR-gedetecteerde richtingen)
+// BEHOUDEN als fallback voor backwards-compat
+function drawFaceSectors(map,L,lc,faces,selFaceIdx,onSelect){
+  return drawFacePolygons(map,L,faces,selFaceIdx,onSelect,false,-1,null,null);
 }
 
 // Fallback: eenvoudig 2-helling dak (zonder LiDAR)
@@ -1209,6 +1306,8 @@ export default function App(){
 
   const[dhmStatus,setDhmStatus]=useState("idle");const[dhmError,setDhmError]=useState("");
   const[detectedFaces,setDetectedFaces]=useState(null);const[selFaceIdx,setSelFaceIdx]=useState(0);
+  // Editeer-modus voor dakvlakken
+  const[editMode,setEditMode]=useState(false);const[editFaceIdx,setEditFaceIdx]=useState(0);
 
   const leafRef=useRef(null);const markerRef=useRef(null);
   const selectingRef=useRef(false);
@@ -1264,21 +1363,69 @@ export default function App(){
     setSelFaceIdx(idx);setOrientation(f.orientation);setSlope(f.slope);
   },[detectedFaces]);
 
+  // Hoekpunt drag handler — update detectedFaces in real-time
+  const onVertexDrag=useCallback((faceIdx,vertexIdx,newLatLng)=>{
+    setDetectedFaces(prev=>{
+      if(!prev) return prev;
+      const updated=prev.map((f,fi)=>{
+        if(fi!==faceIdx||!f.polygon) return f;
+        const newPoly=[...f.polygon];
+        newPoly[vertexIdx]=[newLatLng[0],newLatLng[1]];
+        // Herbereken 2D oppervlakte direct
+        const area2d=Math.round(polyAreaLambert72(newPoly));
+        const area3d=compute3dArea(area2d,f.slope);
+        return {...f,polygon:newPoly,area2d_manual:area2d,area3d_manual:area3d,status:"manual"};
+      });
+      return updated;
+    });
+  },[]);
+
+  const onVertexDragEnd=useCallback(()=>{
+    // Hereken kaartlaag na drag
+    redrawRoofRef.current&&redrawRoofRef.current();
+  },[]);
+
+  const redrawRoofRef=useRef(null);
+
   const redrawRoof=useCallback(()=>{
     if(!leafRef.current||!buildingCoords||!window.L) return;
     const L=window.L,map=leafRef.current;
     if(roofLayerRef.current){map.removeLayer(roofLayerRef.current);roofLayerRef.current=null;}
     if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;setPanelsDrawn(false);}
-    // Gebruik genummerde sectoren als LiDAR-faces beschikbaar, anders eenvoudige 2-helling
+
     if(detectedFaces&&detectedFaces.length>0){
-      roofLayerRef.current=drawFaceSectors(map,L,buildingCoords,detectedFaces,selFaceIdx,(idx)=>{
-        setSelFaceIdx(idx);setOrientation(detectedFaces[idx].orientation);setSlope(detectedFaces[idx].slope);
-      });
+      // Genereer polygonen als ze er nog niet zijn
+      const ridgeAngle=detectedFaces[0]?.ridgeAngleDeg;
+      const facesWithPoly=detectedFaces.every(f=>f.polygon)
+        ? detectedFaces
+        : generateFacePolygons(buildingCoords, detectedFaces, ridgeAngle);
+
+      // Sla polygonen op in state als ze nieuw gegenereerd zijn
+      if(!detectedFaces[0]?.polygon){
+        setDetectedFaces(facesWithPoly);
+        return; // useEffect zal opnieuw renderen
+      }
+
+      const g=L.layerGroup();
+      // Dakcontour
+      L.polygon(buildingCoords,{color:"#e07b00",fillOpacity:0,weight:2,dashArray:"5,3"}).addTo(g);
+      drawFacePolygons(
+        map,L,facesWithPoly,selFaceIdx,
+        (idx)=>{setSelFaceIdx(idx);setOrientation(facesWithPoly[idx].orientation);setSlope(facesWithPoly[idx].slope);},
+        editMode,editFaceIdx,onVertexDrag,onVertexDragEnd
+      );
+      // Voeg alles toe aan één layer group
+      const allLayers=map._layers;
+      roofLayerRef.current=g;
+      g.addTo(map);
     } else {
       roofLayerRef.current=drawRealRoof(map,L,buildingCoords,orientation);
     }
-  },[buildingCoords,orientation,detectedFaces,selFaceIdx]);
-  useEffect(()=>{if(mapReady&&buildingCoords) redrawRoof();},[mapReady,buildingCoords,orientation,detectedFaces,selFaceIdx]);
+  },[buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,editFaceIdx,onVertexDrag,onVertexDragEnd]);
+
+  redrawRoofRef.current=redrawRoof;
+
+  useEffect(()=>{if(mapReady&&buildingCoords) redrawRoof();},[mapReady,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,editFaceIdx]);
 
   useEffect(()=>{
     if(!panelsDrawn||!buildingCoords||!selPanel||!leafRef.current||!window.L||!coords) return;
@@ -1531,11 +1678,13 @@ export default function App(){
                 const qC=isGood?q[0]:q[1];
                 const conf=f.confidence??0;
                 const confColor=conf>=0.7?"var(--green)":conf>=0.4?"var(--amber)":"var(--red)";
-                const face2d=(detectedArea||80)*(f.pct/100);
-                const face3d=compute3dArea(face2d,f.slope);
+                const face2d=f.area2d_manual||(detectedArea||80)*(f.pct/100);
+                const face3d=f.area3d_manual||compute3dArea(face2d,f.slope);
                 return(
                   <button key={i} className={`face-btn ${selFaceIdx===i?"active":""}`} onClick={()=>selectFace(i,detectedFaces)}>
-                    <span className="fb-main">{f.isFlatRoof?"🏢 ":""}{f.orientation} · {f.slope}°</span>
+                    <span className="fb-main">{f.isFlatRoof?"🏢 ":""}{f.orientation} · {f.slope}°
+                      {f.status==="manual"&&<span style={{fontSize:6,color:"var(--amber)",marginLeft:4}}>✏️</span>}
+                    </span>
                     <span className="fb-sub">{f.pct}% · {f.avgH}m hoogte{f.maxRelH?` · max ${f.maxRelH}m`:""}</span>
                     <span style={{fontSize:7,color:"var(--blue)",display:"block",marginTop:1}}>
                       3D: {face3d.toFixed(0)}m² <span style={{color:"var(--muted)"}}>(2D: {face2d.toFixed(0)}m²)</span>
@@ -1551,6 +1700,49 @@ export default function App(){
                 );
               })}
             </div>
+
+            {/* Dakvlak editor knoppen */}
+            <div style={{display:"flex",gap:5,marginTop:6,flexWrap:"wrap"}}>
+              {!editMode?(
+                <button className="btn sec sm" style={{flex:1}} onClick={()=>{setEditMode(true);setEditFaceIdx(selFaceIdx);}}>
+                  ✏️ Dakvlak aanpassen
+                </button>
+              ):(
+                <>
+                  <button className="btn green sm" style={{flex:1}} onClick={()=>{
+                    // Bevestig: markeer vlak als manual
+                    setDetectedFaces(prev=>prev.map((f,i)=>i===editFaceIdx?{...f,status:"manual"}:f));
+                    setEditMode(false);
+                  }}>
+                    ✅ Bevestig correctie
+                  </button>
+                  <button className="btn danger sm" onClick={()=>setEditMode(false)}>
+                    ✕ Annuleer
+                  </button>
+                </>
+              )}
+              {/* Dakvlak splitsen: voeg extra vlak toe */}
+              {!editMode&&detectedFaces.length<4&&(
+                <button className="btn sec sm" onClick={()=>{
+                  // Splits het geselecteerde vlak in 2 gelijke helften
+                  const f=detectedFaces[selFaceIdx];
+                  if(!f?.polygon||f.polygon.length<4) return;
+                  const mid=Math.floor(f.polygon.length/2);
+                  const poly1=[...f.polygon.slice(0,mid+1)];
+                  const poly2=[...f.polygon.slice(mid)];
+                  const half1={...f,polygon:poly1,pct:Math.round(f.pct/2),status:"manual"};
+                  const half2={...f,orientation:DIRS8[(DIRS8.indexOf(f.orientation)+2)%8]||f.orientation,polygon:poly2,pct:Math.round(f.pct/2),status:"manual"};
+                  setDetectedFaces(prev=>[...prev.slice(0,selFaceIdx),half1,half2,...prev.slice(selFaceIdx+1)]);
+                }}>
+                  ➕ Splits vlak
+                </button>
+              )}
+            </div>
+            {editMode&&(
+              <div className="info-box" style={{marginTop:5,background:"#fffbeb",borderColor:"#fde68a"}}>
+                <strong>✏️ Editeer modus actief</strong> — Versleep de witte hoekpunten op de kaart om vlak {editFaceIdx+1} bij te stellen. Klik "Bevestig" als klaar.
+              </div>
+            )}
           </div>}
           {dhmStatus==="error"&&<div className="info-box err">
             <strong>⚠️ LiDAR niet beschikbaar</strong><br/>
