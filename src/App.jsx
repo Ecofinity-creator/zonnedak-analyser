@@ -1502,6 +1502,13 @@ export default function App(){
     } else {dhmLayerRef.current=null;}
   },[activeLayer,mapReady]);
 
+  // Leaflet kaart herlayout bij terugkeer naar configuratie tab (voorkomt witte kaart)
+  useEffect(()=>{
+    if(activeTab==="configuratie"&&leafRef.current&&mapReady){
+      setTimeout(()=>leafRef.current?.invalidateSize?.(),50);
+    }
+  },[activeTab,mapReady]);
+
   const justSelectedRef=useRef(false); // Voorkom herzoeken na adresselectie
 
   useEffect(()=>{
@@ -1900,13 +1907,19 @@ export default function App(){
         {/* BUG 3 FIX: twee aparte knoppen — toon op kaart vs bereken resultaten */}
         <button className="btn sec full" onClick={()=>{
           if(!coords||!buildingCoords||!selPanel) return;
-          setActiveTab("configuratie"); // Blijf op kaart
+          // Teken panelen op de kaart
           if(leafRef.current&&window.L){
             const L=window.L,map=leafRef.current;
             if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
             panelLayerRef.current=drawPanelLayer(map,L,buildingCoords,coords.lat,panelCount,selPanel,orientation);
             setPanelsDrawn(true);
           }
+          // Switch naar configuratie tab (kaart) EN forceer Leaflet herlayout
+          setActiveTab("configuratie");
+          // invalidateSize na render-cycle zodat Leaflet de nieuwe afmetingen kent
+          setTimeout(()=>{
+            if(leafRef.current&&window.L) leafRef.current.invalidateSize();
+          },100);
         }} disabled={!coords||!buildingCoords||isLoading} style={{marginBottom:5}}>
           🏠 Toon {panelCount} panelen op dak
         </button>
