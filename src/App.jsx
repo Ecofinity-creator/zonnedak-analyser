@@ -856,7 +856,19 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
         }
       }
     }
-    return faces.map((f,i)=>({...f,polygon:polys[i]&&polys[i].length>=3?polys[i]:lc}));
+    // ← Wijs polys toe op basis van aspectDeg, NIET op array-index.
+    // Na sort((a,b)=>b.n-a.n) in computeRoofFaces kan faces[0] de "linker" face zijn.
+    // rightAspect = ridgeAngleDeg + 90 → polys[0]  (crossComp ≥ 0, "rechts")
+    // leftAspect  = ridgeAngleDeg - 90 → polys[1]  (crossComp < 0, "links")
+    return faces.map(f=>{
+      // Hoekafstand van de face t.o.v. de rechts-loodrechte (ridgeAngle+90)
+      const diff=((f.aspectDeg||0)-(ridgeAngleDeg||0)+360)%360;
+      // 0–180° kloksgewijs van nok = rechterzijde (polys[0])
+      // 180–360° = linkerzijde (polys[1])
+      const polyIdx=diff<180?0:1;
+      const poly=polys[polyIdx];
+      return {...f,polygon:poly&&poly.length>=3?poly:lc};
+    });
   }
 
   // Voor 3-4 vlakken (schilddak): driehoeken vanuit centroïde
