@@ -37,6 +37,9 @@ import { useState, useEffect, useRef, useCallback, Component } from "react";
 const NOMINATIM = "https://nominatim.openstreetmap.org/search";
 const GRB_WFS   = "https://geo.api.vlaanderen.be/GRB/wfs";
 const DHM_WMS   = "https://geoservices.informatievlaanderen.be/raadpleegdiensten/DHMVII/wms";
+// Digitaal Vlaanderen orthofoto — dekt heel Vlaanderen (beter dan Esri voor BE)
+const ORTHO_WMS = "https://geoservices.informatievlaanderen.be/raadpleegdiensten/OMWRGBMRVL/wms";
+const ORTHO_LYR = "OMWRGBMRVL";
 const WCS_URLS  = [
   "https://geo.api.vlaanderen.be/DHMV/wcs",
   "https://geoservices.informatievlaanderen.be/raadpleegdiensten/DHMVII/wcs",
@@ -1299,6 +1302,45 @@ function CustomerPanel({customer,setCustomer,tlToken,setTlToken}){
   );
 }
 
+
+// ─── Auto-merge samenvallende hoekpunten na vertex-drag ─────────────────────
+// Drempel: 1.5m — als twee punten dichter liggen, worden ze samengevoegd
+// tot hun gemiddelde positie. Polygoon wordt hervalideerd (min 3 punten).
+function mergeCoincidentVertices(polygon,thresholdM=1.5){
+  if(!polygon||polygon.length<3) return polygon;
+  const mLat=111320;
+  const cLat=polygon.reduce((s,p)=>s+p[0],0)/polygon.length;
+  const mLng=111320*Math.cos(cLat*Math.PI/180);
+  const distM=([la1,ln1],[la2,ln2])=>Math.sqrt(
+    ((la2-la1)*mLat)**2 + ((ln2-ln1)*mLng)**2
+  );
+  let pts=[...polygon];
+  let changed=true;
+  while(changed&&pts.length>3){
+    changed=false;
+    for(let i=0;i<pts.length;i++){
+      const j=(i+1)%pts.length;
+      if(distM(pts[i],pts[j])<thresholdM){
+        // Vervang beide punten door hun gemiddelde
+        const merged=[(pts[i][0]+pts[j][0])/2,(pts[i][1]+pts[j][1])/2];
+        const newPts=[...pts];
+        newPts.splice(j,1); // verwijder j
+        newPts[i]=merged;   // vervang i door gemiddelde
+        if(i===newPts.length) newPts[i]=newPts[0]; // wrap-around fix
+        pts=newPts.filter((_,idx)=>idx!==Math.min(i,j)||i!==j); // deduplicate wrap
+        // Simpeler: splice j en update i
+        const p2=[...pts];
+        p2.splice(j===0?pts.length-1:j,1);
+        p2[Math.min(i,p2.length-1)]=merged;
+        pts=p2;
+        changed=true;
+        break;
+      }
+    }
+  }
+  return pts.length>=3?pts:polygon; // behoud origineel als te weinig punten
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1421,10 +1463,15 @@ export default function App(){
     setDetectedFaces(prev=>{
       if(!prev) return prev;
       return prev.map((f,fi)=>{
-        const newPoly=newPolygons[fi];
-        if(!newPoly) return f;
+        const rawPoly=newPolygons[fi];
+        if(!rawPoly) return f;
+        // Auto-merge hoekpunten die samenvallen (< 1.5m)
+        const newPoly=mergeCoincidentVertices(rawPoly,1.5);
         const area2d=Math.round(polyAreaLambert72(newPoly));
         const area3d=+compute3dArea(area2d,f.slope).toFixed(1);
+        if(rawPoly.length!==newPoly.length){
+          console.info(\`[ZonneDak] Samenvallende hoekpunten samengevoegd: \${rawPoly.length} → \${newPoly.length} punten\`);
+        }
         return {...f,polygon:newPoly,area2d_manual:area2d,area3d_manual:area3d,status:"manual"};
       });
     });
@@ -1510,10 +1557,17 @@ export default function App(){
     if(!leafRef.current||!mapReady) return;
     const L=window.L,map=leafRef.current;
     // Wissel base tile laag
-    if(baseTileRef.current){map.removeLayer(baseTileRef.current);}
+    if(baseTileRef.current){map.removeLayer(baseTileRef.current);baseTileRef.current=null;}
     if(activeLayer==="kaart"){
       baseTileRef.current=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:"© OSM",maxZoom:21}).addTo(map);
+    } else if(activeLayer==="ortho"){
+      // Digitaal Vlaanderen orthofoto — volledige dekking Vlaanderen
+      baseTileRef.current=L.tileLayer.wms(ORTHO_WMS,{
+        layers:ORTHO_LYR,format:"image/jpeg",transparent:false,
+        attribution:"© Agentschap Digitaal Vlaanderen",version:"1.3.0"
+      }).addTo(map);
     } else {
+      // Esri als fallback (minder dekking in BE)
       baseTileRef.current=L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         {attribution:"© Esri World Imagery",maxZoom:21}
@@ -1799,9 +1853,9 @@ export default function App(){
                     const withPolys=generateFacePolygons(buildingCoords,detectedFaces,ridgeAngle);
                     setDetectedFaces(withPolys);
                     // Kleine vertraging zodat state update doorgekomen is
-                    setTimeout(()=>setEditMode(true),50);
+                    setActiveLayer("ortho");setTimeout(()=>setEditMode(true),50);
                   } else {
-                    setEditMode(true);
+                    setActiveLayer("ortho");setEditMode(true);
                   }
                 }}>
                   ✏️ Dakvlak aanpassen
@@ -1811,11 +1865,11 @@ export default function App(){
                   <button className="btn green sm" style={{flex:1}} onClick={()=>{
                     // Bevestig: markeer vlak als manual
                     setDetectedFaces(prev=>prev.map((f,i)=>i===selFaceIdx?{...f,status:"manual"}:f));
-                    setEditMode(false);
+                    setEditMode(false);setActiveLayer("luchtfoto");
                   }}>
                     ✅ Bevestig correctie
                   </button>
-                  <button className="btn danger sm" onClick={()=>setEditMode(false)}>
+                  <button className="btn danger sm" onClick={()=>{setEditMode(false);setActiveLayer("luchtfoto");}}>
                     ✕ Annuleer
                   </button>
                 </>
@@ -1994,9 +2048,10 @@ export default function App(){
           <div id="leaflet-map" style={{height:"100%"}}/>
           {/* Laagkiezer */}
           <div className="map-btns">
-            <button className={`map-btn ${activeLayer==="luchtfoto"?"active":""}`} onClick={()=>setActiveLayer("luchtfoto")}>🛰️ Luchtfoto</button>
+            <button className={`map-btn ${activeLayer==="luchtfoto"?"active":""}`} onClick={()=>setActiveLayer("luchtfoto")}>🛰️ Esri</button>
+            <button className={`map-btn ${activeLayer==="ortho"?"active":""}`} onClick={()=>setActiveLayer("ortho")} title="Orthofoto Vlaanderen (volledige dekking)">📷 Ortho VL</button>
             <button className={`map-btn ${activeLayer==="kaart"?"active":""}`} onClick={()=>setActiveLayer("kaart")}>🗺️ Kaart</button>
-            <button className={`map-btn ${activeLayer==="dsm"?"active":""}`} onClick={()=>setActiveLayer("dsm")}>📡 DSM Hoogte</button>
+            <button className={`map-btn ${activeLayer==="dsm"?"active":""}`} onClick={()=>setActiveLayer("dsm")}>📡 DSM</button>
           </div>
           {/* Status pill */}
           {coords&&<div className="status-pill">
