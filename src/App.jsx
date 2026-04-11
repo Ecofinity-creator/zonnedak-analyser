@@ -1470,7 +1470,7 @@ export default function App(){
         const area2d=Math.round(polyAreaLambert72(newPoly));
         const area3d=+compute3dArea(area2d,f.slope).toFixed(1);
         if(rawPoly.length!==newPoly.length){
-          console.info(\`[ZonneDak] Samenvallende hoekpunten samengevoegd: \${rawPoly.length} → \${newPoly.length} punten\`);
+          console.info("[ZonneDak] Samenvallende hoekpunten samengevoegd: "+rawPoly.length+" → "+newPoly.length+" punten");
         }
         return {...f,polygon:newPoly,area2d_manual:area2d,area3d_manual:area3d,status:"manual"};
       });
