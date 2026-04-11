@@ -1323,45 +1323,37 @@ function CustomerPanel({customer,setCustomer,tlToken,setTlToken}){
 }
 
 
-// ─── Auto-merge samenvallende hoekpunten na vertex-drag ─────────────────────
-// Drempel: 1.5m — als twee punten dichter liggen, worden ze samengevoegd
-// tot hun gemiddelde positie. Polygoon wordt hervalideerd (min 3 punten).
-// ─── Auto-merge samenvallende hoekpunten ─────────────────────────────────────
-// Drempel 1.5m: als twee opeenvolgende punten dichter liggen, smelten ze samen.
-// Correcte implementatie: één splice per merge-iteratie.
-function mergeCoincidentVertices(polygon,thresholdM=1.5){
-  if(!polygon||polygon.length<3) return polygon;
+// ─── Merge ENKEL het gesleepte vertex met zijn directe buren ─────────────────
+// Controleert alleen het gesleepte punt (vertexIdx) met buren, nooit alle paren.
+// Dit voorkomt dat punten die toevallig dicht bij elkaar liggen worden samengevoegd.
+function mergeDraggedVertex(polygon,vertexIdx,thresholdM=8){
+  if(!polygon||polygon.length<=3) return polygon;
   const cLat=polygon.reduce((s,p)=>s+p[0],0)/polygon.length;
   const mLat=111320,mLng=111320*Math.cos(cLat*Math.PI/180);
   const dist=(a,b)=>Math.sqrt(((b[0]-a[0])*mLat)**2+((b[1]-a[1])*mLng)**2);
   let pts=[...polygon];
-  let changed=true;
-  while(changed&&pts.length>=3){
-    changed=false;
-    for(let i=0;i<pts.length;i++){
-      const j=(i+1)%pts.length;
-      if(dist(pts[i],pts[j])<thresholdM){
-        if(pts.length<=3) break; // nooit onder 3 punten
-        const avg=[(pts[i][0]+pts[j][0])/2,(pts[i][1]+pts[j][1])/2];
-        // Verwijder j, vervang i door gemiddelde
-        // Wrap-around: j=0 en i=last → verwijder last, vervang i aan index length-2
-        const next=[...pts];
-        if(j===0){
-          // Verwijder het laatste punt (i), zet avg op positie 0
-          next.splice(i,1);
-          next[0]=avg;
-        } else {
-          next.splice(j,1);  // verwijder j (i+1)
-          next[i]=avg;        // vervang i door gemiddelde
-        }
-        pts=next;
-        changed=true;
-        break;
-      }
-    }
+  const n=pts.length;
+  const vi=((vertexIdx%n)+n)%n;
+  const nextI=(vi+1)%n;
+  const prevI=(vi-1+n)%n;
+  // Check met volgende buur eerst
+  if(dist(pts[vi],pts[nextI])<thresholdM){
+    const avg=[(pts[vi][0]+pts[nextI][0])/2,(pts[vi][1]+pts[nextI][1])/2];
+    pts[vi]=avg;
+    pts.splice(nextI,1);
+    return pts;
   }
-  return pts.length>=3?pts:polygon;
+  // Check met vorige buur
+  if(dist(pts[vi],pts[prevI])<thresholdM){
+    const avg=[(pts[vi][0]+pts[prevI][0])/2,(pts[vi][1]+pts[prevI][1])/2];
+    pts[prevI]=avg;
+    pts.splice(vi,1);
+    return pts;
+  }
+  return pts;
 }
+// Lege stub — niet meer gebruikt
+function mergeCoincidentVertices(p){return p;}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  MAIN APP
@@ -1466,6 +1458,7 @@ export default function App(){
   useEffect(()=>{detectedFacesRef.current=detectedFaces;},[detectedFaces]);
 
   const draggedPolygonsRef=useRef(null);
+  const draggedVertexRef=useRef(null); // {faceIdx, vertexIdx}
 
   // Stabiele callback — geen re-render tijdens drag
   const onVertexDrag=useCallback((faceIdx,vertexIdx,newLatLng)=>{
@@ -1475,6 +1468,7 @@ export default function App(){
     }
     if(draggedPolygonsRef.current?.[faceIdx]){
       draggedPolygonsRef.current[faceIdx][vertexIdx]=[newLatLng[0],newLatLng[1]];
+      draggedVertexRef.current={faceIdx,vertexIdx}; // bijhouden welk punt gesleept werd
     }
   },[]); // Lege deps — stabiele referentie, gebruikt ref intern
 
@@ -1482,18 +1476,21 @@ export default function App(){
     if(!draggedPolygonsRef.current) return;
     const newPolygons=draggedPolygonsRef.current;
     draggedPolygonsRef.current=null;
+    const draggedVtx=draggedVertexRef.current;
+    draggedVertexRef.current=null;
     setDetectedFaces(prev=>{
       if(!prev) return prev;
       return prev.map((f,fi)=>{
         const rawPoly=newPolygons[fi];
         if(!rawPoly) return f;
-        // Auto-merge hoekpunten die samenvallen (< 1.5m)
-        const newPoly=mergeCoincidentVertices(rawPoly,8);
+        // Merge ENKEL het gesleepte punt met zijn directe buren (niet alle paren)
+        // Dit voorkomt dat punten die toevallig dicht bij elkaar liggen worden samengevoegd
+        let newPoly=rawPoly;
+        if(draggedVtx&&draggedVtx.faceIdx===fi){
+          newPoly=mergeDraggedVertex(rawPoly,draggedVtx.vertexIdx,8);
+        }
         const area2d=Math.round(polyAreaLambert72(newPoly));
         const area3d=+compute3dArea(area2d,f.slope).toFixed(1);
-        if(rawPoly.length!==newPoly.length){
-          console.info("[ZonneDak] Samenvallende hoekpunten samengevoegd: "+rawPoly.length+" → "+newPoly.length+" punten");
-        }
         return {...f,polygon:newPoly,area2d_manual:area2d,area3d_manual:area3d,status:"manual"};
       });
     });
