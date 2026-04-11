@@ -858,7 +858,7 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
 }
 
 // ─── Dakpolygonen tekenen op de kaart (editeerbaar) ─────────────────────────
-function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,editFaceIdx,onVertexDrag,onVertexDragEnd){
+function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVertexDrag,onVertexDragEnd){
   if(!faces||!faces.length) return null;
   const g=L.layerGroup();
 
@@ -891,7 +891,7 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,editFaceIdx,o
     })}).on("click",()=>onSelect(fi)).addTo(g);
 
     // Editeerbare vertices — oranje bolletjes op elke hoek
-    if(editMode&&fi===editFaceIdx){
+    if(editMode&&fi===selFaceIdx){
       const liveLatLngs=f.polygon.map(pt=>L.latLng(pt[0],pt[1]));
 
       f.polygon.forEach((pt,vi)=>{
@@ -1316,7 +1316,7 @@ export default function App(){
   const[dhmStatus,setDhmStatus]=useState("idle");const[dhmError,setDhmError]=useState("");
   const[detectedFaces,setDetectedFaces]=useState(null);const[selFaceIdx,setSelFaceIdx]=useState(0);
   // Editeer-modus voor dakvlakken
-  const[editMode,setEditMode]=useState(false);const[editFaceIdx,setEditFaceIdx]=useState(0);
+  const[editMode,setEditMode]=useState(false);
 
   const leafRef=useRef(null);const markerRef=useRef(null);
   const selectingRef=useRef(false);
@@ -1433,7 +1433,7 @@ export default function App(){
       const faceGroup=drawFacePolygons(
         map,L,facesToDraw,selFaceIdx,
         (idx)=>{setSelFaceIdx(idx);setOrientation(facesToDraw[idx].orientation);setSlope(facesToDraw[idx].slope);},
-        editMode,editFaceIdx,onVertexDrag,onVertexDragEnd
+        editMode,selFaceIdx,onVertexDrag,onVertexDragEnd
       );
 
       // Sla beide lagen op als één groep zodat removeLayer werkt
@@ -1446,11 +1446,11 @@ export default function App(){
     } else {
       roofLayerRef.current=drawRealRoof(map,L,buildingCoords,orientation);
     }
-  },[buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,editFaceIdx]);
+  },[buildingCoords,orientation,detectedFaces,selFaceIdx,editMode]);
 
   redrawRoofRef.current=redrawRoof;
 
-  useEffect(()=>{if(mapReady&&buildingCoords) redrawRoof();},[mapReady,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,editFaceIdx]);
+  useEffect(()=>{if(mapReady&&buildingCoords) redrawRoof();},[mapReady,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode]);
 
   useEffect(()=>{
     if(!panelsDrawn||!buildingCoords||!selPanel||!leafRef.current||!window.L||!coords) return;
@@ -1633,12 +1633,6 @@ export default function App(){
       slopeFactor:+getSlopeFactor(slope).toFixed(3),
       grbOk:grbStatus==="ok",dhmOk:dhmStatus==="ok",orientation,slope,
       faceConfidence:selFaceData?.confidence,faceStatus:selFaceData?.status||"auto"});
-    if(leafRef.current&&window.L){
-      const L=window.L,map=leafRef.current;
-      if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
-      panelLayerRef.current=drawPanelLayer(map,L,buildingCoords,coords.lat,panelCount,selPanel,orientation);
-      setPanelsDrawn(true);
-    }
     setActiveTab("resultaten");setAiLoading(true);setAiText("");
     try{
       const dhmStr=dhmStatus==="ok"&&detectedFaces?`\nDHM LiDAR: ${detectedFaces.map(f=>`${f.orientation} ${f.slope}° (${f.pct}%)`).join(", ")}`:"\nHandmatige invoer.";
@@ -1770,9 +1764,9 @@ export default function App(){
                     const withPolys=generateFacePolygons(buildingCoords,detectedFaces,ridgeAngle);
                     setDetectedFaces(withPolys);
                     // Kleine vertraging zodat state update doorgekomen is
-                    setTimeout(()=>{setEditMode(true);setEditFaceIdx(selFaceIdx);},50);
+                    setTimeout(()=>setEditMode(true),50);
                   } else {
-                    setEditMode(true);setEditFaceIdx(selFaceIdx);
+                    setEditMode(true);
                   }
                 }}>
                   ✏️ Dakvlak aanpassen
@@ -1781,7 +1775,7 @@ export default function App(){
                 <>
                   <button className="btn green sm" style={{flex:1}} onClick={()=>{
                     // Bevestig: markeer vlak als manual
-                    setDetectedFaces(prev=>prev.map((f,i)=>i===editFaceIdx?{...f,status:"manual"}:f));
+                    setDetectedFaces(prev=>prev.map((f,i)=>i===selFaceIdx?{...f,status:"manual"}:f));
                     setEditMode(false);
                   }}>
                     ✅ Bevestig correctie
@@ -1810,7 +1804,7 @@ export default function App(){
             </div>
             {editMode&&(
               <div className="info-box" style={{marginTop:5,background:"#fffbeb",borderColor:"#fde68a"}}>
-                <strong>✏️ Editeer modus actief</strong> — Versleep de witte hoekpunten op de kaart om vlak {editFaceIdx+1} bij te stellen. Klik "Bevestig" als klaar.
+                <strong>✏️ Editeer modus actief</strong> — Versleep de oranje hoekpunten op de kaart om het geselecteerde vlak bij te stellen. Klik "Bevestig" als klaar.
               </div>
             )}
           </div>}
@@ -1862,22 +1856,21 @@ export default function App(){
         {/* Geselecteerd paneel */}
         <div>
           <div className="sl">Geselecteerd paneel</div>
-          <div className="card selected" style={{cursor:"default"}}>
+          <div className="card selected" style={{cursor:"pointer"}} onClick={()=>setActiveTab("panelen")}>
             <div className="card-name">{selPanel?.model}</div><div className="card-brand">{selPanel?.brand}</div>
             <div className="chips"><span className="chip gold">{selPanel?.watt}W</span><span className="chip">{selPanel?.eff}% eff</span><span className="chip">€{selPanel?.price}/st</span></div>
+            <div style={{fontSize:7,color:"var(--amber)",marginTop:4}}>👆 Klik om paneel te wijzigen</div>
           </div>
-          <button className="btn sec full" style={{marginTop:6}} onClick={()=>setActiveTab("panelen")}>Paneel wijzigen →</button>
         </div>
 
         {/* Omvormer */}
         <div>
           <div className="sl">AlphaESS Omvormer</div>
-          {selInv?<div className="inv-card selected" style={{cursor:"default"}}>
+          {selInv?<div className="inv-card selected" style={{cursor:"pointer"}} onClick={()=>setActiveTab("omvormers")}>
             <div className="alpha-badge">⚡ G3</div>
             <div className="card-name">{selInv.model}</div>
             <div className="chips"><span className="chip alpha-c">{selInv.kw}kW</span><span className="chip">€{selInv.price.toLocaleString()}</span></div>
-          </div>:<div className="info-box" style={{fontSize:8}}>Geen omvormer · forfait €1.200</div>}
-          <button className="btn alpha full" style={{marginTop:6}} onClick={()=>setActiveTab("omvormers")}>{selInv?"Omvormer wijzigen →":"AlphaESS kiezen →"}</button>
+          </div>:<div className="info-box" style={{fontSize:8,cursor:"pointer"}} onClick={()=>setActiveTab("omvormers")}>Geen omvormer · klik om te kiezen</div>}
         </div>
 
         {/* Aantal */}
@@ -1904,8 +1897,21 @@ export default function App(){
         </div>
 
         <div className="divider"/>
+        {/* BUG 3 FIX: twee aparte knoppen — toon op kaart vs bereken resultaten */}
+        <button className="btn sec full" onClick={()=>{
+          if(!coords||!buildingCoords||!selPanel) return;
+          setActiveTab("configuratie"); // Blijf op kaart
+          if(leafRef.current&&window.L){
+            const L=window.L,map=leafRef.current;
+            if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
+            panelLayerRef.current=drawPanelLayer(map,L,buildingCoords,coords.lat,panelCount,selPanel,orientation);
+            setPanelsDrawn(true);
+          }
+        }} disabled={!coords||!buildingCoords||isLoading} style={{marginBottom:5}}>
+          🏠 Toon {panelCount} panelen op dak
+        </button>
         <button className="btn full" onClick={calculate} disabled={!coords||aiLoading||!buildingCoords||isLoading}>
-          {aiLoading?<><div className="spinner"/>Analyseren...</>:dhmStatus==="loading"?<><div className="spinner cyan"/>LiDAR verwerken...</>:grbStatus==="loading"?<><div className="spinner"/>Laden...</>:"☀️ Bereken & toon panelen op dak"}
+          {aiLoading?<><div className="spinner"/>Analyseren...</>:dhmStatus==="loading"?<><div className="spinner cyan"/>LiDAR verwerken...</>:grbStatus==="loading"?<><div className="spinner"/>Laden...</>:"☀️ Bereken resultaten"}
         </button>
         <div className="info-box">
           <strong>📡 Databronnen</strong><br/>GRB · GRB Gebouwcontouren · 1m<br/>DHM WCS · DSM+DTM · Horn's methode<br/>Lambert72 · Helmert 7-parameter<br/>© Agentschap Digitaal Vlaanderen
