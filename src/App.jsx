@@ -1822,19 +1822,28 @@ export default function App(){
             <div style={{display:"flex",alignItems:"center",gap:7}}><div className="spinner cyan"/>WCS + TIFF parser + Horn's methode...</div>
             <div className="dhm-bar"><div className="dhm-bar-fill"/></div>
           </div>}
-          {dhmStatus==="ok"&&detectedFaces&&<div>
-            <div className="info-box dhm-ok" style={{marginBottom:5}}>
-              {detectedFaces[0]?.isFlatRoof
-                ?<><strong>🏢 Plat dak gedetecteerd via LiDAR</strong>
-                  <span style={{display:"block",marginTop:3,fontSize:7,color:"var(--muted)"}}>
-                    Gebouwhoogte: {detectedFaces[0].maxRelH}m · Helling auto op 3° · EPSG:31370
-                  </span></>
-                :<><strong>✅ {detectedFaces.length} dakvlak(ken) gedetecteerd via LiDAR</strong>
-                  <span style={{display:"block",marginTop:3,fontSize:7,color:"var(--muted)"}}>
-                    Gebouwcontour-geclipped · Horn's methode · EPSG:31370
-                  </span></>
-              }
-            </div>
+          {dhmStatus==="ok"&&detectedFaces&&<div className="info-box dhm-ok" style={{marginBottom:5}}>
+            {detectedFaces[0]?.isFlatRoof
+              ?<><strong>🏢 Plat dak gedetecteerd via LiDAR</strong>
+                <span style={{display:"block",marginTop:3,fontSize:7,color:"var(--muted)"}}>
+                  Gebouwhoogte: {detectedFaces[0].maxRelH}m · Helling auto op 3° · EPSG:31370
+                </span></>
+              :<><strong>✅ {detectedFaces.length} dakvlak(ken) gedetecteerd via LiDAR</strong>
+                <span style={{display:"block",marginTop:3,fontSize:7,color:"var(--muted)"}}>
+                  Gebouwcontour-geclipped · Horn's methode · EPSG:31370
+                </span></>
+            }
+          </div>}
+          {dhmStatus==="error"&&detectedFaces&&<div className="info-box warn" style={{marginBottom:5}}>
+            <strong>⚠️ LiDAR niet beschikbaar</strong> — Dakvlakken bepaald via GRB-contour.<br/>
+            <span style={{fontSize:9,color:"var(--muted)"}}>Pas helling en oriëntatie manueel aan indien nodig.</span>
+          </div>}
+          {dhmStatus==="error"&&!detectedFaces&&<div className="info-box err">
+            <strong>⚠️ LiDAR niet beschikbaar</strong><br/>
+            <span style={{fontSize:7,wordBreak:"break-all",color:"var(--muted)"}}>{dhmError}</span><br/>
+            Stel helling &amp; richting handmatig in hieronder.
+          </div>}
+          {detectedFaces&&<div>
             <div className="face-grid">
               {detectedFaces.map((f,i)=>{
                 const q=ZONE_Q[f.orientation]||ZONE_Q.Z;
@@ -1918,11 +1927,6 @@ export default function App(){
                 <strong>✏️ Editeer modus actief</strong> — Versleep de oranje hoekpunten op de kaart om het geselecteerde vlak bij te stellen. Klik "Bevestig" als klaar.
               </div>
             )}
-          </div>}
-          {dhmStatus==="error"&&<div className="info-box err">
-            <strong>⚠️ LiDAR niet beschikbaar</strong><br/>
-            <span style={{fontSize:7,wordBreak:"break-all",color:"var(--muted)"}}>{dhmError}</span><br/>
-            Stel helling &amp; richting handmatig in hieronder.
           </div>}
         </div>}
 
