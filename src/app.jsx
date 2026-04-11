@@ -1306,39 +1306,41 @@ function CustomerPanel({customer,setCustomer,tlToken,setTlToken}){
 // ─── Auto-merge samenvallende hoekpunten na vertex-drag ─────────────────────
 // Drempel: 1.5m — als twee punten dichter liggen, worden ze samengevoegd
 // tot hun gemiddelde positie. Polygoon wordt hervalideerd (min 3 punten).
+// ─── Auto-merge samenvallende hoekpunten ─────────────────────────────────────
+// Drempel 1.5m: als twee opeenvolgende punten dichter liggen, smelten ze samen.
+// Correcte implementatie: één splice per merge-iteratie.
 function mergeCoincidentVertices(polygon,thresholdM=1.5){
   if(!polygon||polygon.length<3) return polygon;
-  const mLat=111320;
   const cLat=polygon.reduce((s,p)=>s+p[0],0)/polygon.length;
-  const mLng=111320*Math.cos(cLat*Math.PI/180);
-  const distM=([la1,ln1],[la2,ln2])=>Math.sqrt(
-    ((la2-la1)*mLat)**2 + ((ln2-ln1)*mLng)**2
-  );
+  const mLat=111320,mLng=111320*Math.cos(cLat*Math.PI/180);
+  const dist=(a,b)=>Math.sqrt(((b[0]-a[0])*mLat)**2+((b[1]-a[1])*mLng)**2);
   let pts=[...polygon];
   let changed=true;
-  while(changed&&pts.length>3){
+  while(changed&&pts.length>=3){
     changed=false;
     for(let i=0;i<pts.length;i++){
       const j=(i+1)%pts.length;
-      if(distM(pts[i],pts[j])<thresholdM){
-        // Vervang beide punten door hun gemiddelde
-        const merged=[(pts[i][0]+pts[j][0])/2,(pts[i][1]+pts[j][1])/2];
-        const newPts=[...pts];
-        newPts.splice(j,1); // verwijder j
-        newPts[i]=merged;   // vervang i door gemiddelde
-        if(i===newPts.length) newPts[i]=newPts[0]; // wrap-around fix
-        pts=newPts.filter((_,idx)=>idx!==Math.min(i,j)||i!==j); // deduplicate wrap
-        // Simpeler: splice j en update i
-        const p2=[...pts];
-        p2.splice(j===0?pts.length-1:j,1);
-        p2[Math.min(i,p2.length-1)]=merged;
-        pts=p2;
+      if(dist(pts[i],pts[j])<thresholdM){
+        if(pts.length<=3) break; // nooit onder 3 punten
+        const avg=[(pts[i][0]+pts[j][0])/2,(pts[i][1]+pts[j][1])/2];
+        // Verwijder j, vervang i door gemiddelde
+        // Wrap-around: j=0 en i=last → verwijder last, vervang i aan index length-2
+        const next=[...pts];
+        if(j===0){
+          // Verwijder het laatste punt (i), zet avg op positie 0
+          next.splice(i,1);
+          next[0]=avg;
+        } else {
+          next.splice(j,1);  // verwijder j (i+1)
+          next[i]=avg;        // vervang i door gemiddelde
+        }
+        pts=next;
         changed=true;
         break;
       }
     }
   }
-  return pts.length>=3?pts:polygon; // behoud origineel als te weinig punten
+  return pts.length>=3?pts:polygon;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1548,7 +1550,7 @@ export default function App(){
     // Start met luchtfoto
     baseTileRef.current=L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-      {attribution:"© Esri World Imagery",maxZoom:21}
+      {attribution:"© Esri World Imagery",maxZoom:21,maxNativeZoom:18}
     ).addTo(map);
     leafRef.current=map;
   },[mapReady]);
@@ -1570,7 +1572,7 @@ export default function App(){
       // Esri als fallback (minder dekking in BE)
       baseTileRef.current=L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        {attribution:"© Esri World Imagery",maxZoom:21}
+        {attribution:"© Esri World Imagery",maxZoom:21,maxNativeZoom:18}
       ).addTo(map);
     }
     // DHM overlay
@@ -1853,9 +1855,9 @@ export default function App(){
                     const withPolys=generateFacePolygons(buildingCoords,detectedFaces,ridgeAngle);
                     setDetectedFaces(withPolys);
                     // Kleine vertraging zodat state update doorgekomen is
-                    setActiveLayer("ortho");setTimeout(()=>setEditMode(true),50);
+                    setTimeout(()=>setEditMode(true),50);
                   } else {
-                    setActiveLayer("ortho");setEditMode(true);
+                    setEditMode(true);
                   }
                 }}>
                   ✏️ Dakvlak aanpassen
@@ -1865,11 +1867,11 @@ export default function App(){
                   <button className="btn green sm" style={{flex:1}} onClick={()=>{
                     // Bevestig: markeer vlak als manual
                     setDetectedFaces(prev=>prev.map((f,i)=>i===selFaceIdx?{...f,status:"manual"}:f));
-                    setEditMode(false);setActiveLayer("luchtfoto");
+                    setEditMode(false);
                   }}>
                     ✅ Bevestig correctie
                   </button>
-                  <button className="btn danger sm" onClick={()=>{setEditMode(false);setActiveLayer("luchtfoto");}}>
+                  <button className="btn danger sm" onClick={()=>{setEditMode(false);}}>
                     ✕ Annuleer
                   </button>
                 </>
