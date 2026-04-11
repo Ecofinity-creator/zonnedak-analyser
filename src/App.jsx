@@ -410,29 +410,52 @@ function getSlopeFactor(deg){
 // ─── FIX BUG-05: Paneelinpassing in Lambert72 meter (ipv WGS84 graden) ────────
 // Originele versie gebruikte één mLng-factor voor het gehele gebouw en plaatste
 // panelen in graden. Nu alles in metrische Lambert72 coördinaten.
-function packPanels(poly,lat,pW,pH,maxN,goodSouth){
-  // Converteer gebouwcontour naar Lambert72 metrische coördinaten
-  const lamPts=poly.map(([pLat,pLng])=>wgs84ToLambert72(pLat,pLng));
-  const xs=lamPts.map(p=>p[0]),ys=lamPts.map(p=>p[1]);
-  const[minX,maxX,minY,maxY]=[Math.min(...xs),Math.max(...xs),Math.min(...ys),Math.max(...ys)];
-  const midY=(minY+maxY)/2;
-  const margin=0.4,gap=0.3;
-  // Zonnepanelen in zuidhelling: onderste helft van dak (lagere Y in Lambert = meer zuid)
-  const sY=(goodSouth?minY:midY)+margin,eY=(goodSouth?midY:maxY)-margin;
+// ─── Paneelinpassing in geroteerd lokaal coördinatenstelsel ─────────────────────
+// Werkwijze:
+// 1. Zet polygoon om naar lokale meters t.o.v. centroïde
+// 2. Roteer met nokrichting zodat rijen evenwijdig met het dak lopen
+// 3. Vul met paneelrasters (width × height), check point-in-rotated-polygon
+// 4. Roteer hoekpunten terug + converteer naar [lat,lng] voor Leaflet
+// Geeft array van [[lat,lng],..] arrays terug (één per paneel, 4 hoekpunten)
+function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg){
+  if(!facePoly||facePoly.length<3) return [];
+  // Centroïde in WGS84
+  const cLat=facePoly.reduce((s,p)=>s+p[0],0)/facePoly.length;
+  const cLng=facePoly.reduce((s,p)=>s+p[1],0)/facePoly.length;
+  const mLat=111320,mLng=111320*Math.cos(cLat*Math.PI/180);
+
+  // Lokale meter-coördinaten (Oost=X, Noord=Y) t.o.v. centroïde
+  const toM=([lat,lng])=>[(lng-cLng)*mLng,(lat-cLat)*mLat];
+  const polyM=facePoly.map(toM);
+
+  // Roteer CCW met ridgeAngleDeg zodat nok evenwijdig met Y-as ligt
+  // ridgeAngle = hoek kloksgewijs van Noord → rotatie met -ridgeAngle
+  const ang=ridgeAngleDeg*Math.PI/180;
+  const cosA=Math.cos(-ang),sinA=Math.sin(-ang);
+  const rotPt=([x,y])=>[x*cosA-y*sinA,x*sinA+y*cosA];
+  const rotBack=([x,y])=>[x*cosA+y*sinA,-x*sinA+y*cosA]; // inverse
+
+  const rotPoly=polyM.map(rotPt);
+  const rxs=rotPoly.map(p=>p[0]),rys=rotPoly.map(p=>p[1]);
+  const[minRX,maxRX,minRY,maxRY]=[Math.min(...rxs),Math.max(...rxs),Math.min(...rys),Math.max(...rys)];
+
+  const margin=0.4,gapX=0.05,gapY=0.05;
   const panels=[];
-  for(let ry=sY;ry+pH<=eY&&panels.length<maxN;ry+=pH+gap){
-    for(let rx=minX+margin;rx+pW<=maxX-margin&&panels.length<maxN;rx+=pW+0.2){
-      // point-in-polygon check in Lambert72 coördinaten
-      if(pointInPoly([rx+pW/2,ry+pH/2],lamPts)){
-        // Converteer terug naar WGS84 voor Leaflet weergave
-        // Gebruik lineaire interpolatie nabij centroïde (voldoende voor display)
-        const cLat=lat,mLat=111320,mLng=111320*Math.cos(lat*Math.PI/180);
-        const[cx0,cy0]=wgs84ToLambert72(lat,poly.reduce((s,p)=>s+p[1],0)/poly.length);
-        const dxM=rx+pW/2-cx0,dyM=ry+pH/2-cy0;
-        const pLat=lat+dyM/mLat,pLng=poly.reduce((s,p)=>s+p[1],0)/poly.length+dxM/mLng;
-        const phDeg=pH/mLat,pwDeg=pW/mLng;
-        panels.push({lat:pLat-phDeg/2,lng:pLng-pwDeg/2,ph:phDeg,pw:pwDeg});
-      }
+
+  for(let ry=minRY+margin;ry+pH<=maxRY-margin&&panels.length<maxN;ry+=pH+gapY){
+    for(let rx=minRX+margin;rx+pW<=maxRX-margin&&panels.length<maxN;rx+=pW+gapX){
+      // Controleer centroïde van het paneel in rotated polygoon
+      if(!pointInPoly([rx+pW/2,ry+pH/2],rotPoly)) continue;
+      // 4 hoekpunten in rotated systeem → terug naar meters → naar [lat,lng]
+      const corners=[[rx,ry],[rx+pW,ry],[rx+pW,ry+pH],[rx,ry+pH]]
+        .map(pt=>{
+          const[mx,my]=rotBack(pt);
+          return[cLat+my/mLat,cLng+mx/mLng];
+        });
+      // Middellijn van paneel (visuele splitsing)
+      const midCorners=[[rx+pW/2,ry],[rx+pW/2,ry+pH]]
+        .map(pt=>{const[mx,my]=rotBack(pt);return[cLat+my/mLat,cLng+mx/mLng];});
+      panels.push({corners,midLine:midCorners});
     }
   }
   return panels;
@@ -873,8 +896,8 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
     const facePoly=L.polygon(f.polygon,{
       color:isSel?'#1e293b':color,
       fillColor:color,
-      fillOpacity:editMode?(isSel?0.15:0.08):isSel?.65:.35,
-      weight:isSel?2.5:1.5,
+      fillOpacity:editMode?0:isSel?.65:.35,
+      weight:editMode?(isSel?3:2):isSel?2.5:1.5,
       opacity:0.9,
     })
     .bindTooltip(`<b>${fi+1}. ${f.orientation} · ${f.slope}°</b><br>${(q[isGood?0:1]||{l:''}).l}<br>${f.pct}% van dak`,{sticky:true,direction:"top"})
@@ -950,23 +973,25 @@ function drawRealRoof(map,L,lc,orientation){
   L.polygon(lc,{color:"#e07b00",fillOpacity:0,weight:2.5,dashArray:"6,3"}).addTo(g);
   g.addTo(map);return g;
 }
-function drawPanelLayer(map,L,lc,lat,count,panel,orientation){
-  const goodSouth=BEST_SOUTH[orientation]!==undefined?BEST_SOUTH[orientation]:true;
+function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg){
+  // facePoly: [[lat,lng],...] van het geselecteerde dakvlak
+  // ridgeAngleDeg: nokrichting van het gebouw (0–180°)
   const ratio=1.338,pW=Math.sqrt(panel.area/ratio),pH=panel.area/pW;
-  const panels=packPanels(lc,lat,pW,pH,count,goodSouth);
+  const panels=packPanels(facePoly,pW,pH,count,ridgeAngleDeg||0);
   const g=L.layerGroup();
   panels.forEach((p,i)=>{
-    L.polygon([[p.lat,p.lng],[p.lat+p.ph,p.lng],[p.lat+p.ph,p.lng+p.pw],[p.lat,p.lng+p.pw]],
-      {color:"#1e3a5f",weight:1,fillColor:"#2563eb",fillOpacity:.85})
-     .bindTooltip(`Paneel ${i+1}<br>${panel.brand} ${panel.watt}W`,{direction:"top"}).addTo(g);
-    L.polyline([[p.lat+p.ph*.5,p.lng],[p.lat+p.ph*.5,p.lng+p.pw]],{color:"#60a5fa",weight:.5,opacity:.6}).addTo(g);
+    L.polygon(p.corners,{color:"#1e3a5f",weight:1,fillColor:"#2563eb",fillOpacity:.85})
+     .bindTooltip(`Paneel ${i+1} · ${panel.brand} ${panel.watt}W`,{direction:"top"}).addTo(g);
+    if(p.midLine&&p.midLine.length===2)
+      L.polyline(p.midLine,{color:"#60a5fa",weight:.5,opacity:.6}).addTo(g);
   });
   const kWp=((panels.length*panel.watt)/1000).toFixed(1);
-  const lats=lc.map(p=>p[0]),lngs=lc.map(p=>p[1]);
-  const lLat=goodSouth?Math.min(...lats)-.00003:Math.max(...lats)+.00003;
-  L.marker([(lLat),(Math.min(...lngs)+Math.max(...lngs))/2],{icon:L.divIcon({
-    html:`<div style="background:rgba(37,99,235,.9);color:#fff;padding:3px 8px;border-radius:4px;font-size:8px;font-family:'IBM Plex Mono',monospace;white-space:nowrap">🔵 ${panels.length}/${count} panelen · ${kWp} kWp</div>`,
-    className:"",iconAnchor:[65,4]
+  // Label nabij centroïde van het vlak
+  const cLat=facePoly.reduce((s,p)=>s+p[0],0)/facePoly.length;
+  const cLng=facePoly.reduce((s,p)=>s+p[1],0)/facePoly.length;
+  L.marker([cLat,cLng],{icon:L.divIcon({
+    html:`<div style="background:rgba(37,99,235,.9);color:#fff;padding:3px 8px;border-radius:4px;font-size:9px;font-family:'IBM Plex Mono',monospace;white-space:nowrap;transform:translate(-50%,-50%)">🔵 ${panels.length}/${count} panelen · ${kWp} kWp</div>`,
+    className:""
   })}).addTo(g);
   g.addTo(map);return g;
 }
@@ -1456,7 +1481,10 @@ export default function App(){
     if(!panelsDrawn||!buildingCoords||!selPanel||!leafRef.current||!window.L||!coords) return;
     const L=window.L,map=leafRef.current;
     if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
-    panelLayerRef.current=drawPanelLayer(map,L,buildingCoords,coords.lat,panelCount,selPanel,orientation);
+    const _sf=detectedFaces?.[selFaceIdx];
+            const _fp=_sf?.polygon||buildingCoords;
+            const _ra=_sf?.ridgeAngleDeg||0;
+            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra);
   },[panelCount,selPanel,panelsDrawn]);
 
   useEffect(()=>{
@@ -1935,7 +1963,10 @@ export default function App(){
           if(leafRef.current&&window.L){
             const L=window.L,map=leafRef.current;
             if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
-            panelLayerRef.current=drawPanelLayer(map,L,buildingCoords,coords.lat,panelCount,selPanel,orientation);
+            const _sf=detectedFaces?.[selFaceIdx];
+            const _fp=_sf?.polygon||buildingCoords;
+            const _ra=_sf?.ridgeAngleDeg||0;
+            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra);
             setPanelsDrawn(true);
           }
           // Switch naar configuratie tab (kaart) EN forceer Leaflet herlayout
