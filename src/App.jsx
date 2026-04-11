@@ -925,7 +925,7 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
           radius:9, color:"#1e293b", fillColor:"#f59e0b",
           fillOpacity:1, weight:2.5, zIndexOffset:1000
         })
-        .bindTooltip(`Punt ${vi+1} · versleep`,{direction:"top",offset:[0,-8]})
+        .bindTooltip("Punt "+(vi+1)+" · versleep (rood = samenvoegen)",{direction:"top",offset:[0,-8]})
         .addTo(g);
 
         marker.on("mousedown",function(e){
@@ -933,11 +933,19 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
           map.dragging.disable();
           map.getContainer().style.cursor="grabbing";
 
+          const MERGE_M=8; // meter drempel voor samenvoegen
+          const mLat=111320,cLat=f.polygon[0][0];
+          const mLng=111320*Math.cos(cLat*Math.PI/180);
+          const distPts=(a,b)=>Math.sqrt(((b[0]-a[0])*mLat)**2+((b[1]-a[1])*mLng)**2);
+
           const onMove=function(me){
             const ll=me.latlng;
             marker.setLatLng(ll);
             liveLatLngs[vi]=ll;
-            facePoly.setLatLngs(liveLatLngs); // Live polygon update, geen React re-render
+            facePoly.setLatLngs(liveLatLngs);
+            // Visuele feedback: rood als dicht bij ander punt (< 8m)
+            const nearOther=f.polygon.some((other,oi)=>oi!==vi&&distPts([ll.lat,ll.lng],other)<MERGE_M);
+            marker.setStyle({fillColor:nearOther?"#dc2626":"#f59e0b"});
             if(onVertexDrag) onVertexDrag(fi,vi,[ll.lat,ll.lng]);
           };
           const onUp=function(){
@@ -1468,7 +1476,7 @@ export default function App(){
         const rawPoly=newPolygons[fi];
         if(!rawPoly) return f;
         // Auto-merge hoekpunten die samenvallen (< 1.5m)
-        const newPoly=mergeCoincidentVertices(rawPoly,1.5);
+        const newPoly=mergeCoincidentVertices(rawPoly,8);
         const area2d=Math.round(polyAreaLambert72(newPoly));
         const area3d=+compute3dArea(area2d,f.slope).toFixed(1);
         if(rawPoly.length!==newPoly.length){
@@ -1855,9 +1863,9 @@ export default function App(){
                     const withPolys=generateFacePolygons(buildingCoords,detectedFaces,ridgeAngle);
                     setDetectedFaces(withPolys);
                     // Kleine vertraging zodat state update doorgekomen is
-                    setTimeout(()=>setEditMode(true),50);
+                    setActiveLayer("kaart");setTimeout(()=>setEditMode(true),50);
                   } else {
-                    setEditMode(true);
+                    setActiveLayer("kaart");setEditMode(true);
                   }
                 }}>
                   ✏️ Dakvlak aanpassen
@@ -1867,11 +1875,11 @@ export default function App(){
                   <button className="btn green sm" style={{flex:1}} onClick={()=>{
                     // Bevestig: markeer vlak als manual
                     setDetectedFaces(prev=>prev.map((f,i)=>i===selFaceIdx?{...f,status:"manual"}:f));
-                    setEditMode(false);
+                    setEditMode(false);setActiveLayer("luchtfoto");
                   }}>
                     ✅ Bevestig correctie
                   </button>
-                  <button className="btn danger sm" onClick={()=>{setEditMode(false);}}>
+                  <button className="btn danger sm" onClick={()=>{setEditMode(false);setActiveLayer('luchtfoto');}}>
                     ✕ Annuleer
                   </button>
                 </>
