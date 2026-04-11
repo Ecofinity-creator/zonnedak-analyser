@@ -580,12 +580,12 @@ body{background:#f1f5f9;}
 .main{display:grid;grid-template-columns:340px 1fr;height:calc(100vh - 93px);}
 .sidebar{background:var(--bg2);border-right:1px solid var(--border);padding:14px;display:flex;flex-direction:column;gap:13px;overflow-y:auto;box-shadow:var(--shadow);}
 .content-area{display:flex;flex-direction:column;overflow-y:auto;background:var(--bg);}
-.sl{font-size:8px;letter-spacing:2px;text-transform:uppercase;color:var(--amber);margin-bottom:7px;display:flex;align-items:center;gap:8px;}
+.sl{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--amber);margin-bottom:7px;display:flex;align-items:center;gap:8px;font-weight:600;}
 .sl::after{content:'';flex:1;height:1px;background:var(--border);}
 .inp{width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--border-dark);border-radius:6px;color:var(--text);font-family:'IBM Plex Mono',monospace;font-size:11px;outline:none;transition:all .2s;}
 .inp:focus{border-color:var(--amber);box-shadow:0 0 0 3px var(--amber-glow);}
 .inp::placeholder{color:var(--muted2);}
-.inp-label{font-size:8px;color:var(--muted);margin-bottom:3px;font-weight:500;}
+.inp-label{font-size:10px;color:var(--muted);margin-bottom:3px;font-weight:500;}
 .inp-2{display:grid;grid-template-columns:1fr 1fr;gap:7px;}
 .inp-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;}
 .sugg-wrap{position:relative;}
@@ -654,7 +654,7 @@ body{background:#f1f5f9;}
 .pce-val{font-family:'Syne',sans-serif;font-size:22px;font-weight:800;color:var(--amber);min-width:44px;text-align:center;}
 .pce-sub{font-size:8px;color:var(--muted);text-align:center;}
 .divider{height:1px;background:var(--border);flex-shrink:0;}
-.info-box{font-size:8px;color:var(--muted);line-height:1.7;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;}
+.info-box{font-size:10px;color:var(--muted);line-height:1.7;padding:8px 11px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;}
 .info-box strong{color:var(--text);}
 .info-box.alpha-info{background:var(--alpha-bg);border-color:var(--alpha-border);}
 .info-box.alpha-info strong{color:var(--alpha);}
@@ -669,11 +669,11 @@ body{background:#f1f5f9;}
 .coord-row{display:flex;gap:12px;padding:6px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:5px;font-size:8px;color:var(--amber);}
 .coord-row span{color:var(--muted);}
 .face-grid{display:flex;gap:5px;flex-wrap:wrap;}
-.face-btn{padding:6px 10px;background:var(--bg3);border:1px solid var(--border-dark);border-radius:5px;color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:8px;cursor:pointer;transition:all .15s;text-align:left;}
+.face-btn{padding:8px 11px;background:var(--bg3);border:1px solid var(--border-dark);border-radius:6px;color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:10px;cursor:pointer;transition:all .15s;text-align:left;}
 .face-btn:hover{border-color:var(--alpha);color:var(--alpha);}
 .face-btn.active{background:var(--alpha-bg);border-color:var(--alpha);color:var(--alpha);}
-.face-btn .fb-main{font-family:'Syne',sans-serif;font-size:12px;font-weight:700;display:block;}
-.face-btn .fb-sub{font-size:7px;color:var(--muted);margin-top:1px;display:block;}
+.face-btn .fb-main{font-family:'Syne',sans-serif;font-size:14px;font-weight:700;display:block;}
+.face-btn .fb-sub{font-size:9px;color:var(--muted);margin-top:2px;display:block;}
 .face-btn.active .fb-sub{color:var(--alpha);}
 /* Result cards */
 .rc{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;position:relative;overflow:hidden;box-shadow:var(--shadow);}
@@ -873,7 +873,7 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
     const facePoly=L.polygon(f.polygon,{
       color:isSel?'#1e293b':color,
       fillColor:color,
-      fillOpacity:isSel?.65:.35,
+      fillOpacity:editMode?(isSel?0.15:0.08):isSel?.65:.35,
       weight:isSel?2.5:1.5,
       opacity:0.9,
     })
@@ -1884,11 +1884,35 @@ export default function App(){
         <div>
           <div className="sl">Aantal panelen</div>
           <div className="pce">
-            <div className="pce-top"><span className="pce-title">Klant keuze</span><span className="pce-reset" onClick={()=>setCustomCount(null)}>{customCount!==null?`↩ Reset (max: ${autoPanels})`:`Auto: ${autoPanels}`}</span></div>
+            <div className="pce-top">
+              <span className="pce-title">Klant keuze</span>
+              <span className="pce-reset" onClick={()=>setCustomCount(null)}>
+                {customCount!==null?`↩ Reset (max: ${autoPanels})`:`Auto: ${autoPanels}`}
+              </span>
+            </div>
             <div className="pce-controls">
               <button className="pce-btn" onClick={()=>setCustomCount(Math.max(1,(customCount??autoPanels)-1))}>−</button>
-              <div><div className="pce-val">{panelCount}</div><div className="pce-sub">{((panelCount*(selPanel?.watt||400))/1000).toFixed(1)} kWp</div></div>
-              <button className="pce-btn" onClick={()=>setCustomCount(Math.min(autoPanels+10,(customCount??autoPanels)+1))}>+</button>
+              <div style={{textAlign:"center"}}>
+                {/* Manuele invoer van panelaantal */}
+                <input
+                  type="number"
+                  min="1"
+                  max={autoPanels+20}
+                  value={customCount??autoPanels}
+                  onChange={e=>{
+                    const v=parseInt(e.target.value,10);
+                    if(!isNaN(v)&&v>=1) setCustomCount(Math.min(v,autoPanels+20));
+                  }}
+                  style={{
+                    width:52,textAlign:"center",fontFamily:"'Syne',sans-serif",
+                    fontSize:22,fontWeight:800,color:"var(--amber)",
+                    border:"none",background:"transparent",outline:"none",
+                    padding:0,cursor:"text"
+                  }}
+                />
+                <div className="pce-sub">{((panelCount*(selPanel?.watt||400))/1000).toFixed(1)} kWp</div>
+              </div>
+              <button className="pce-btn" onClick={()=>setCustomCount(Math.min(autoPanels+20,(customCount??autoPanels)+1))}>+</button>
             </div>
           </div>
         </div>
@@ -1935,7 +1959,7 @@ export default function App(){
       <div className="content-area">
 
         {/* CONFIGURATIE = kaart */}
-        {activeTab==="configuratie"&&<div className="map-area">
+        <div className="map-area" style={{display:activeTab==="configuratie"?"flex":"none",flex:1,position:"relative",minHeight:0}}>
           <div id="leaflet-map" style={{height:"100%"}}/>
           {/* Laagkiezer */}
           <div className="map-btns">
@@ -1982,7 +2006,7 @@ export default function App(){
             )}
             <div className="legend-row" style={{marginTop:3}}><div className="legend-dot" style={{background:"#2563eb"}}/>Geplaatste panelen</div>
           </div>}
-        </div>}
+        </div>
 
         {/* KLANT TAB */}
         {activeTab==="klant"&&<div className="section">
