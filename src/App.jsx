@@ -433,12 +433,14 @@ function packPanels(facePoly,pW,pH,maxN,_ridgeAngleDeg,orient){
   // Hoek van de langste eigenvector t.o.v. X-as (Oost)
   const pcaAng=Math.atan2(2*sxy,sxx-syy)/2; // hoek van langste as in radialen t.o.v. Oost
 
-  // Roteer zodat langste as (nok) langs Y-as ligt
-  // Ridge vector in (E,N): [cos(pcaAng), sin(pcaAng)]
-  // We willen dit langs +Y → roteer CW met pcaAng (= CCW met -pcaAng)
+  // Roteer zodat langste as (nok) langs Y-as ligt.
+  // Eigenvector van langste as: [cos(pcaAng), sin(pcaAng)]
+  // Rotatiematrix die deze vector naar [0,1] mapt:
+  //   rotFwd([x,y]) = [x·sin(a) - y·cos(a),  x·cos(a) + y·sin(a)]
+  //   Check: rotFwd([cos(a), sin(a)]) = [0, cos²+sin²] = [0, 1] ✓
   const cosA=Math.cos(pcaAng),sinA=Math.sin(pcaAng);
-  const rotFwd=([x,y])=>[ x*cosA+y*sinA, -x*sinA+y*cosA]; // CW met pcaAng
-  const rotInv=([x,y])=>[ x*cosA-y*sinA,  x*sinA+y*cosA]; // inverse
+  const rotFwd=([x,y])=>[ x*sinA - y*cosA,  x*cosA + y*sinA];
+  const rotInv=([x,y])=>[ x*sinA + y*cosA, -x*cosA + y*sinA]; // inverse (transpose)
 
   const rotPoly=polyM.map(rotFwd);
   const rxs=rotPoly.map(p=>p[0]),rys=rotPoly.map(p=>p[1]);
@@ -969,27 +971,34 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
             map.dragging.enable();
             map.getContainer().style.cursor="";
             marker.setStyle({fillColor:"#f59e0b"});
-            // Auto-merge: als gesleept punt < 3m van naburig punt, samenvoegen
+            // Auto-merge: als gesleept punt < 3m van naburig punt
             const curLL=marker.getLatLng();
             const curPt=[curLL.lat,curLL.lng];
-            const poly=liveLatLngs.map(ll=>[ll.lat,ll.lng]);
+            // Gebruik liveLatLngs (actuele posities), niet f.polygon (origineel)
+            const livePts=liveLatLngs.map(ll=>Array.isArray(ll)?ll:[ll.lat,ll.lng]);
             let merged=false;
-            if(poly.length>3){
-              const prev=(vi-1+poly.length)%poly.length;
-              const next=(vi+1)%poly.length;
-              for(const ni of[next,prev]){
-                if(distPts(curPt,[poly[ni][0],poly[ni][1]])<3){
-                  // Samenvoegen: vervang ni door gemiddelde, verwijder vi
-                  const avg=[(curPt[0]+poly[ni][0])/2,(curPt[1]+poly[ni][1])/2];
-                  poly[ni]=avg;
-                  poly.splice(vi,1);
+            if(livePts.length>3){
+              const n2=livePts.length;
+              const prev2=(vi-1+n2)%n2;
+              const next2=(vi+1)%n2;
+              for(const ni of[next2,prev2]){
+                const other=livePts[ni];
+                const otherPt=Array.isArray(other)?other:[other.lat,other.lng];
+                if(distPts(curPt,otherPt)<3){
+                  const avg=[(curPt[0]+otherPt[0])/2,(curPt[1]+otherPt[1])/2];
+                  livePts[ni]=avg;
+                  livePts.splice(vi,1);
                   merged=true;
+                  console.info("[ZonneDak] Punten "+vi+" en "+ni+" samengevoegd");
                   break;
                 }
               }
             }
             if(merged&&onVertexDrag){
-              poly.forEach((pt,i)=>onVertexDrag(fi,i,pt));
+              livePts.forEach((pt,idx)=>{
+                const p=Array.isArray(pt)?pt:[pt.lat,pt.lng];
+                onVertexDrag(fi,idx,p);
+              });
             }
             if(onVertexDragEnd) onVertexDragEnd(fi,vi);
           };
@@ -1117,30 +1126,55 @@ function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDat
       pl.on("mousedown",function(e){
         L.DomEvent.stop(e);
         const startLL=e.latlng;
-        let hasMoved=false;
-        const DRAG_THRESHOLD=5; // pixels
+        let hasMoved=false,toMove=null,startSnap2=null;
+
+        // Disable map drag METEEN — anders "steelt" Leaflet de mousemove events
+        map.dragging.disable();
+        map.getContainer().style.cursor="grab";
 
         const onMove=function(me){
           const dLat=me.latlng.lat-startLL.lat,dLng=me.latlng.lng-startLL.lng;
+          const distM=Math.sqrt((dLat*111320)**2+(dLng*111320*Math.cos(startLL.lat*Math.PI/180))**2);
+          if(!hasMoved&&distM<1.5) return; // minder dan 1.5m = nog geen drag
+          if(!hasMoved){
+            hasMoved=true;
+            map.getContainer().style.cursor="grabbing";
+            // Bepaal nu welke panelen mee verplaatsen
+            if(selected.size>0&&selected.has(i)) toMove=[...selected];
+            else if(selected.size===0) toMove=[...Array(panels.length).keys()];
+            else toMove=[i];
+            const cur=panelDataRef?.current||panels;
+            startSnap2=cur.map(p=>({
+              corners:p.corners.map(c=>[...c]),
+              midLine:(p.midLine||[]).map(c=>[...c])
+            }));
+          }
+          if(!toMove||!startSnap2) return;
           toMove.forEach(idx=>{
-            const np=startSnap[idx];
-            const nc=np.corners.map(([la,ln])=>[la+dLat,ln+dLng]);
-            const nm=np.midLine.map(([la,ln])=>[la+dLat,ln+dLng]);
-            polyLayers[idx]?.setLatLngs(nc);
-            midLayers[idx]?.setLatLngs(nm);
+            const np=startSnap2[idx];
+            polyLayers[idx]?.setLatLngs(np.corners.map(([la,ln])=>[la+dLat,ln+dLng]));
+            midLayers[idx]?.setLatLngs(np.midLine.map(([la,ln])=>[la+dLat,ln+dLng]));
           });
         };
         const onUp=function(){
           map.off("mousemove",onMove);map.off("mouseup",onUp);
           map.dragging.enable();map.getContainer().style.cursor="";
-          const final=polyLayers.map((pl2,j)=>{
-            const lls=pl2.getLatLngs()[0];
-            return{corners:lls.map(ll=>[ll.lat,ll.lng]),
-                   midLine:midLayers[j]?midLayers[j].getLatLngs().map(ll=>[ll.lat,ll.lng]):[]};
-          });
-          if(panelDataRef) panelDataRef.current=final;
+          if(!hasMoved){
+            // Geen beweging = click → toggle selectie
+            toggleSel(i);
+          } else if(toMove){
+            const final=polyLayers.map((pl2,j)=>{
+              const lls=pl2.getLatLngs()[0];
+              return{
+                corners:lls.map(ll=>[ll.lat,ll.lng]),
+                midLine:midLayers[j]?midLayers[j].getLatLngs().map(ll=>[ll.lat,ll.lng]):[]
+              };
+            });
+            if(panelDataRef) panelDataRef.current=final;
+          }
         };
-        map.on("mousemove",onMove);map.on("mouseup",onUp);
+        map.on("mousemove",onMove);
+        map.on("mouseup",onUp);
       });
     });
   }
@@ -1578,7 +1612,7 @@ export default function App(){
   const[tlToken,setTlToken]=useState("");
   const[pdfLoading,setPdfLoading]=useState(false);
 
-  useEffect(()=>{if(customCount!==null&&customCount>autoPanels)setCustomCount(autoPanels);},[autoPanels]);
+  // customCount wordt NIET automatisch gereset naar autoPanels (gebruiker kiest zelf)
 
   const selectFace=useCallback((idx,faces)=>{
     const f=(faces||detectedFaces)?.[idx];if(!f) return;
@@ -1714,7 +1748,7 @@ export default function App(){
     } else {
       baseTileRef.current=L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        {attribution:"© Esri World Imagery",maxZoom:21}
+        {attribution:"© Esri World Imagery",maxZoom:21,maxNativeZoom:18}
       ).addTo(map);
     }
     // DHM overlay
