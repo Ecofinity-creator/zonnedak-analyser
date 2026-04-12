@@ -993,30 +993,70 @@ function drawRealRoof(map,L,lc,orientation){
   L.polygon(lc,{color:"#e07b00",fillOpacity:0,weight:2.5,dashArray:"6,3"}).addTo(g);
   g.addTo(map);return g;
 }
-function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient){
-  // Portrait panelen evenwijdig met de nok:
-  //   pH = lange zijde (langs nok, Y-as)
-  //   pW = korte zijde (loodrecht op nok, over de helling, X-as)
-  // Standaard paneelratio (hoogte/breedte) ≈ 1.56 voor portret (bv 1756×1096mm)
-  const ratio=1.56; // pH/pW voor portret
-  const pW=Math.sqrt(panel.area/ratio); // kortste zijde
-  const pH=panel.area/pW;              // langste zijde
-  const panels=packPanels(facePoly,pW,pH,count,ridgeAngleDeg||0,orient||"portrait");
-  const g=L.layerGroup();
-  panels.forEach((p,i)=>{
-    L.polygon(p.corners,{color:"#1e3a5f",weight:1,fillColor:"#2563eb",fillOpacity:.85})
-     .bindTooltip(`Paneel ${i+1} · ${panel.brand} ${panel.watt}W`,{direction:"top"}).addTo(g);
-    if(p.midLine&&p.midLine.length===2)
-      L.polyline(p.midLine,{color:"#60a5fa",weight:.5,opacity:.6}).addTo(g);
-  });
+function shiftPanels(panels,dLat,dLng){
+  return panels.map(p=>({
+    corners:p.corners.map(([la,ln])=>[la+dLat,ln+dLng]),
+    midLine:p.midLine.map(([la,ln])=>[la+dLat,ln+dLng])
+  }));
+}
+function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDataRef,moveMode){
+  const ratio=1.56,pW=Math.sqrt(panel.area/ratio),pH=panel.area/pW;
+  let panels=panelDataRef?.current||packPanels(facePoly,pW,pH,count,ridgeAngleDeg||0,orient||"portrait");
+  if(panelDataRef) panelDataRef.current=panels;
   const kWp=((panels.length*panel.watt)/1000).toFixed(1);
-  // Label nabij centroïde van het vlak
-  const cLat=facePoly.reduce((s,p)=>s+p[0],0)/facePoly.length;
-  const cLng=facePoly.reduce((s,p)=>s+p[1],0)/facePoly.length;
-  L.marker([cLat,cLng],{icon:L.divIcon({
-    html:`<div style="background:rgba(37,99,235,.9);color:#fff;padding:3px 8px;border-radius:4px;font-size:9px;font-family:'IBM Plex Mono',monospace;white-space:nowrap;transform:translate(-50%,-50%)">🔵 ${panels.length}/${count} panelen · ${kWp} kWp</div>`,
+  const g=L.layerGroup();
+  const polyLayers=[],midLayers=[];
+  panels.forEach((p,i)=>{
+    const poly=L.polygon(p.corners,{color:"#1e3a5f",weight:1,fillColor:"#2563eb",fillOpacity:.85})
+      .bindTooltip("Paneel "+(i+1)+" · "+panel.brand+" "+panel.watt+"W",{direction:"top"}).addTo(g);
+    polyLayers.push(poly);
+    if(p.midLine&&p.midLine.length===2){
+      midLayers.push(L.polyline(p.midLine,{color:"#60a5fa",weight:.5,opacity:.6}).addTo(g));
+    } else {midLayers.push(null);}
+  });
+  const calcCtr=()=>{
+    const la=panels.reduce((s,p)=>s+p.corners[0][0],0)/panels.length;
+    const ln=panels.reduce((s,p)=>s+p.corners[0][1],0)/panels.length;
+    return[la,ln];
+  };
+  const labelMk=L.marker(calcCtr(),{icon:L.divIcon({
+    html:"<div style=\"background:rgba(37,99,235,.9);color:#fff;padding:3px 8px;border-radius:4px;font-size:9px;font-family:IBM Plex Mono,monospace;white-space:nowrap;transform:translate(-50%,-50%)\">"+panels.length+"/"+count+" · "+kWp+" kWp</div>",
     className:""
   })}).addTo(g);
+  if(moveMode){
+    let startLL=null,startSnap=null;
+    const onDown=function(e){
+      L.DomEvent.stop(e);
+      map.dragging.disable();
+      map.getContainer().style.cursor="grabbing";
+      startLL=e.latlng;
+      const cur=panelDataRef?.current||panels;
+      startSnap=cur.map(p=>({corners:p.corners.map(c=>[...c]),midLine:p.midLine.map(c=>[...c])}));
+      const onMove=function(me){
+        const dLat=me.latlng.lat-startLL.lat,dLng=me.latlng.lng-startLL.lng;
+        const sh=shiftPanels(startSnap,dLat,dLng);
+        sh.forEach((p,i)=>{
+          if(polyLayers[i]) polyLayers[i].setLatLngs(p.corners);
+          if(midLayers[i]) midLayers[i].setLatLngs(p.midLine);
+        });
+        const la=sh.reduce((s,p)=>s+p.corners[0][0],0)/sh.length;
+        const ln=sh.reduce((s,p)=>s+p.corners[0][1],0)/sh.length;
+        labelMk.setLatLng([la,ln]);
+      };
+      const onUp=function(){
+        map.off("mousemove",onMove);map.off("mouseup",onUp);
+        map.dragging.enable();map.getContainer().style.cursor="";
+        const final=polyLayers.map((pl,i)=>{
+          const lls=pl.getLatLngs()[0];
+          return{corners:lls.map(ll=>[ll.lat,ll.lng]),
+                 midLine:midLayers[i]?midLayers[i].getLatLngs().map(ll=>[ll.lat,ll.lng]):[]};
+        });
+        if(panelDataRef) panelDataRef.current=final;
+      };
+      map.on("mousemove",onMove);map.on("mouseup",onUp);
+    };
+    polyLayers.forEach(pl=>pl.on("mousedown",onDown));
+  }
   g.addTo(map);return g;
 }
 
@@ -1429,8 +1469,10 @@ export default function App(){
   // Bruikbare 3D-oppervlakte: 85% voor randen, schoorstenen, obstakels
   const usable3dArea=face3dArea*0.85;
   const autoPanels=selPanel?Math.max(1,Math.floor(usable3dArea/selPanel.area)):0;
-  const[customCount,setCustomCount]=useState(null);
-  const[panelOrient,setPanelOrient]=useState('portrait'); // 'portrait' | 'landscape'
+  const[customCount,setCustomCount]=useState(10);
+  const[panelOrient,setPanelOrient]=useState('portrait');
+  const[panelMoveMode,setPanelMoveMode]=useState(false);
+  const panelDataRef=useRef(null);
   const panelCount=customCount!==null?customCount:autoPanels;
 
   const[batteries,setBatteries]=useState(DEFAULT_BATTERIES);
@@ -1542,7 +1584,7 @@ export default function App(){
     const _sf=detectedFaces?.[selFaceIdx];
             const _fp=_sf?.polygon||buildingCoords;
             const _ra=_sf?.ridgeAngleDeg||0;
-            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient);
+            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,panelMoveMode);
   },[panelCount,selPanel,panelsDrawn]);
 
   useEffect(()=>{
@@ -1642,7 +1684,7 @@ export default function App(){
         // FIX BUG-01: gebruik polyAreaLambert72 — Shoelace in metrisch EPSG:31370
         const area2d=Math.round(polyAreaLambert72(lCoords));
         console.info(`[ZonneDak] GRB contour geladen. Oppervlak (Lambert72/EPSG:31370): ${area2d} m²`);
-        setDetectedArea(area2d);setBuildingCoords(lCoords);setCustomCount(null);setGrbStatus("ok");
+        setDetectedArea(area2d);setBuildingCoords(lCoords);setCustomCount(10);setGrbStatus("ok");
       } else setGrbStatus("fallback");
     }catch(e){console.warn("GRB:",e);setGrbStatus("fallback");}
 
@@ -2048,18 +2090,34 @@ export default function App(){
             const _sf=detectedFaces?.[selFaceIdx];
             const _fp=_sf?.polygon||buildingCoords;
             const _ra=_sf?.ridgeAngleDeg||0;
-            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient);
+            if(panelDataRef) panelDataRef.current=null; // reset posities bij hertekenen
+            setPanelMoveMode(false);
+            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,false);
             setPanelsDrawn(true);
           }
-          // Switch naar configuratie tab (kaart) EN forceer Leaflet herlayout
           setActiveTab("configuratie");
-          // invalidateSize na render-cycle zodat Leaflet de nieuwe afmetingen kent
-          setTimeout(()=>{
-            if(leafRef.current&&window.L) leafRef.current.invalidateSize();
-          },100);
+          setTimeout(()=>{if(leafRef.current&&window.L) leafRef.current.invalidateSize();},100);
         }} disabled={!coords||!buildingCoords||isLoading} style={{marginBottom:5}}>
           🏠 Toon {panelCount} panelen op dak
         </button>
+        {panelsDrawn&&<button
+          className={"btn full "+(panelMoveMode?"green":"")}
+          style={{marginBottom:5}}
+          onClick={()=>{
+            const nm=!panelMoveMode;
+            setPanelMoveMode(nm);
+            if(leafRef.current&&window.L){
+              const L=window.L,map=leafRef.current;
+              if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
+              const _sf=detectedFaces?.[selFaceIdx];
+              const _fp=_sf?.polygon||buildingCoords;
+              const _ra=_sf?.ridgeAngleDeg||0;
+              panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,nm);
+            }
+            if(nm){setActiveTab("configuratie");setTimeout(()=>{if(leafRef.current) leafRef.current.invalidateSize();},50);}
+          }}>
+          {panelMoveMode?"✅ Klaar met verplaatsen":"↔️ Verplaats panelen"}
+        </button>}
         <button className="btn full" onClick={calculate} disabled={!coords||aiLoading||!buildingCoords||isLoading}>
           {aiLoading?<><div className="spinner"/>Analyseren...</>:dhmStatus==="loading"?<><div className="spinner cyan"/>LiDAR verwerken...</>:grbStatus==="loading"?<><div className="spinner"/>Laden...</>:"☀️ Bereken resultaten"}
         </button>
