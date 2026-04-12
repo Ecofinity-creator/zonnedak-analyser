@@ -410,16 +410,12 @@ function getSlopeFactor(deg){
   const k=Object.keys(SLOPE_FACTOR).map(Number).reduce((a,b)=>Math.abs(b-deg)<Math.abs(a-deg)?b:a);
   return SLOPE_FACTOR[k];
 }
-// ─── Paneelinpassing: portrait, evenwijdig met de nok ────────────────────────
-// Coördinatenstelsel:
-//   toM: [lat,lng] → lokale meters [x=Oost, y=Noord] t.o.v. centroïde
-//   Rotatie CCW met +ridgeAngleDeg zodat de nok langs de Y-as ligt:
-//     Ridge vector in (Oost,Noord): [sin(α), cos(α)]
-//     CCW rotatie met α: rotPt([sin(α),cos(α)]) = [0, 1] ✓ (langs Y-as)
-//   Panelen portrait: pH (langste zijde) langs Y-as = evenwijdig met nok
-//                     pW (kortste zijde) langs X-as = loodrecht op nok (over de helling)
-//   Rijen: stappen over X (over de helling), kolommen langs Y (langs de nok)
-function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg){
+// ─── Paneelinpassing: orient = "portrait" | "landscape" ─────────────────────
+// Rotatie: PCA op het face-polygoon zelf — onafhankelijk van ridgeAngleDeg
+// De langste as van het polygoon = nokrichting (robuust na vertex-aanpassingen)
+// Portrait:  pH (lang) langs de nok, pW (kort) loodrecht
+// Landscape: pW (lang) langs de nok, pH (kort) loodrecht
+function packPanels(facePoly,pW,pH,maxN,_ridgeAngleDeg,orient){
   if(!facePoly||facePoly.length<3) return [];
   const cLat=facePoly.reduce((s,p)=>s+p[0],0)/facePoly.length;
   const cLng=facePoly.reduce((s,p)=>s+p[1],0)/facePoly.length;
@@ -429,34 +425,49 @@ function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg){
   const toM=([lat,lng])=>[(lng-cLng)*mLng,(lat-cLat)*mLat];
   const polyM=facePoly.map(toM);
 
-  // CCW rotatie met +ridgeAngleDeg → nok langs Y-as
-  const ang=(ridgeAngleDeg||0)*Math.PI/180;
-  const cosA=Math.cos(ang),sinA=Math.sin(ang);
-  const rotFwd=([x,y])=>[ x*cosA-y*sinA,  x*sinA+y*cosA]; // naar rotated systeem
-  const rotInv=([x,y])=>[ x*cosA+y*sinA, -x*sinA+y*cosA]; // terug naar meters
+  // PCA op het polygoon → langste as = nokrichting
+  const cxM=polyM.reduce((s,p)=>s+p[0],0)/polyM.length;
+  const cyM=polyM.reduce((s,p)=>s+p[1],0)/polyM.length;
+  let sxx=0,sxy=0,syy=0;
+  polyM.forEach(([x,y])=>{const dx=x-cxM,dy=y-cyM;sxx+=dx*dx;sxy+=dx*dy;syy+=dy*dy;});
+  // Hoek van de langste eigenvector t.o.v. X-as (Oost)
+  const pcaAng=Math.atan2(2*sxy,sxx-syy)/2; // hoek van langste as in radialen t.o.v. Oost
+
+  // Roteer zodat langste as (nok) langs Y-as ligt
+  // Ridge vector in (E,N): [cos(pcaAng), sin(pcaAng)]
+  // We willen dit langs +Y → roteer CW met pcaAng (= CCW met -pcaAng)
+  const cosA=Math.cos(pcaAng),sinA=Math.sin(pcaAng);
+  const rotFwd=([x,y])=>[ x*cosA+y*sinA, -x*sinA+y*cosA]; // CW met pcaAng
+  const rotInv=([x,y])=>[ x*cosA-y*sinA,  x*sinA+y*cosA]; // inverse
 
   const rotPoly=polyM.map(rotFwd);
   const rxs=rotPoly.map(p=>p[0]),rys=rotPoly.map(p=>p[1]);
   const[minRX,maxRX,minRY,maxRY]=[Math.min(...rxs),Math.max(...rxs),Math.min(...rys),Math.max(...rys)];
 
-  // pW = breedte loodrecht op nok (over de helling, langs X)
-  // pH = hoogte langs de nok (langs Y) — portrait: pH > pW
+  // Portrait:  pW langs X (loodrecht op nok), pH langs Y (langs nok)
+  // Landscape: pH langs X (loodrecht op nok), pW langs Y (langs nok)
+  const isPortrait=(orient||"portrait")==="portrait";
+  const W=isPortrait?pW:pH; // afmeting langs X (loodrecht op nok)
+  const H=isPortrait?pH:pW; // afmeting langs Y (langs nok)
+
   const margin=0.3,gapX=0.05,gapY=0.05;
   const panels=[];
 
-  // Rijen: stap over X (loodrecht op nok), kolommen langs Y (langs nok)
-  for(let rx=minRX+margin;rx+pW<=maxRX-margin&&panels.length<maxN;rx+=pW+gapX){
-    for(let ry=minRY+margin;ry+pH<=maxRY-margin&&panels.length<maxN;ry+=pH+gapY){
-      if(!pointInPoly([rx+pW/2,ry+pH/2],rotPoly)) continue;
-      const corners=[[rx,ry],[rx+pW,ry],[rx+pW,ry+pH],[rx,ry+pH]]
+  // Stap over X (rijen loodrecht op nok), kolommen langs Y (langs nok)
+  for(let rx=minRX+margin;rx+W<=maxRX-margin&&panels.length<maxN;rx+=W+gapX){
+    for(let ry=minRY+margin;ry+H<=maxRY-margin&&panels.length<maxN;ry+=H+gapY){
+      if(!pointInPoly([rx+W/2,ry+H/2],rotPoly)) continue;
+      const corners=[[rx,ry],[rx+W,ry],[rx+W,ry+H],[rx,ry+H]]
         .map(pt=>{const[mx,my]=rotInv(pt);return[cLat+my/mLat,cLng+mx/mLng];});
-      const midLine=[[rx,ry+pH/2],[rx+pW,ry+pH/2]]
+      // Middellijn langs de paneel-breedte (horizontale lijn op het dak)
+      const midLine=[[rx,ry+H/2],[rx+W,ry+H/2]]
         .map(pt=>{const[mx,my]=rotInv(pt);return[cLat+my/mLat,cLng+mx/mLng];});
       panels.push({corners,midLine});
     }
   }
   return panels;
 }
+
 function geoToLeaflet(ring){return ring.map(([lo,la])=>[la,lo]);}
 
 // ─── GRB ─────────────────────────────────────────────────────────────────────
@@ -982,7 +993,7 @@ function drawRealRoof(map,L,lc,orientation){
   L.polygon(lc,{color:"#e07b00",fillOpacity:0,weight:2.5,dashArray:"6,3"}).addTo(g);
   g.addTo(map);return g;
 }
-function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg){
+function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient){
   // Portrait panelen evenwijdig met de nok:
   //   pH = lange zijde (langs nok, Y-as)
   //   pW = korte zijde (loodrecht op nok, over de helling, X-as)
@@ -990,7 +1001,7 @@ function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg){
   const ratio=1.56; // pH/pW voor portret
   const pW=Math.sqrt(panel.area/ratio); // kortste zijde
   const pH=panel.area/pW;              // langste zijde
-  const panels=packPanels(facePoly,pW,pH,count,ridgeAngleDeg||0);
+  const panels=packPanels(facePoly,pW,pH,count,ridgeAngleDeg||0,orient||"portrait");
   const g=L.layerGroup();
   panels.forEach((p,i)=>{
     L.polygon(p.corners,{color:"#1e3a5f",weight:1,fillColor:"#2563eb",fillOpacity:.85})
@@ -1419,6 +1430,7 @@ export default function App(){
   const usable3dArea=face3dArea*0.85;
   const autoPanels=selPanel?Math.max(1,Math.floor(usable3dArea/selPanel.area)):0;
   const[customCount,setCustomCount]=useState(null);
+  const[panelOrient,setPanelOrient]=useState('portrait'); // 'portrait' | 'landscape'
   const panelCount=customCount!==null?customCount:autoPanels;
 
   const[batteries,setBatteries]=useState(DEFAULT_BATTERIES);
@@ -1530,7 +1542,7 @@ export default function App(){
     const _sf=detectedFaces?.[selFaceIdx];
             const _fp=_sf?.polygon||buildingCoords;
             const _ra=_sf?.ridgeAngleDeg||0;
-            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra);
+            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient);
   },[panelCount,selPanel,panelsDrawn]);
 
   useEffect(()=>{
@@ -1968,6 +1980,19 @@ export default function App(){
         {/* Aantal */}
         <div>
           <div className="sl">Aantal panelen</div>
+          {/* Portrait / Landscape keuze */}
+          <div style={{display:"flex",gap:5,marginBottom:6}}>
+            {["portrait","landscape"].map(o=>(
+              <button key={o} onClick={()=>{setPanelOrient(o);setCustomCount(null);}}
+                style={{flex:1,padding:"5px 8px",fontFamily:"'IBM Plex Mono',monospace",fontSize:10,
+                  fontWeight:panelOrient===o?700:400,cursor:"pointer",borderRadius:5,
+                  background:panelOrient===o?"var(--amber-light)":"var(--bg3)",
+                  border:panelOrient===o?"1px solid var(--amber)":"1px solid var(--border-dark)",
+                  color:panelOrient===o?"var(--amber)":"var(--muted)"}}>
+                {o==="portrait"?"▯ Portrait":"▭ Landscape"}
+              </button>
+            ))}
+          </div>
           <div className="pce">
             <div className="pce-top">
               <span className="pce-title">Klant keuze</span>
@@ -2023,7 +2048,7 @@ export default function App(){
             const _sf=detectedFaces?.[selFaceIdx];
             const _fp=_sf?.polygon||buildingCoords;
             const _ra=_sf?.ridgeAngleDeg||0;
-            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra);
+            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient);
             setPanelsDrawn(true);
           }
           // Switch naar configuratie tab (kaart) EN forceer Leaflet herlayout
