@@ -1504,6 +1504,24 @@ function CustomerPanel({customer,setCustomer,tlToken,setTlToken}){
 // ═══════════════════════════════════════════════════════════════════════════
 //  MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════
+export class ErrorBoundary extends Component {
+  constructor(props){super(props);this.state={hasError:false,error:null};}
+  static getDerivedStateFromError(error){return{hasError:true,error};}
+  componentDidCatch(error,info){console.error("[ZonneDak ErrorBoundary]",error,info);}
+  render(){
+    if(this.state.hasError){
+      return(
+        <div style={{padding:32,fontFamily:"'IBM Plex Mono',monospace",color:"#dc2626",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,margin:16}}>
+          <strong>Onverwachte fout</strong><br/><br/>
+          <code style={{fontSize:11}}>{this.state.error?.message}</code><br/><br/>
+          <button onClick={()=>window.location.reload()} style={{padding:"8px 16px",background:"#dc2626",color:"#fff",border:"none",borderRadius:6,cursor:"pointer"}}>Pagina herladen</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App(){
   const[activeTab,setActiveTab]=useState("configuratie");
   const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
