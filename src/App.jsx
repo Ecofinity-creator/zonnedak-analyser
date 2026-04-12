@@ -945,19 +945,11 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
           map.dragging.disable();
           map.getContainer().style.cursor="grabbing";
 
-          const MERGE_M=8; // meter drempel voor samenvoegen
-          const mLat=111320,cLat=f.polygon[0][0];
-          const mLng=111320*Math.cos(cLat*Math.PI/180);
-          const distPts=(a,b)=>Math.sqrt(((b[0]-a[0])*mLat)**2+((b[1]-a[1])*mLng)**2);
-
           const onMove=function(me){
             const ll=me.latlng;
             marker.setLatLng(ll);
             liveLatLngs[vi]=ll;
             facePoly.setLatLngs(liveLatLngs);
-            // Visuele feedback: rood als dicht bij ander punt (< 8m)
-            const nearOther=f.polygon.some((other,oi)=>oi!==vi&&distPts([ll.lat,ll.lng],other)<MERGE_M);
-            marker.setStyle({fillColor:nearOther?"#dc2626":"#f59e0b"});
             if(onVertexDrag) onVertexDrag(fi,vi,[ll.lat,ll.lng]);
           };
           const onUp=function(){
@@ -1458,7 +1450,6 @@ export default function App(){
   useEffect(()=>{detectedFacesRef.current=detectedFaces;},[detectedFaces]);
 
   const draggedPolygonsRef=useRef(null);
-  const draggedVertexRef=useRef(null); // {faceIdx, vertexIdx}
 
   // Stabiele callback — geen re-render tijdens drag
   const onVertexDrag=useCallback((faceIdx,vertexIdx,newLatLng)=>{
@@ -1468,7 +1459,6 @@ export default function App(){
     }
     if(draggedPolygonsRef.current?.[faceIdx]){
       draggedPolygonsRef.current[faceIdx][vertexIdx]=[newLatLng[0],newLatLng[1]];
-      draggedVertexRef.current={faceIdx,vertexIdx}; // bijhouden welk punt gesleept werd
     }
   },[]); // Lege deps — stabiele referentie, gebruikt ref intern
 
@@ -1476,19 +1466,11 @@ export default function App(){
     if(!draggedPolygonsRef.current) return;
     const newPolygons=draggedPolygonsRef.current;
     draggedPolygonsRef.current=null;
-    const draggedVtx=draggedVertexRef.current;
-    draggedVertexRef.current=null;
     setDetectedFaces(prev=>{
       if(!prev) return prev;
       return prev.map((f,fi)=>{
-        const rawPoly=newPolygons[fi];
-        if(!rawPoly) return f;
-        // Merge ENKEL het gesleepte punt met zijn directe buren (niet alle paren)
-        // Dit voorkomt dat punten die toevallig dicht bij elkaar liggen worden samengevoegd
-        let newPoly=rawPoly;
-        if(draggedVtx&&draggedVtx.faceIdx===fi){
-          newPoly=mergeDraggedVertex(rawPoly,draggedVtx.vertexIdx,8);
-        }
+        const newPoly=newPolygons[fi];
+        if(!newPoly) return f;
         const area2d=Math.round(polyAreaLambert72(newPoly));
         const area3d=+compute3dArea(area2d,f.slope).toFixed(1);
         return {...f,polygon:newPoly,area2d_manual:area2d,area3d_manual:area3d,status:"manual"};
