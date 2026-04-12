@@ -410,55 +410,49 @@ function getSlopeFactor(deg){
   const k=Object.keys(SLOPE_FACTOR).map(Number).reduce((a,b)=>Math.abs(b-deg)<Math.abs(a-deg)?b:a);
   return SLOPE_FACTOR[k];
 }
-// ─── FIX BUG-05: Paneelinpassing in Lambert72 meter (ipv WGS84 graden) ────────
-// Originele versie gebruikte één mLng-factor voor het gehele gebouw en plaatste
-// panelen in graden. Nu alles in metrische Lambert72 coördinaten.
-// ─── Paneelinpassing in geroteerd lokaal coördinatenstelsel ─────────────────────
-// Werkwijze:
-// 1. Zet polygoon om naar lokale meters t.o.v. centroïde
-// 2. Roteer met nokrichting zodat rijen evenwijdig met het dak lopen
-// 3. Vul met paneelrasters (width × height), check point-in-rotated-polygon
-// 4. Roteer hoekpunten terug + converteer naar [lat,lng] voor Leaflet
-// Geeft array van [[lat,lng],..] arrays terug (één per paneel, 4 hoekpunten)
+// ─── Paneelinpassing: portrait, evenwijdig met de nok ────────────────────────
+// Coördinatenstelsel:
+//   toM: [lat,lng] → lokale meters [x=Oost, y=Noord] t.o.v. centroïde
+//   Rotatie CCW met +ridgeAngleDeg zodat de nok langs de Y-as ligt:
+//     Ridge vector in (Oost,Noord): [sin(α), cos(α)]
+//     CCW rotatie met α: rotPt([sin(α),cos(α)]) = [0, 1] ✓ (langs Y-as)
+//   Panelen portrait: pH (langste zijde) langs Y-as = evenwijdig met nok
+//                     pW (kortste zijde) langs X-as = loodrecht op nok (over de helling)
+//   Rijen: stappen over X (over de helling), kolommen langs Y (langs de nok)
 function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg){
   if(!facePoly||facePoly.length<3) return [];
-  // Centroïde in WGS84
   const cLat=facePoly.reduce((s,p)=>s+p[0],0)/facePoly.length;
   const cLng=facePoly.reduce((s,p)=>s+p[1],0)/facePoly.length;
   const mLat=111320,mLng=111320*Math.cos(cLat*Math.PI/180);
 
-  // Lokale meter-coördinaten (Oost=X, Noord=Y) t.o.v. centroïde
+  // Lokale meters: x=Oost, y=Noord
   const toM=([lat,lng])=>[(lng-cLng)*mLng,(lat-cLat)*mLat];
   const polyM=facePoly.map(toM);
 
-  // Roteer CCW met ridgeAngleDeg zodat nok evenwijdig met Y-as ligt
-  // ridgeAngle = hoek kloksgewijs van Noord → rotatie met -ridgeAngle
-  const ang=ridgeAngleDeg*Math.PI/180;
-  const cosA=Math.cos(-ang),sinA=Math.sin(-ang);
-  const rotPt=([x,y])=>[x*cosA-y*sinA,x*sinA+y*cosA];
-  const rotBack=([x,y])=>[x*cosA+y*sinA,-x*sinA+y*cosA]; // inverse
+  // CCW rotatie met +ridgeAngleDeg → nok langs Y-as
+  const ang=(ridgeAngleDeg||0)*Math.PI/180;
+  const cosA=Math.cos(ang),sinA=Math.sin(ang);
+  const rotFwd=([x,y])=>[ x*cosA-y*sinA,  x*sinA+y*cosA]; // naar rotated systeem
+  const rotInv=([x,y])=>[ x*cosA+y*sinA, -x*sinA+y*cosA]; // terug naar meters
 
-  const rotPoly=polyM.map(rotPt);
+  const rotPoly=polyM.map(rotFwd);
   const rxs=rotPoly.map(p=>p[0]),rys=rotPoly.map(p=>p[1]);
   const[minRX,maxRX,minRY,maxRY]=[Math.min(...rxs),Math.max(...rxs),Math.min(...rys),Math.max(...rys)];
 
-  const margin=0.4,gapX=0.05,gapY=0.05;
+  // pW = breedte loodrecht op nok (over de helling, langs X)
+  // pH = hoogte langs de nok (langs Y) — portrait: pH > pW
+  const margin=0.3,gapX=0.05,gapY=0.05;
   const panels=[];
 
-  for(let ry=minRY+margin;ry+pH<=maxRY-margin&&panels.length<maxN;ry+=pH+gapY){
-    for(let rx=minRX+margin;rx+pW<=maxRX-margin&&panels.length<maxN;rx+=pW+gapX){
-      // Controleer centroïde van het paneel in rotated polygoon
+  // Rijen: stap over X (loodrecht op nok), kolommen langs Y (langs nok)
+  for(let rx=minRX+margin;rx+pW<=maxRX-margin&&panels.length<maxN;rx+=pW+gapX){
+    for(let ry=minRY+margin;ry+pH<=maxRY-margin&&panels.length<maxN;ry+=pH+gapY){
       if(!pointInPoly([rx+pW/2,ry+pH/2],rotPoly)) continue;
-      // 4 hoekpunten in rotated systeem → terug naar meters → naar [lat,lng]
       const corners=[[rx,ry],[rx+pW,ry],[rx+pW,ry+pH],[rx,ry+pH]]
-        .map(pt=>{
-          const[mx,my]=rotBack(pt);
-          return[cLat+my/mLat,cLng+mx/mLng];
-        });
-      // Middellijn van paneel (visuele splitsing)
-      const midCorners=[[rx+pW/2,ry],[rx+pW/2,ry+pH]]
-        .map(pt=>{const[mx,my]=rotBack(pt);return[cLat+my/mLat,cLng+mx/mLng];});
-      panels.push({corners,midLine:midCorners});
+        .map(pt=>{const[mx,my]=rotInv(pt);return[cLat+my/mLat,cLng+mx/mLng];});
+      const midLine=[[rx,ry+pH/2],[rx+pW,ry+pH/2]]
+        .map(pt=>{const[mx,my]=rotInv(pt);return[cLat+my/mLat,cLng+mx/mLng];});
+      panels.push({corners,midLine});
     }
   }
   return panels;
@@ -989,9 +983,13 @@ function drawRealRoof(map,L,lc,orientation){
   g.addTo(map);return g;
 }
 function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg){
-  // facePoly: [[lat,lng],...] van het geselecteerde dakvlak
-  // ridgeAngleDeg: nokrichting van het gebouw (0–180°)
-  const ratio=1.338,pW=Math.sqrt(panel.area/ratio),pH=panel.area/pW;
+  // Portrait panelen evenwijdig met de nok:
+  //   pH = lange zijde (langs nok, Y-as)
+  //   pW = korte zijde (loodrecht op nok, over de helling, X-as)
+  // Standaard paneelratio (hoogte/breedte) ≈ 1.56 voor portret (bv 1756×1096mm)
+  const ratio=1.56; // pH/pW voor portret
+  const pW=Math.sqrt(panel.area/ratio); // kortste zijde
+  const pH=panel.area/pW;              // langste zijde
   const panels=packPanels(facePoly,pW,pH,count,ridgeAngleDeg||0);
   const g=L.layerGroup();
   panels.forEach((p,i)=>{
@@ -1991,7 +1989,7 @@ export default function App(){
                     if(!isNaN(v)&&v>=1) setCustomCount(Math.min(v,autoPanels+20));
                   }}
                   style={{
-                    width:52,textAlign:"center",fontFamily:"'Syne',sans-serif",
+                    width:68,textAlign:"center",fontFamily:"'Syne',sans-serif",
                     fontSize:22,fontWeight:800,color:"var(--amber)",
                     border:"none",background:"transparent",outline:"none",
                     padding:0,cursor:"text"
