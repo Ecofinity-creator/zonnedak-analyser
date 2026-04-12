@@ -949,12 +949,18 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
           L.DomEvent.stop(e);
           map.dragging.disable();
           map.getContainer().style.cursor="grabbing";
+          const mLat2=111320,cLat2=f.polygon[0][0];
+          const mLng2=111320*Math.cos(cLat2*Math.PI/180);
+          const distPts=(a,b)=>Math.sqrt(((b[0]-a[0])*mLat2)**2+((b[1]-a[1])*mLng2)**2);
 
           const onMove=function(me){
             const ll=me.latlng;
             marker.setLatLng(ll);
             liveLatLngs[vi]=ll;
             facePoly.setLatLngs(liveLatLngs);
+            // Rood als overlap met naburig punt (< 3m)
+            const nearOther=f.polygon.some((other,oi)=>oi!==vi&&distPts([ll.lat,ll.lng],other)<3);
+            marker.setStyle({fillColor:nearOther?"#dc2626":"#f59e0b"});
             if(onVertexDrag) onVertexDrag(fi,vi,[ll.lat,ll.lng]);
           };
           const onUp=function(){
@@ -962,7 +968,30 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
             map.off("mouseup",onUp);
             map.dragging.enable();
             map.getContainer().style.cursor="";
-            if(onVertexDragEnd) onVertexDragEnd(fi,vi); // React state update pas hier
+            marker.setStyle({fillColor:"#f59e0b"});
+            // Auto-merge: als gesleept punt < 3m van naburig punt, samenvoegen
+            const curLL=marker.getLatLng();
+            const curPt=[curLL.lat,curLL.lng];
+            const poly=liveLatLngs.map(ll=>[ll.lat,ll.lng]);
+            let merged=false;
+            if(poly.length>3){
+              const prev=(vi-1+poly.length)%poly.length;
+              const next=(vi+1)%poly.length;
+              for(const ni of[next,prev]){
+                if(distPts(curPt,[poly[ni][0],poly[ni][1]])<3){
+                  // Samenvoegen: vervang ni door gemiddelde, verwijder vi
+                  const avg=[(curPt[0]+poly[ni][0])/2,(curPt[1]+poly[ni][1])/2];
+                  poly[ni]=avg;
+                  poly.splice(vi,1);
+                  merged=true;
+                  break;
+                }
+              }
+            }
+            if(merged&&onVertexDrag){
+              poly.forEach((pt,i)=>onVertexDrag(fi,i,pt));
+            }
+            if(onVertexDragEnd) onVertexDragEnd(fi,vi);
           };
           map.on("mousemove",onMove);
           map.on("mouseup",onUp);
@@ -999,64 +1028,123 @@ function shiftPanels(panels,dLat,dLng){
     midLine:p.midLine.map(([la,ln])=>[la+dLat,ln+dLng])
   }));
 }
+// ─── Rij-detectie: groepeer panelen op basis van hun positie langs de nok ────
+// Panelen in dezelfde rij hebben dezelfde crossComp (loodrechte afstand tot nok).
+// We discretiseren op 0.5m nauwkeurigheid om floating-point drift te vermijden.
+function detectPanelRows(panels,facePoly){
+  if(!panels||!panels.length) return panels.map((_,i)=>i); // elke paneel eigen rij
+  const cLat=facePoly.reduce((s,p)=>s+p[0],0)/facePoly.length;
+  const cLng=facePoly.reduce((s,p)=>s+p[1],0)/facePoly.length;
+  const mLat=111320,mLng=111320*Math.cos(cLat*Math.PI/180);
+  // Centroïde van elk paneel in meters
+  const panelCtrM=panels.map(p=>{
+    const la=p.corners.reduce((s,c)=>s+c[0],0)/p.corners.length;
+    const ln=p.corners.reduce((s,c)=>s+c[1],0)/p.corners.length;
+    return[(ln-cLng)*mLng,(la-cLat)*mLat]; // [x=Oost, y=Noord]
+  });
+  // PCA op het face-polygoon om de nok-richting te bepalen
+  const polyM=facePoly.map(([la,ln])=>[(ln-cLng)*mLng,(la-cLat)*mLat]);
+  const cx=polyM.reduce((s,p)=>s+p[0],0)/polyM.length;
+  const cy=polyM.reduce((s,p)=>s+p[1],0)/polyM.length;
+  let sxx=0,sxy=0,syy=0;
+  polyM.forEach(([x,y])=>{const dx=x-cx,dy=y-cy;sxx+=dx*dx;sxy+=dx*dy;syy+=dy*dy;});
+  const pcaAng=Math.atan2(2*sxy,sxx-syy)/2;
+  const cosA=Math.cos(pcaAng),sinA=Math.sin(pcaAng);
+  // Project centroïde op de as loodrecht op de nok (= rij-coördinaat)
+  const rowCoords=panelCtrM.map(([x,y])=>x*cosA+y*sinA); // langs de nok
+  // Discretiseer op 0.5m → panelen in dezelfde rij hebben dezelfde sleutel
+  const rowKeys=rowCoords.map(r=>Math.round(r/0.5));
+  const uniqueRows=[...new Set(rowKeys)].sort((a,b)=>a-b);
+  const rowMap=Object.fromEntries(uniqueRows.map((k,i)=>[k,i]));
+  return rowKeys.map(k=>rowMap[k]); // array: paneel[i] → rijnummer
+}
+
 function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDataRef,moveMode){
   const ratio=1.56,pW=Math.sqrt(panel.area/ratio),pH=panel.area/pW;
   let panels=panelDataRef?.current||packPanels(facePoly,pW,pH,count,ridgeAngleDeg||0,orient||"portrait");
   if(panelDataRef) panelDataRef.current=panels;
+
+  const rowOf=detectPanelRows(panels,facePoly); // rijnummer per paneel
   const kWp=((panels.length*panel.watt)/1000).toFixed(1);
   const g=L.layerGroup();
+
+  const SEL_COL="#f59e0b",DEF_COL="#2563eb",DEF_BRD="#1e3a5f",SEL_BRD="#92400e";
+  const selected=new Set(); // geselecteerde paneelindices
+
   const polyLayers=[],midLayers=[];
-  panels.forEach((p,i)=>{
-    const poly=L.polygon(p.corners,{color:"#1e3a5f",weight:1,fillColor:"#2563eb",fillOpacity:.85})
-      .bindTooltip("Paneel "+(i+1)+" · "+panel.brand+" "+panel.watt+"W",{direction:"top"}).addTo(g);
-    polyLayers.push(poly);
-    if(p.midLine&&p.midLine.length===2){
-      midLayers.push(L.polyline(p.midLine,{color:"#60a5fa",weight:.5,opacity:.6}).addTo(g));
-    } else {midLayers.push(null);}
-  });
-  const calcCtr=()=>{
-    const la=panels.reduce((s,p)=>s+p.corners[0][0],0)/panels.length;
-    const ln=panels.reduce((s,p)=>s+p.corners[0][1],0)/panels.length;
-    return[la,ln];
+
+  const updateLabel=()=>{
+    const n=panels.length,sel=selected.size;
+    const txt=sel>0
+      ?(sel+" geselecteerd · klik+sleep om te verplaatsen")
+      :(n+"/"+count+" · "+kWp+" kWp");
+    labelMk.setIcon(L.divIcon({
+      html:"<div style='background:rgba(37,99,235,.9);color:#fff;padding:3px 8px;border-radius:4px;font-size:9px;font-family:IBM Plex Mono,monospace;white-space:nowrap;transform:translate(-50%,-50%)'>"+txt+"</div>",
+      className:""
+    }));
   };
-  const labelMk=L.marker(calcCtr(),{icon:L.divIcon({
-    html:"<div style=\"background:rgba(37,99,235,.9);color:#fff;padding:3px 8px;border-radius:4px;font-size:9px;font-family:IBM Plex Mono,monospace;white-space:nowrap;transform:translate(-50%,-50%)\">"+panels.length+"/"+count+" · "+kWp+" kWp</div>",
-    className:""
-  })}).addTo(g);
+
+  panels.forEach((p,i)=>{
+    const poly=L.polygon(p.corners,{color:DEF_BRD,weight:1,fillColor:DEF_COL,fillOpacity:.85})
+      .bindTooltip("Paneel "+(i+1)+" (rij "+( rowOf[i]+1)+") · "+panel.watt+"W",{direction:"top"})
+      .addTo(g);
+    polyLayers.push(poly);
+    midLayers.push(p.midLine?.length===2
+      ?L.polyline(p.midLine,{color:"#60a5fa",weight:.5,opacity:.6}).addTo(g)
+      :null);
+  });
+
+  const cLa=panels.reduce((s,p)=>s+p.corners[0][0],0)/panels.length;
+  const cLn=panels.reduce((s,p)=>s+p.corners[0][1],0)/panels.length;
+  const labelMk=L.marker([cLa,cLn],{icon:L.divIcon({html:"",className:""})}).addTo(g);
+  updateLabel();
+
+  const setStyle=(i,isSel)=>{
+    polyLayers[i]?.setStyle({fillColor:isSel?SEL_COL:DEF_COL,color:isSel?SEL_BRD:DEF_BRD,weight:isSel?2:1});
+  };
+  const toggleSel=(i)=>{
+    if(selected.has(i)){selected.delete(i);setStyle(i,false);}
+    else{selected.add(i);setStyle(i,true);}
+    updateLabel();
+  };
+  const selRow=(rowIdx)=>{
+    panels.forEach((_,i)=>{if(rowOf[i]===rowIdx){selected.add(i);setStyle(i,true);}});
+    updateLabel();
+  };
+
   if(moveMode){
-    let startLL=null,startSnap=null;
-    const onDown=function(e){
-      L.DomEvent.stop(e);
-      map.dragging.disable();
-      map.getContainer().style.cursor="grabbing";
-      startLL=e.latlng;
-      const cur=panelDataRef?.current||panels;
-      startSnap=cur.map(p=>({corners:p.corners.map(c=>[...c]),midLine:p.midLine.map(c=>[...c])}));
-      const onMove=function(me){
-        const dLat=me.latlng.lat-startLL.lat,dLng=me.latlng.lng-startLL.lng;
-        const sh=shiftPanels(startSnap,dLat,dLng);
-        sh.forEach((p,i)=>{
-          if(polyLayers[i]) polyLayers[i].setLatLngs(p.corners);
-          if(midLayers[i]) midLayers[i].setLatLngs(p.midLine);
-        });
-        const la=sh.reduce((s,p)=>s+p.corners[0][0],0)/sh.length;
-        const ln=sh.reduce((s,p)=>s+p.corners[0][1],0)/sh.length;
-        labelMk.setLatLng([la,ln]);
-      };
-      const onUp=function(){
-        map.off("mousemove",onMove);map.off("mouseup",onUp);
-        map.dragging.enable();map.getContainer().style.cursor="";
-        const final=polyLayers.map((pl,i)=>{
-          const lls=pl.getLatLngs()[0];
-          return{corners:lls.map(ll=>[ll.lat,ll.lng]),
-                 midLine:midLayers[i]?midLayers[i].getLatLngs().map(ll=>[ll.lat,ll.lng]):[]};
-        });
-        if(panelDataRef) panelDataRef.current=final;
-      };
-      map.on("mousemove",onMove);map.on("mouseup",onUp);
-    };
-    polyLayers.forEach(pl=>pl.on("mousedown",onDown));
+    polyLayers.forEach((pl,i)=>{
+      pl.on("mousedown",function(e){
+        L.DomEvent.stop(e);
+        const startLL=e.latlng;
+        let hasMoved=false;
+        const DRAG_THRESHOLD=5; // pixels
+
+        const onMove=function(me){
+          const dLat=me.latlng.lat-startLL.lat,dLng=me.latlng.lng-startLL.lng;
+          toMove.forEach(idx=>{
+            const np=startSnap[idx];
+            const nc=np.corners.map(([la,ln])=>[la+dLat,ln+dLng]);
+            const nm=np.midLine.map(([la,ln])=>[la+dLat,ln+dLng]);
+            polyLayers[idx]?.setLatLngs(nc);
+            midLayers[idx]?.setLatLngs(nm);
+          });
+        };
+        const onUp=function(){
+          map.off("mousemove",onMove);map.off("mouseup",onUp);
+          map.dragging.enable();map.getContainer().style.cursor="";
+          const final=polyLayers.map((pl2,j)=>{
+            const lls=pl2.getLatLngs()[0];
+            return{corners:lls.map(ll=>[ll.lat,ll.lng]),
+                   midLine:midLayers[j]?midLayers[j].getLatLngs().map(ll=>[ll.lat,ll.lng]):[]};
+          });
+          if(panelDataRef) panelDataRef.current=final;
+        };
+        map.on("mousemove",onMove);map.on("mouseup",onUp);
+      });
+    });
   }
+
   g.addTo(map);return g;
 }
 
@@ -1098,129 +1186,182 @@ function MonthlyChart({annualKwh}){
   );
 }
 
-// ─── PDF generatie ────────────────────────────────────────────────────────────
+// ─── PDF generatie — EcoFinity stijl ───────────────────────────────────────────
 async function generatePDF(results,customer,displayName,slope,orientation){
   await loadPdfLibs();
   const{jsPDF}=window.jspdf;
   const{PDFDocument}=window.PDFLib;
   const doc=new jsPDF({orientation:"portrait",unit:"mm",format:"a4"});
-  const W=210,margin=15;
-  let y=margin;
+  const W=210,M=15;
+  const OR=[224,123,0],ORD=[180,95,0],BG=[248,250,252],LN=[226,232,240];
+  const TXT=[15,23,42],MUT=[100,116,139],WHT=[255,255,255];
+  const GR=[22,163,74],BL=[37,99,235];
 
-  // ── Header ──
-  doc.setFillColor(224,123,0);doc.rect(0,0,W,22,"F");
-  doc.setFillColor(180,100,0);doc.rect(0,17,W,5,"F");
-  doc.setTextColor(255,255,255);doc.setFont("helvetica","bold");doc.setFontSize(18);
-  doc.text("ZonneDak Analyse",margin,14);
-  doc.setFontSize(9);doc.setFont("helvetica","normal");
-  doc.text(`${new Date().toLocaleDateString("nl-BE")}`,W-margin,14,{align:"right"});
+  const sf=(s,w="normal")=>{doc.setFont("helvetica",w);doc.setFontSize(s);};
+  const sc=(rgb)=>doc.setTextColor(...rgb);
+  const hLine=(yy)=>{doc.setDrawColor(...LN);doc.setLineWidth(0.3);doc.line(M,yy,W-M,yy);};
+  const secTitle=(t,yy)=>{
+    doc.setFillColor(...OR);doc.rect(M,yy-4,3,8,"F");
+    sf(12,"bold");sc(TXT);doc.text(t,M+6,yy+2);
+    return yy+11;
+  };
+  const miniHeader=(pg)=>{
+    doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
+    sf(9,"bold");sc(WHT);doc.text("EcoFinity BV",M,9);
+    sf(9,"normal");doc.text("Project: "+(customer.name||"—"),M+32,9);
+    sf(8,"normal");doc.text("Pagina "+pg,W-M,9,{align:"right"});
+  };
 
-  y=30;
-  // ── Klantgegevens ──
-  doc.setFillColor(248,250,252);doc.rect(margin-2,y-4,W-2*margin+4,customer.email?24:18,"F");
-  doc.setTextColor(15,23,42);doc.setFontSize(12);doc.setFont("helvetica","bold");
-  doc.text("Klantgegevens",margin,y);y+=7;
-  doc.setFontSize(10);doc.setFont("helvetica","normal");doc.setTextColor(71,85,105);
-  doc.text(`Naam:    ${customer.name||"—"}`,margin,y);y+=5;
-  doc.text(`Adres:   ${customer.address||displayName||"—"}`,margin,y);y+=5;
-  if(customer.email){doc.text(`E-mail:  ${customer.email}`,margin,y);y+=5;}
-  y+=4;doc.setDrawColor(224,123,0);doc.setLineWidth(0.5);doc.line(margin,y,W-margin,y);y+=6;
+  // ════ PAGINA 1 — Voorblad + Systeemoverzicht ════
+  doc.setFillColor(...OR);doc.rect(0,0,W,40,"F");
+  doc.setFillColor(...ORD);doc.rect(0,36,W,4,"F");
+  sf(22,"bold");sc(WHT);doc.text("EcoFinity BV",M,20);
+  sf(10,"normal");doc.text("Riedeplein 15 · 9660 Brakel · +32 55 495865 · info@ecofinity.eu",M,29);
+  sf(9,"normal");doc.text(new Date().toLocaleDateString("nl-BE"),W-M,14,{align:"right"});
 
-  // ── Systeemoverzicht ──
-  doc.setTextColor(15,23,42);doc.setFontSize(12);doc.setFont("helvetica","bold");
-  doc.text("Systeemoverzicht",margin,y);y+=7;
-  // FIX BUG-01+03: toon BEIDE oppervlaktes in het rapport (2D footprint + 3D schuine opp.)
-  const rows=[
-    ["Paneel",`${results.panel.brand} ${results.panel.model}`],
-    ["Afmetingen paneel",results.panel.dims||"—"],
-    ["Aantal panelen",`${results.panelCount} panelen`],
-    ["Totaal vermogen",`${((results.panelCount*results.panel.watt)/1000).toFixed(2)} kWp`],
-    ["2D projectie-oppervlak",`${results.footprintArea2d||results.detectedArea||80} m² (${results.grbOk?"GRB · Lambert72":"schatting"})`],
-    ["3D schuine dakoppervlakte",`${results.totalSlope3d||((results.detectedArea||80)*getSlopeFactor(slope)).toFixed(1)} m² (×${getSlopeFactor(slope).toFixed(3)} bij ${slope}°)`],
-    ["Geselecteerd vlak",`${results.faceArea3d||"—"} m² (${orientation} · ${slope}°)`],
-    ["Hellingshoek",`${slope}° (hellingscorrectie: ÷cos(${slope}°) = ×${getSlopeFactor(slope).toFixed(3)})`],
-    ["Oriëntatie",`${orientation} ${results.dhmOk?"(LiDAR gemeten)":"(handmatig)"}`],
-    ["Zonneirradiantie",`${results.irr} kWh/m²/jaar`],
-    ["Jaarlijkse opbrengst",`${results.annualKwh.toLocaleString("nl-BE")} kWh/jaar`],
-    ["CO₂ besparing",`${results.co2} kg/jaar`],
-    ["Dekkingsgraad",`${results.coverage}% van gemiddeld verbruik (3.500 kWh/j)`],
-    ["Meetsysteem",`EPSG:31370 Lambert72 · GRB + DHM Vlaanderen`],
+  // Projectblok
+  doc.setFillColor(...BG);doc.rect(0,44,W,34,"F");
+  sf(11,"bold");sc(TXT);doc.text("Project:",M,55);
+  sf(14,"bold");sc(OR);doc.text(customer.name||"—",M+23,55);
+  sf(9,"normal");sc(MUT);
+  doc.text("Locatie: "+displayName.split(",").slice(0,3).join(","),M,64);
+  doc.text("Datum: "+new Date().toLocaleDateString("nl-BE"),M,71);
+  if(customer.email){sf(9,"normal");sc(MUT);doc.text(customer.email,W-M,64,{align:"right"});}
+  if(customer.address){sf(9,"normal");sc(MUT);doc.text(customer.address,W-M,71,{align:"right"});}
+
+  let y=87;
+
+  // Systeemoverzicht
+  y=secTitle("Systeemoverzicht",y);
+  const kWp=((results.panelCount*results.panel.watt)/1000).toFixed(2);
+  const sysItems=[
+    results.panelCount+" × "+results.panel.brand+" "+results.panel.model,
+    "Azimut: "+orientation+" · Helling: "+slope+"° · Piekvermogen: "+kWp+" kWp",
   ];
-  if(results.inv) rows.splice(1,0,["AlphaESS Omvormer",`${results.inv.model} (${results.inv.kw} kW · ${results.inv.fase})`]);
-  doc.autoTable({startY:y,head:[["Parameter","Waarde"]],body:rows,
-    styles:{fontSize:9,cellPadding:3.5},
-    headStyles:{fillColor:[224,123,0],textColor:[255,255,255],fontStyle:"bold",fontSize:9},
-    alternateRowStyles:{fillColor:[248,250,252]},
-    columnStyles:{0:{fontStyle:"bold",cellWidth:70},1:{cellWidth:"auto"}},
-    margin:{left:margin,right:margin},
+  if(results.inv) sysItems.push("1 × "+results.inv.brand+" "+results.inv.model+" · "+results.inv.kw+" kW · "+results.inv.fase);
+  sysItems.forEach((t,i)=>{
+    if(i%2===0){doc.setFillColor(240,245,255);doc.rect(M,y-3,W-2*M,8,"F");}
+    sf(9,i===0?"bold":"normal");sc(i===0?TXT:MUT);doc.text(t,M+3,y+2);
+    y+=8;
   });
-  y=doc.lastAutoTable.finalY+8;
+  y+=3;
 
-  // ── Financieel ──
-  if(y>210){doc.addPage();y=margin;}
-  doc.setTextColor(15,23,42);doc.setFontSize(12);doc.setFont("helvetica","bold");
-  doc.text("Financiële analyse",margin,y);y+=7;
+  // PV-configuratiegegevens (2 kolommen)
+  y=secTitle("PV-configuratiegegevens",y+2);
+  const cfgL=[
+    ["Totaal PV-panelen",results.panelCount+""],
+    ["Piekvermogen",kWp+" kWp"],
+    ["Oriëntatie",orientation],
+    ["Hellingshoek",slope+"°"],
+    ["Jaaropbrengst",results.annualKwh.toLocaleString("nl-BE")+" kWh"],
+    ["CO₂-reductie",results.co2+" kg/jaar"],
+  ];
+  const cfgR=[
+    ["Paneel efficiency",results.panel.eff+"%"],
+    ["Spec. opbrengst",(results.annualKwh/+kWp).toFixed(0)+" kWh/kWp"],
+    ["Dekkingsgraad",results.coverage+"%"],
+    ["Meetbron",results.dhmOk?"LiDAR DHM Vl.":"Manueel"],
+    ["2D dakoppervlak",(results.footprintArea2d||80)+" m²"],
+    ["3D dakoppervlak",(results.totalSlope3d||"—")+" m²"],
+  ];
+  const cW=(W-2*M)/2-2;
+  [[cfgL,M],[cfgR,M+cW+4]].forEach(([rows,cx])=>{
+    let ry=y;
+    rows.forEach(([k,v],ri)=>{
+      if(ri%2===0){doc.setFillColor(...BG);doc.rect(cx,ry-3,cW,7,"F");}
+      sf(8,"normal");sc(MUT);doc.text(k+":",cx+2,ry+1);
+      sf(9,"bold");sc(TXT);doc.text(v,cx+cW-2,ry+1,{align:"right"});
+      ry+=7;
+    });
+  });
+  y+=cfgL.length*7+6;
+
+  // ════ PAGINA 2 — Financiën + Maandwaarden ════
+  doc.addPage();miniHeader(2);y=22;
+
+  // Financiële KPI-blokken
+  y=secTitle("Financiële analyse",y);
+  const kpis=[
+    ["Totale investering","€ "+results.investPanels.toLocaleString("nl-BE"),OR],
+    ["Jaarlijkse besparing","€ "+results.annualBase.toLocaleString("nl-BE"),GR],
+    ["Terugverdientijd",results.paybackBase+" jaar",BL],
+  ];
+  if(results.battResult) kpis.push(["Incl. batterij",results.battResult.payback+" jaar",[120,40,180]]);
+  const kw=(W-2*M)/kpis.length;
+  kpis.forEach(([lbl,val,col],i)=>{
+    const kx=M+i*kw;
+    doc.setFillColor(...col.map(c=>c*0.1+230));
+    doc.rect(kx,y-2,kw-3,18,"F");
+    doc.setDrawColor(...col);doc.setLineWidth(0.8);doc.rect(kx,y-2,kw-3,18,"S");
+    sf(13,"bold");sc(col);doc.text(val,kx+(kw-3)/2,y+8,{align:"center"});
+    sf(7,"normal");sc(MUT);doc.text(lbl,kx+(kw-3)/2,y+14,{align:"center"});
+  });
+  y+=24;
   const finRows=[
-    ["Zonnepanelen","€ "+(results.panelCount*results.panel.price).toLocaleString("nl-BE")],
+    ["Zonnepanelen ("+results.panelCount+" × "+results.panel.model+")","€ "+(results.panelCount*results.panel.price).toLocaleString("nl-BE")],
     ["Installatie & omvormer","€ "+(results.inv?results.inv.price:1200).toLocaleString("nl-BE")],
     ["Totale investering","€ "+results.investPanels.toLocaleString("nl-BE")],
-    ["Jaarlijkse besparing","€ "+results.annualBase.toLocaleString("nl-BE")+" (@ €0,28/kWh)"],
-    ["Terugverdientijd zonder batterij",results.paybackBase+" jaar"],
+    ["Jaarlijkse besparing (€0,28/kWh)","€ "+results.annualBase.toLocaleString("nl-BE")],
+    ["Terugverdientijd",results.paybackBase+" jaar"],
   ];
   if(results.battResult){
-    finRows.push(["Batterij ("+results.batt?.brand+" "+results.batt?.model+")","€ "+results.batt?.price.toLocaleString("nl-BE")]);
+    finRows.push(["Thuisbatterij "+(results.batt?.model||""),"€ "+results.batt?.price.toLocaleString("nl-BE")]);
     finRows.push(["Extra besparing met batterij","€ "+results.battResult.extraSav.toLocaleString("nl-BE")+"/jaar"]);
-    finRows.push(["Totale investering met batterij","€ "+results.battResult.totInv.toLocaleString("nl-BE")]);
-    finRows.push(["Terugverdientijd met batterij",results.battResult.payback+" jaar"]);
+    finRows.push(["Terugverdientijd incl. batterij",results.battResult.payback+" jaar"]);
   }
   doc.autoTable({startY:y,head:[["Post","Bedrag"]],body:finRows,
-    styles:{fontSize:9,cellPadding:3.5},
-    headStyles:{fillColor:[37,99,235],textColor:[255,255,255],fontStyle:"bold"},
+    styles:{fontSize:9,cellPadding:3},
+    headStyles:{fillColor:BL,textColor:WHT,fontStyle:"bold"},
     alternateRowStyles:{fillColor:[239,246,255]},
-    columnStyles:{0:{fontStyle:"bold",cellWidth:110}},
-    margin:{left:margin,right:margin},
-  });
-  y=doc.lastAutoTable.finalY+8;
+    columnStyles:{0:{fontStyle:"bold",cellWidth:130},1:{halign:"right"}},
+    margin:{left:M,right:M},tableWidth:W-2*M});
+  y=doc.lastAutoTable.finalY+10;hLine(y);y+=8;
 
-  // ── Maandelijkse productie ──
-  if(y>210){doc.addPage();y=margin;}
-  doc.setTextColor(15,23,42);doc.setFontSize(12);doc.setFont("helvetica","bold");
-  doc.text("Maandelijkse productie (kWh)",margin,y);y+=7;
+  // Maandwaarden
+  y=secTitle("Maandwaarden — Energieopbrengst",y);
   const mVals=MONTHLY_FACTOR.map(f=>Math.round(results.annualKwh*f));
   doc.autoTable({startY:y,
-    head:[MONTHS],body:[mVals.map(v=>v.toString())],
+    head:[[...MONTHS]],
+    body:[mVals.map(v=>v+""),mVals.map(v=>((v/results.annualKwh)*100).toFixed(1)+"%")],
     styles:{fontSize:8,cellPadding:2.5,halign:"center"},
-    headStyles:{fillColor:[22,163,74],textColor:[255,255,255],fontStyle:"bold"},
+    headStyles:{fillColor:GR,textColor:WHT,fontStyle:"bold"},
     alternateRowStyles:{fillColor:[240,253,244]},
-    margin:{left:margin,right:margin},
-  });
-  y=doc.lastAutoTable.finalY+4;
+    margin:{left:M,right:M},tableWidth:W-2*M});
+  y=doc.lastAutoTable.finalY+6;
 
-  // Grafiek (eenvoudige balken via rechthoeken)
-  if(y+45<285){
-    const bW=12,bX=margin,maxV=Math.max(...mVals);
-    mVals.forEach((v,i)=>{
-      const bH=(v/maxV)*35;
-      const heat=v/maxV;
-      const r=Math.round(37+heat*218),gg=Math.round(99+heat*78),b=Math.round(235-heat*139);
-      doc.setFillColor(r,gg,b);
-      doc.rect(bX+i*(bW+1),y+36-bH,bW,bH,"F");
-      doc.setFontSize(6);doc.setTextColor(100,116,139);
-      doc.text(MONTHS[i],bX+i*(bW+1)+bW/2,y+40,{align:"center"});
+  // Balkgrafiek
+  if(y+55<278){
+    const maxV=Math.max(...mVals);
+    const bW=(W-2*M-4)/12;
+    [0,0.5,1].forEach(f=>{
+      const gy=y+44-f*40;
+      doc.setDrawColor(...LN);doc.setLineWidth(0.2);doc.line(M,gy,W-M,gy);
+      sf(6,"normal");sc(MUT);doc.text(Math.round(maxV*f)+"",M-1,gy+1,{align:"right"});
     });
-    y+=45;
+    mVals.forEach((v,i)=>{
+      const bH=(v/maxV)*40,bx=M+2+i*(bW+0.5);
+      const h=v/maxV;
+      doc.setFillColor(Math.round(37+h*218),Math.round(99+h*78),Math.round(235-h*139));
+      doc.rect(bx,y+44-bH,bW-0.5,bH,"F");
+      sf(6,"normal");sc(MUT);doc.text(MONTHS[i],bx+bW/2,y+50,{align:"center"});
+      if(bH>8){sf(6,"bold");sc(WHT);doc.text(v+"",bx+bW/2,y+44-bH+6,{align:"center"});}
+    });
+    y+=56;
   }
 
-  // ── Footer op alle pagina's ──
+  // Footer
   const pgC=doc.getNumberOfPages();
   for(let i=1;i<=pgC;i++){
-    doc.setPage(i);doc.setFontSize(7);doc.setTextColor(148,163,184);
-    doc.text(`Pagina ${i}/${pgC} · ZonneDak Analyzer · ${new Date().getFullYear()}`,W/2,293,{align:"center"});
-    doc.setDrawColor(226,232,240);doc.line(margin,289,W-margin,289);
-    doc.text("Berekeningen zijn schattingen. Raadpleeg een erkend installateur voor een definitieve offerte.",margin,289);
+    doc.setPage(i);
+    doc.setFillColor(248,250,252);doc.rect(0,284,W,13,"F");
+    doc.setDrawColor(...OR);doc.setLineWidth(0.3);doc.line(0,284,W,284);
+    sf(7,"normal");sc(MUT);
+    doc.text("Pagina "+i+" / "+pgC,W-M,292,{align:"right"});
+    doc.text("EcoFinity BV · www.ecofinity.eu · info@ecofinity.eu · +32 55 495865",M,292);
+    doc.text("Berekeningen zijn schattingen. Raadpleeg een erkend installateur voor definitieve offerte.",M,288,{maxWidth:W-2*M-20});
   }
 
-  // ── Datasheets samenvoegen via pdf-lib ──
+    // ── Datasheets samenvoegen via pdf-lib ──
   const mainPdfBytes=doc.output("arraybuffer");
   const mergedPdf=await PDFDocument.load(new Uint8Array(mainPdfBytes));
 
@@ -1253,10 +1394,7 @@ async function generatePDF(results,customer,displayName,slope,orientation){
   a.href=url;a.download=`ZonneDak_${(customer.name||"rapport").replace(/\s+/g,"_")}_${new Date().toISOString().slice(0,10)}.pdf`;
   a.click();URL.revokeObjectURL(url);
   return dsCount;
-}
-
-// ─── Sub-components ───────────────────────────────────────────────────────────
-function PanelCard({p,selected,onSelect,onDelete,canDelete}){return(
+}function PanelCard({p,selected,onSelect,onDelete,canDelete}){return(
   <div className={`card ${selected?"selected":""}`} onClick={()=>onSelect(p.id)}>
     <div className="card-name">{p.model}</div><div className="card-brand">{p.brand}</div>
     <div className="chips"><span className="chip gold">{p.watt}W</span><span className="chip">{p.eff}% eff</span><span className="chip">{p.area} m²</span><span className="chip">€{p.price}/st</span><span className="chip">{p.warranty}j</span></div>
@@ -1363,72 +1501,15 @@ function CustomerPanel({customer,setCustomer,tlToken,setTlToken}){
   );
 }
 
-
-// ─── Merge ENKEL het gesleepte vertex met zijn directe buren ─────────────────
-// Controleert alleen het gesleepte punt (vertexIdx) met buren, nooit alle paren.
-// Dit voorkomt dat punten die toevallig dicht bij elkaar liggen worden samengevoegd.
-function mergeDraggedVertex(polygon,vertexIdx,thresholdM=8){
-  if(!polygon||polygon.length<=3) return polygon;
-  const cLat=polygon.reduce((s,p)=>s+p[0],0)/polygon.length;
-  const mLat=111320,mLng=111320*Math.cos(cLat*Math.PI/180);
-  const dist=(a,b)=>Math.sqrt(((b[0]-a[0])*mLat)**2+((b[1]-a[1])*mLng)**2);
-  let pts=[...polygon];
-  const n=pts.length;
-  const vi=((vertexIdx%n)+n)%n;
-  const nextI=(vi+1)%n;
-  const prevI=(vi-1+n)%n;
-  // Check met volgende buur eerst
-  if(dist(pts[vi],pts[nextI])<thresholdM){
-    const avg=[(pts[vi][0]+pts[nextI][0])/2,(pts[vi][1]+pts[nextI][1])/2];
-    pts[vi]=avg;
-    pts.splice(nextI,1);
-    return pts;
-  }
-  // Check met vorige buur
-  if(dist(pts[vi],pts[prevI])<thresholdM){
-    const avg=[(pts[vi][0]+pts[prevI][0])/2,(pts[vi][1]+pts[prevI][1])/2];
-    pts[prevI]=avg;
-    pts.splice(vi,1);
-    return pts;
-  }
-  return pts;
-}
-// Lege stub — niet meer gebruikt
-function mergeCoincidentVertices(p){return p;}
-
 // ═══════════════════════════════════════════════════════════════════════════
 //  MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════
-// ─── ErrorBoundary — named export vereist door main.jsx ──────────────────────
-// React class component — error boundaries kunnen niet als function component.
-// Component is geïmporteerd bovenaan via: import { ..., Component } from "react"
-
-export class ErrorBoundary extends Component {
-  constructor(props){super(props);this.state={hasError:false,error:null};}
-  static getDerivedStateFromError(error){return{hasError:true,error};}
-  componentDidCatch(error,info){console.error("[ZonneDak ErrorBoundary]",error,info);}
-  render(){
-    if(this.state.hasError){
-      return(
-        <div style={{padding:32,fontFamily:"'IBM Plex Mono',monospace",color:"#dc2626",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,margin:16}}>
-          <div style={{fontWeight:700,fontSize:16,marginBottom:8}}>⚠️ Applicatiefout</div>
-          <div style={{fontSize:11,marginBottom:12}}>{this.state.error?.message||"Onbekende fout"}</div>
-          <button onClick={()=>this.setState({hasError:false,error:null})} style={{padding:"6px 12px",background:"#dc2626",color:"#fff",border:"none",borderRadius:4,cursor:"pointer",fontFamily:"inherit",fontSize:10}}>
-            Opnieuw proberen
-          </button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
 export default function App(){
   const[activeTab,setActiveTab]=useState("configuratie");
   const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
   const[coords,setCoords]=useState(null);const[displayName,setDisplayName]=useState("");
   const[slope,setSlope]=useState(35);const[orientation,setOrientation]=useState("Z");
-  const[activeLayer,setActiveLayer]=useState("luchtfoto"); // Start met luchtfoto
+  const[activeLayer,setActiveLayer]=useState("luchtfoto");
   const[mapReady,setMapReady]=useState(false); // FIX: was per ongeluk in commentaar opgeslokt
 
   const[grbStatus,setGrbStatus]=useState("idle");
@@ -1437,8 +1518,12 @@ export default function App(){
 
   const[dhmStatus,setDhmStatus]=useState("idle");const[dhmError,setDhmError]=useState("");
   const[detectedFaces,setDetectedFaces]=useState(null);const[selFaceIdx,setSelFaceIdx]=useState(0);
-  // Editeer-modus voor dakvlakken
   const[editMode,setEditMode]=useState(false);
+  const[panelMoveMode,setPanelMoveMode]=useState(false);
+  const[panelOrient,setPanelOrient]=useState("portrait");
+  const panelDataRef=useRef(null);
+  const detectedFacesRef=useRef(null);
+  const draggedPolygonsRef=useRef(null);
 
   const leafRef=useRef(null);const markerRef=useRef(null);
   const selectingRef=useRef(false);
@@ -1455,24 +1540,9 @@ export default function App(){
   const selInv=inverters.find(i=>i.id===selInvId)||null;
   const[invFilter,setInvFilter]=useState("alle");
 
-  // FIX BUG-06: gebruik 3D gecorrigeerde oppervlakte voor paneelberekening
-  // Geselecteerd dakvlak bepaalt de bruikbare 3D-oppervlakte.
-  // Als LiDAR niet beschikbaar is: pas hellingshoek-correctie toe op 2D footprint.
   const effectiveArea=detectedArea||80;
-  // FIX: bereken 3D schuine oppervlakte van het geselecteerde dakvlak
-  const selFaceData=detectedFaces?.[selFaceIdx];
-  const slopeForCalc=selFaceData?.slope||slope;
-  // 3D-oppervlak van geselecteerd vlak: neem helft van totale footprint (zadeldak-aanname)
-  // als er meerdere vlakken zijn, gebruik aandeel (pct) van het geselecteerde vlak
-  const faceShare=selFaceData?.pct?selFaceData.pct/100:0.5;
-  const face3dArea=compute3dArea(effectiveArea*faceShare,slopeForCalc);
-  // Bruikbare 3D-oppervlakte: 85% voor randen, schoorstenen, obstakels
-  const usable3dArea=face3dArea*0.85;
-  const autoPanels=selPanel?Math.max(1,Math.floor(usable3dArea/selPanel.area)):0;
+  const autoPanels=selPanel?Math.floor((effectiveArea*.75)/selPanel.area):0;
   const[customCount,setCustomCount]=useState(10);
-  const[panelOrient,setPanelOrient]=useState('portrait');
-  const[panelMoveMode,setPanelMoveMode]=useState(false);
-  const panelDataRef=useRef(null);
   const panelCount=customCount!==null?customCount:autoPanels;
 
   const[batteries,setBatteries]=useState(DEFAULT_BATTERIES);
@@ -1497,13 +1567,9 @@ export default function App(){
     setSelFaceIdx(idx);setOrientation(f.orientation);setSlope(f.slope);
   },[detectedFaces]);
 
-  // Stabiele refs voor drag handlers — geen dependency-cyclus met redrawRoof
-  const detectedFacesRef=useRef(detectedFaces);
+  // Vertex drag handlers
   useEffect(()=>{detectedFacesRef.current=detectedFaces;},[detectedFaces]);
 
-  const draggedPolygonsRef=useRef(null);
-
-  // Stabiele callback — geen re-render tijdens drag
   const onVertexDrag=useCallback((faceIdx,vertexIdx,newLatLng)=>{
     if(!draggedPolygonsRef.current){
       const faces=detectedFacesRef.current;
@@ -1512,7 +1578,7 @@ export default function App(){
     if(draggedPolygonsRef.current?.[faceIdx]){
       draggedPolygonsRef.current[faceIdx][vertexIdx]=[newLatLng[0],newLatLng[1]];
     }
-  },[]); // Lege deps — stabiele referentie, gebruikt ref intern
+  },[]);
 
   const onVertexDragEnd=useCallback(()=>{
     if(!draggedPolygonsRef.current) return;
@@ -1543,48 +1609,62 @@ export default function App(){
     if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;setPanelsDrawn(false);}
 
     if(detectedFaces&&detectedFaces.length>0){
-      // Genereer polygonen als ze er nog niet zijn (eerste keer na analyse)
       const ridgeAngle=detectedFaces[0]?.ridgeAngleDeg;
       let facesToDraw=detectedFaces;
       if(!detectedFaces[0]?.polygon){
-        facesToDraw=generateFacePolygons(buildingCoords, detectedFaces, ridgeAngle);
+        facesToDraw=generateFacePolygons(buildingCoords,detectedFaces,ridgeAngle);
         setTimeout(()=>setDetectedFaces(facesToDraw),0);
       }
-
-      // Gebouwcontour (oranje stippellijn)
       const outlineLayer=L.polygon(buildingCoords,{color:"#e07b00",fillOpacity:0,weight:2,dashArray:"5,3"}).addTo(map);
 
-      // drawFacePolygons voegt nu zelf g.addTo(map) uit — geeft de groep terug
+      // Dakafmetingen tonen op de kaart
+      facesToDraw.forEach(f=>{
+        if(!f.polygon||f.polygon.length<3) return;
+        const lamPts=f.polygon.map(([la,ln])=>wgs84ToLambert72(la,ln));
+        const cx2=lamPts.reduce((s,p)=>s+p[0],0)/lamPts.length;
+        const cy2=lamPts.reduce((s,p)=>s+p[1],0)/lamPts.length;
+        let sxx=0,sxy=0,syy=0;
+        lamPts.forEach(([x,y])=>{const dx=x-cx2,dy=y-cy2;sxx+=dx*dx;sxy+=dx*dy;syy+=dy*dy;});
+        const pcaAng=Math.atan2(2*sxy,sxx-syy)/2;
+        const cosA=Math.cos(pcaAng),sinA=Math.sin(pcaAng);
+        const proj1=lamPts.map(([x,y])=>(x-cx2)*cosA+(y-cy2)*sinA);
+        const proj2=lamPts.map(([x,y])=>(-(x-cx2)*sinA+(y-cy2)*cosA));
+        const len2d=Math.max(...proj1)-Math.min(...proj1); // langs nok
+        const wid2d=Math.max(...proj2)-Math.min(...proj2); // loodrecht op nok (2D)
+        const wid3d=wid2d/Math.cos((f.slope||0)*Math.PI/180); // werkelijke schuine breedte
+        // Label op centroïde van het vlak
+        const cLat=f.polygon.reduce((s,p)=>s+p[0],0)/f.polygon.length;
+        const cLng=f.polygon.reduce((s,p)=>s+p[1],0)/f.polygon.length;
+        L.marker([cLat,cLng],{icon:L.divIcon({
+          html:"<div style='background:rgba(0,0,0,.65);color:#fff;padding:2px 6px;border-radius:3px;font-size:9px;font-family:IBM Plex Mono,monospace;white-space:nowrap;transform:translate(-50%,-50%)'>"
+            +len2d.toFixed(1)+"m × "+wid3d.toFixed(1)+"m*</div>",
+          className:""
+        })}).addTo(outlineLayer instanceof L.LayerGroup?outlineLayer:map);
+      });
+
       const faceGroup=drawFacePolygons(
         map,L,facesToDraw,selFaceIdx,
         (idx)=>{setSelFaceIdx(idx);setOrientation(facesToDraw[idx].orientation);setSlope(facesToDraw[idx].slope);},
         editMode,selFaceIdx,onVertexDrag,onVertexDragEnd
       );
-
-      // Sla beide lagen op als één groep zodat removeLayer werkt
-      roofLayerRef.current={
-        remove:()=>{
-          map.removeLayer(outlineLayer);
-          if(faceGroup) map.removeLayer(faceGroup);
-        }
-      };
+      roofLayerRef.current={remove:()=>{map.removeLayer(outlineLayer);if(faceGroup) map.removeLayer(faceGroup);}};
     } else {
       roofLayerRef.current=drawRealRoof(map,L,buildingCoords,orientation);
     }
   },[buildingCoords,orientation,detectedFaces,selFaceIdx,editMode]);
 
   redrawRoofRef.current=redrawRoof;
-
   useEffect(()=>{if(mapReady&&buildingCoords) redrawRoof();},[mapReady,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode]);
+  useEffect(()=>{if(activeTab==="configuratie"&&leafRef.current&&mapReady){setTimeout(()=>leafRef.current?.invalidateSize?.(),50);}},[ activeTab,mapReady]);
 
   useEffect(()=>{
     if(!panelsDrawn||!buildingCoords||!selPanel||!leafRef.current||!window.L||!coords) return;
     const L=window.L,map=leafRef.current;
     if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
     const _sf=detectedFaces?.[selFaceIdx];
-            const _fp=_sf?.polygon||buildingCoords;
-            const _ra=_sf?.ridgeAngleDeg||0;
-            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,panelMoveMode);
+    const _fp=_sf?.polygon||buildingCoords;
+    const _ra=_sf?.ridgeAngleDeg||0;
+    panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,panelMoveMode);
   },[panelCount,selPanel,panelsDrawn]);
 
   useEffect(()=>{
@@ -1610,20 +1690,13 @@ export default function App(){
     if(!leafRef.current||!mapReady) return;
     const L=window.L,map=leafRef.current;
     // Wissel base tile laag
-    if(baseTileRef.current){map.removeLayer(baseTileRef.current);baseTileRef.current=null;}
+    if(baseTileRef.current){map.removeLayer(baseTileRef.current);}
     if(activeLayer==="kaart"){
       baseTileRef.current=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:"© OSM",maxZoom:21}).addTo(map);
-    } else if(activeLayer==="ortho"){
-      // Digitaal Vlaanderen orthofoto — volledige dekking Vlaanderen
-      baseTileRef.current=L.tileLayer.wms(ORTHO_WMS,{
-        layers:ORTHO_LYR,format:"image/jpeg",transparent:false,
-        attribution:"© Agentschap Digitaal Vlaanderen",version:"1.3.0"
-      }).addTo(map);
     } else {
-      // Esri als fallback (minder dekking in BE)
       baseTileRef.current=L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        {attribution:"© Esri World Imagery",maxZoom:21,maxNativeZoom:18}
+        {attribution:"© Esri World Imagery",maxZoom:21}
       ).addTo(map);
     }
     // DHM overlay
@@ -1637,28 +1710,16 @@ export default function App(){
     } else {dhmLayerRef.current=null;}
   },[activeLayer,mapReady]);
 
-  // Leaflet kaart herlayout bij terugkeer naar configuratie tab (voorkomt witte kaart)
-  useEffect(()=>{
-    if(activeTab==="configuratie"&&leafRef.current&&mapReady){
-      setTimeout(()=>leafRef.current?.invalidateSize?.(),50);
-    }
-  },[activeTab,mapReady]);
-
-  const justSelectedRef=useRef(false); // Voorkom herzoeken na adresselectie
-
   useEffect(()=>{
     if(!query||query.length<3){setSuggs([]);return;}
-    // Sla zoeken over als suggestions verborgen zijn (= net geselecteerd)
-    if(!showSuggs) return;
     clearTimeout(searchTO.current);
     searchTO.current=setTimeout(async()=>{
       try{const r=await fetch(`${NOMINATIM}?q=${encodeURIComponent(query)}&format=json&limit=6&countrycodes=be`);setSuggs(await r.json());setShowSuggs(true);}catch{}
     },350);
-  },[query,showSuggs]);
+  },[query]);
 
   const selectAddr=async(item)=>{
-    clearTimeout(searchTO.current); // Stop lopende zoekactie
-    justSelectedRef.current=true;   // Sla volgende query-effect over
+    // FIX: direct instellen zonder blur-problemen
     setShowSuggs(false);setSuggs([]);
     setQuery(item.display_name.split(",").slice(0,3).join(","));
     const lat=parseFloat(item.lat),lng=parseFloat(item.lon);
@@ -1681,10 +1742,7 @@ export default function App(){
       if(bld){
         const ring=bld.geometry.type==="Polygon"?bld.geometry.coordinates[0]:bld.geometry.coordinates[0][0];
         lCoords=geoToLeaflet(ring);
-        // FIX BUG-01: gebruik polyAreaLambert72 — Shoelace in metrisch EPSG:31370
-        const area2d=Math.round(polyAreaLambert72(lCoords));
-        console.info(`[ZonneDak] GRB contour geladen. Oppervlak (Lambert72/EPSG:31370): ${area2d} m²`);
-        setDetectedArea(area2d);setBuildingCoords(lCoords);setCustomCount(10);setGrbStatus("ok");
+        setDetectedArea(Math.round(polyAreaM2(lCoords)));setBuildingCoords(lCoords);setCustomCount(null);setGrbStatus("ok");
       } else setGrbStatus("fallback");
     }catch(e){console.warn("GRB:",e);setGrbStatus("fallback");}
 
@@ -1698,71 +1756,18 @@ export default function App(){
     setDhmStatus("loading");
     try{
       const faces=await analyzeDHM(bc);
-      if(faces?.length>0){
-        setDetectedFaces(faces);
-        setSelFaceIdx(0);
-        setOrientation(faces[0].orientation);
-        setSlope(faces[0].slope);
-        setDhmStatus("ok");
-        // Log plat-dak detectie
-        if(faces[0].isFlatRoof){
-          console.info("[ZonneDak] Plat dak auto-gedetecteerd: helling ingesteld op 3°");
-        }
-      } else {
-        setDhmStatus("error");
-        setDhmError("Geen dakvlakken gevonden. Stel helling & richting handmatig in.");
-      }
-    }catch(e){
-      console.error("DHM:",e);
-      setDhmStatus("error");
-      setDhmError(e.message||"WCS endpoint niet bereikbaar");
-
-      // Fallback: genereer twee dakvlakken vanuit GRB-footprint via PCA
-      // Slope = handmatige waarde (slider), oriëntatie = GRB nok-richting
-      // Zo krijgt de gebruiker toch de correcte geometrie om te bewerken
-      if(bc&&bc.length>=3){
-        try{
-          const lamPts=bc.map(([lt,ln])=>wgs84ToLambert72(lt,ln));
-          const cx2=lamPts.reduce((s,p)=>s+p[0],0)/lamPts.length;
-          const cy2=lamPts.reduce((s,p)=>s+p[1],0)/lamPts.length;
-          let cxx=0,cxy=0,cyy=0;
-          lamPts.forEach(([x,y])=>{const dx=x-cx2,dy=y-cy2;cxx+=dx*dx;cxy+=dx*dy;cyy+=dy*dy;});
-          cxx/=lamPts.length;cxy/=lamPts.length;cyy/=lamPts.length;
-          const pcaAng=Math.atan2(2*cxy,cxx-cyy)/2;
-          const ridgeAngleDeg=((90-pcaAng*180/Math.PI)+360)%180;
-          const rightAspect=((ridgeAngleDeg+90)%360+360)%360;
-          const leftAspect =((ridgeAngleDeg-90)%360+360)%360;
-          const fallbackFaces=[
-            {orientation:DIRS8[Math.round(rightAspect/45)%8],slope,avgH:0,pct:50,n:0,
-             slopeStd:0,confidence:0.3,status:"auto",ridgeAngleDeg,
-             aspectDeg:+rightAspect.toFixed(1)},
-            {orientation:DIRS8[Math.round(leftAspect/45)%8],slope,avgH:0,pct:50,n:0,
-             slopeStd:0,confidence:0.3,status:"auto",ridgeAngleDeg,
-             aspectDeg:+leftAspect.toFixed(1)},
-          ];
-          setDetectedFaces(fallbackFaces);
-          setSelFaceIdx(0);
-          setOrientation(fallbackFaces[0].orientation);
-          console.info(`[ZonneDak] GRB-fallback: nok=${ridgeAngleDeg.toFixed(1)}° → ${fallbackFaces.map(f=>f.orientation).join('/')}`);
-        }catch(pcaErr){console.warn("PCA fallback mislukt:",pcaErr);}
-      }
-    }
+      if(faces?.length>0){setDetectedFaces(faces);setSelFaceIdx(0);setOrientation(faces[0].orientation);setSlope(faces[0].slope);setDhmStatus("ok");}
+      else{setDhmStatus("error");setDhmError("Geen dakvlakken gevonden in LiDAR data (plat dak of kleine bounding box).");}
+    }catch(e){console.error("DHM:",e);setDhmStatus("error");setDhmError(e.message||"WCS endpoint niet bereikbaar");}
   };
 
   const calculate=async()=>{
     if(!coords||!selPanel||!buildingCoords) return;
     const irr=getSolarIrr(orientation,slope);
-    // FIX: actualArea = panelcount × echt paneeloppervlak (dit was al correct)
-    const actualArea=panelCount*selPanel.area;
-    const annualKwh=Math.round(actualArea*irr*(selPanel.eff/100));
+    const actualArea=panelCount*selPanel.area,annualKwh=Math.round(actualArea*irr*(selPanel.eff/100));
     const co2=Math.round(annualKwh*.202),coverage=Math.round((annualKwh/3500)*100);
     const investPanels=Math.round(panelCount*selPanel.price+(selInv?selInv.price:1200));
     const annualBase=Math.round(annualKwh*.28),paybackBase=Math.round(investPanels/annualBase);
-    // FIX BUG-03: bereken correcte 2D én 3D dakoppervlakte voor rapport
-    const footprintArea2d=detectedArea||80; // 2D projectie (GRB, metrisch correct via polyAreaLambert72)
-    const totalSlope3d=compute3dArea(footprintArea2d,slope); // Totale schuine dakoppervlakte
-    const selectedFacePct=selFaceData?.pct?selFaceData.pct/100:0.5;
-    const faceArea3d=+(compute3dArea(footprintArea2d*selectedFacePct,slope)).toFixed(1);
     let battResult=null;
     if(battEnabled&&selBatt){
       const extra=Math.min(annualKwh*.70,annualKwh)-annualKwh*.30;
@@ -1771,10 +1776,13 @@ export default function App(){
     }
     setResults({irr,panelCount,actualArea:Math.round(actualArea),annualKwh,co2,coverage,
       investPanels,annualBase,paybackBase,battResult,panel:selPanel,inv:selInv,batt:battEnabled?selBatt:null,
-      detectedArea,footprintArea2d,totalSlope3d:+totalSlope3d.toFixed(1),faceArea3d,
-      slopeFactor:+getSlopeFactor(slope).toFixed(3),
-      grbOk:grbStatus==="ok",dhmOk:dhmStatus==="ok",orientation,slope,
-      faceConfidence:selFaceData?.confidence,faceStatus:selFaceData?.status||"auto"});
+      detectedArea,grbOk:grbStatus==="ok",dhmOk:dhmStatus==="ok",orientation,slope});
+    if(leafRef.current&&window.L){
+      const L=window.L,map=leafRef.current;
+      if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
+      // panel drawing now in useEffect above
+      setPanelsDrawn(true);
+    }
     setActiveTab("resultaten");setAiLoading(true);setAiText("");
     try{
       const dhmStr=dhmStatus==="ok"&&detectedFaces?`\nDHM LiDAR: ${detectedFaces.map(f=>`${f.orientation} ${f.slope}° (${f.pct}%)`).join(", ")}`:"\nHandmatige invoer.";
@@ -1827,9 +1835,10 @@ export default function App(){
           <div className="sl">Locatie</div>
           <div style={{display:"flex",flexDirection:"column",gap:5}}>
             <div className="sugg-wrap">
+                {/* FIX dubbel klikken: mouseDown stopt blur, click selecteert */}
               <input className="inp" placeholder="Adres in Vlaanderen..." value={query}
                 onChange={e=>{setQuery(e.target.value);setShowSuggs(true);}}
-                onFocus={()=>setShowSuggs(true)}
+                onFocus={()=>setSuggs(s=>s)}
                 onBlur={()=>setTimeout(()=>setShowSuggs(false),150)}/>
               {showSuggs&&suggs.length>0&&<div className="sugg">
                 {suggs.map((s,i)=><div key={i} className="sugg-item"
@@ -1853,28 +1862,15 @@ export default function App(){
             <div style={{display:"flex",alignItems:"center",gap:7}}><div className="spinner cyan"/>WCS + TIFF parser + Horn's methode...</div>
             <div className="dhm-bar"><div className="dhm-bar-fill"/></div>
           </div>}
-          {dhmStatus==="ok"&&detectedFaces&&<div className="info-box dhm-ok" style={{marginBottom:5}}>
-            {detectedFaces[0]?.isFlatRoof
-              ?<><strong>🏢 Plat dak gedetecteerd via LiDAR</strong>
-                <span style={{display:"block",marginTop:3,fontSize:7,color:"var(--muted)"}}>
-                  Gebouwhoogte: {detectedFaces[0].maxRelH}m · Helling auto op 3° · EPSG:31370
-                </span></>
-              :<><strong>✅ {detectedFaces.length} dakvlak(ken) gedetecteerd via LiDAR</strong>
-                <span style={{display:"block",marginTop:3,fontSize:7,color:"var(--muted)"}}>
-                  Gebouwcontour-geclipped · Horn's methode · EPSG:31370
-                </span></>
-            }
-          </div>}
-          {dhmStatus==="error"&&detectedFaces&&<div className="info-box warn" style={{marginBottom:5}}>
-            <strong>⚠️ LiDAR niet beschikbaar</strong> — Dakvlakken bepaald via GRB-contour.<br/>
-            <span style={{fontSize:9,color:"var(--muted)"}}>Pas helling en oriëntatie manueel aan indien nodig.</span>
-          </div>}
-          {dhmStatus==="error"&&!detectedFaces&&<div className="info-box err">
-            <strong>⚠️ LiDAR niet beschikbaar</strong><br/>
-            <span style={{fontSize:7,wordBreak:"break-all",color:"var(--muted)"}}>{dhmError}</span><br/>
-            Stel helling &amp; richting handmatig in hieronder.
-          </div>}
-          {detectedFaces&&<div>
+          {(dhmStatus==="ok"||dhmStatus==="error")&&detectedFaces&&<div>
+            <div className="info-box dhm-ok" style={{marginBottom:5}}>
+              {dhmStatus==="ok"
+                ?<><strong>✅ {detectedFaces.length} dakvlak(ken) gedetecteerd via LiDAR</strong>
+                   <span style={{display:"block",marginTop:3,fontSize:8,color:"var(--muted)"}}>GRB-contour · EPSG:31370</span></>
+                :<><strong style={{color:"#92400e"}}>⚠️ LiDAR niet beschikbaar</strong> — GRB-contour gebruikt
+                   <span style={{display:"block",marginTop:3,fontSize:8,color:"var(--muted)"}}>{dhmError}</span></>
+              }
+            </div>
             <div className="face-grid">
               {detectedFaces.map((f,i)=>{
                 const q=ZONE_Q[f.orientation]||ZONE_Q.Z;
@@ -1887,77 +1883,54 @@ export default function App(){
                 return(
                   <button key={i} className={`face-btn ${selFaceIdx===i?"active":""}`} onClick={()=>selectFace(i,detectedFaces)}>
                     <span className="fb-main">{f.isFlatRoof?"🏢 ":""}{f.orientation} · {f.slope}°
-                      {f.status==="manual"&&<span style={{fontSize:6,color:"var(--amber)",marginLeft:4}}>✏️</span>}
+                      {f.status==="manual"&&<span style={{fontSize:7,color:"var(--amber)",marginLeft:4}}>✏️</span>}
                     </span>
-                    <span className="fb-sub">{f.pct}% · {f.avgH}m hoogte{f.maxRelH?` · max ${f.maxRelH}m`:""}</span>
-                    <span style={{fontSize:7,color:"var(--blue)",display:"block",marginTop:1}}>
+                    <span className="fb-sub">{f.pct}% · {f.avgH}m hoogte</span>
+                    <span style={{fontSize:8,color:"var(--blue)",display:"block",marginTop:2}}>
                       3D: {face3d.toFixed(0)}m² <span style={{color:"var(--muted)"}}>(2D: {face2d.toFixed(0)}m²)</span>
                     </span>
-                    <span style={{fontSize:7,color:selFaceIdx===i?"var(--alpha)":qC.c,display:"block"}}>
-                      {f.isFlatRoof?"Plat dak — pas helling aan indien nodig":qC.l}
-                    </span>
-                    <span style={{fontSize:7,color:confColor,display:"block"}}>
+                    <span style={{fontSize:8,color:selFaceIdx===i?"var(--alpha)":qC.c,display:"block"}}>{qC.l}</span>
+                    {conf>0&&<span style={{fontSize:7,color:confColor,display:"block"}}>
                       {conf>=0.7?"✅":conf>=0.4?"⚠️":"❌"} conf: {Math.round(conf*100)}%
-                      {conf<0.4&&" — controleer manueel"}
-                    </span>
+                    </span>}
                   </button>
                 );
               })}
             </div>
-
-            {/* Dakvlak editor knoppen */}
             <div style={{display:"flex",gap:5,marginTop:6,flexWrap:"wrap"}}>
-              {!editMode?(
-                <button className="btn sec sm" style={{flex:1}} onClick={()=>{
-                  // Zorg dat polygonen gegenereerd zijn vóór edit mode start
-                  if(!detectedFaces[selFaceIdx]?.polygon){
-                    const ridgeAngle=detectedFaces[0]?.ridgeAngleDeg;
-                    const withPolys=generateFacePolygons(buildingCoords,detectedFaces,ridgeAngle);
-                    setDetectedFaces(withPolys);
-                    // Kleine vertraging zodat state update doorgekomen is
-                    setActiveLayer("kaart");setTimeout(()=>setEditMode(true),50);
-                  } else {
-                    setActiveLayer("kaart");setEditMode(true);
-                  }
-                }}>
-                  ✏️ Dakvlak aanpassen
-                </button>
-              ):(
-                <>
+              {!editMode
+                ?<button className="btn sec sm" style={{flex:1}} onClick={()=>{
+                    if(!detectedFaces[selFaceIdx]?.polygon){
+                      const withPolys=generateFacePolygons(buildingCoords,detectedFaces,detectedFaces[0]?.ridgeAngleDeg);
+                      setDetectedFaces(withPolys);
+                      setTimeout(()=>setEditMode(true),50);
+                    } else {setEditMode(true);}
+                  }}>✏️ Dakvlak aanpassen</button>
+                :<>
                   <button className="btn green sm" style={{flex:1}} onClick={()=>{
-                    // Bevestig: markeer vlak als manual
-                    setDetectedFaces(prev=>prev.map((f,i)=>i===selFaceIdx?{...f,status:"manual"}:f));
-                    setEditMode(false);setActiveLayer("luchtfoto");
-                  }}>
-                    ✅ Bevestig correctie
-                  </button>
-                  <button className="btn danger sm" onClick={()=>{setEditMode(false);setActiveLayer('luchtfoto');}}>
-                    ✕ Annuleer
-                  </button>
+                    setDetectedFaces(prev=>prev?.map((f,i)=>i===selFaceIdx?{...f,status:"manual"}:f));
+                    setEditMode(false);
+                  }}>✅ Bevestig</button>
+                  <button className="btn danger sm" onClick={()=>setEditMode(false)}>✕</button>
                 </>
-              )}
-              {/* Dakvlak splitsen: voeg extra vlak toe */}
-              {!editMode&&detectedFaces.length<4&&(
-                <button className="btn sec sm" onClick={()=>{
-                  // Splits het geselecteerde vlak in 2 gelijke helften
-                  const f=detectedFaces[selFaceIdx];
-                  if(!f?.polygon||f.polygon.length<4) return;
-                  const mid=Math.floor(f.polygon.length/2);
-                  const poly1=[...f.polygon.slice(0,mid+1)];
-                  const poly2=[...f.polygon.slice(mid)];
-                  const half1={...f,polygon:poly1,pct:Math.round(f.pct/2),status:"manual"};
-                  const half2={...f,orientation:DIRS8[(DIRS8.indexOf(f.orientation)+2)%8]||f.orientation,polygon:poly2,pct:Math.round(f.pct/2),status:"manual"};
-                  setDetectedFaces(prev=>[...prev.slice(0,selFaceIdx),half1,half2,...prev.slice(selFaceIdx+1)]);
-                }}>
-                  ➕ Splits vlak
-                </button>
-              )}
+              }
+              {!editMode&&detectedFaces.length<4&&<button className="btn sec sm" onClick={()=>{
+                const f=detectedFaces[selFaceIdx];
+                if(!f?.polygon||f.polygon.length<4) return;
+                const mid=Math.floor(f.polygon.length/2);
+                const half1={...f,polygon:[...f.polygon.slice(0,mid+1)],pct:Math.round(f.pct/2),status:"manual"};
+                const half2={...f,orientation:DIRS8[(DIRS8.indexOf(f.orientation)+2)%8]||f.orientation,polygon:[...f.polygon.slice(mid)],pct:Math.round(f.pct/2),status:"manual"};
+                setDetectedFaces(prev=>[...prev.slice(0,selFaceIdx),half1,half2,...prev.slice(selFaceIdx+1)]);
+              }}>➕ Splits</button>}
             </div>
-            {editMode&&(
-              <div className="info-box" style={{marginTop:5,background:"#fffbeb",borderColor:"#fde68a"}}>
-                <strong>✏️ Editeer modus actief</strong> — Versleep de oranje hoekpunten op de kaart om het geselecteerde vlak bij te stellen. Klik "Bevestig" als klaar.
-              </div>
-            )}
+            {editMode&&<div className="info-box" style={{marginTop:5,background:"#fffbeb",borderColor:"#fde68a",fontSize:9}}>
+              <strong>✏️ Editeer modus</strong> — Versleep oranje bolletjes op de kaart. Rode bol = samenvoegen bij loslaten.
+            </div>}
+          </div>}
+          {dhmStatus==="error"&&!detectedFaces&&<div className="info-box err">
+            <strong>⚠️ LiDAR niet beschikbaar</strong><br/>
+            <span style={{fontSize:8,color:"var(--muted)"}}>{dhmError}</span><br/>
+            Stel helling &amp; richting handmatig in hieronder.
           </div>}
         </div>}
 
@@ -1968,12 +1941,7 @@ export default function App(){
           <div className="sl">Dakparameters</div>
           <div style={{display:"flex",flexDirection:"column",gap:9}}>
             {grbStatus==="ok"
-              ?<div style={{padding:"6px 10px",background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:5,fontSize:8,color:"var(--muted)"}}>
-                {/* FIX BUG-01+03: toon zowel 2D footprint als 3D schuine oppervlakte */}
-                <div>2D footprint: <strong style={{color:"var(--green)"}}>{detectedArea} m²</strong> <span style={{color:"var(--muted2)"}}>(GRB · Lambert72)</span></div>
-                <div style={{marginTop:3}}>3D dak (×{getSlopeFactor(slope).toFixed(3)}): <strong style={{color:"var(--blue)"}}>{compute3dArea(detectedArea,slope).toFixed(1)} m²</strong> <span style={{color:"var(--muted2)"}}>bij {slope}°</span></div>
-                <div style={{marginTop:3}}>Geselecteerd vlak ({selFaceData?.pct??50}%): <strong style={{color:"var(--alpha)"}}>{face3dArea.toFixed(1)} m²</strong> <span style={{color:"var(--muted2)"}}>bruikbaar</span></div>
-              </div>
+              ?<div style={{padding:"6px 10px",background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:5,fontSize:8,color:"var(--muted)"}}>Oppervlak: <strong style={{color:"var(--green)"}}>{detectedArea} m²</strong> (GRB gemeten)</div>
               :<div className="sl-item"><label>Dakoppervlak <span>{effectiveArea} m²</span></label><input type="range" min="20" max="300" value={effectiveArea} onChange={e=>setDetectedArea(+e.target.value)}/></div>
             }
             <div className="sl-item">
@@ -2002,30 +1970,30 @@ export default function App(){
         {/* Geselecteerd paneel */}
         <div>
           <div className="sl">Geselecteerd paneel</div>
-          <div className="card selected" style={{cursor:"pointer"}} onClick={()=>setActiveTab("panelen")}>
+          <div className="card selected" style={{cursor:"default"}}>
             <div className="card-name">{selPanel?.model}</div><div className="card-brand">{selPanel?.brand}</div>
             <div className="chips"><span className="chip gold">{selPanel?.watt}W</span><span className="chip">{selPanel?.eff}% eff</span><span className="chip">€{selPanel?.price}/st</span></div>
-            <div style={{fontSize:7,color:"var(--amber)",marginTop:4}}>👆 Klik om paneel te wijzigen</div>
           </div>
+          <button className="btn sec full" style={{marginTop:6}} onClick={()=>setActiveTab("panelen")}>Paneel wijzigen →</button>
         </div>
 
         {/* Omvormer */}
         <div>
           <div className="sl">AlphaESS Omvormer</div>
-          {selInv?<div className="inv-card selected" style={{cursor:"pointer"}} onClick={()=>setActiveTab("omvormers")}>
+          {selInv?<div className="inv-card selected" style={{cursor:"default"}}>
             <div className="alpha-badge">⚡ G3</div>
             <div className="card-name">{selInv.model}</div>
             <div className="chips"><span className="chip alpha-c">{selInv.kw}kW</span><span className="chip">€{selInv.price.toLocaleString()}</span></div>
-          </div>:<div className="info-box" style={{fontSize:8,cursor:"pointer"}} onClick={()=>setActiveTab("omvormers")}>Geen omvormer · klik om te kiezen</div>}
+          </div>:<div className="info-box" style={{fontSize:8}}>Geen omvormer · forfait €1.200</div>}
+          <button className="btn alpha full" style={{marginTop:6}} onClick={()=>setActiveTab("omvormers")}>{selInv?"Omvormer wijzigen →":"AlphaESS kiezen →"}</button>
         </div>
 
         {/* Aantal */}
         <div>
           <div className="sl">Aantal panelen</div>
-          {/* Portrait / Landscape keuze */}
           <div style={{display:"flex",gap:5,marginBottom:6}}>
             {["portrait","landscape"].map(o=>(
-              <button key={o} onClick={()=>{setPanelOrient(o);setCustomCount(null);}}
+              <button key={o} onClick={()=>{setPanelOrient(o);setCustomCount(customCount??10);}}
                 style={{flex:1,padding:"5px 8px",fontFamily:"'IBM Plex Mono',monospace",fontSize:10,
                   fontWeight:panelOrient===o?700:400,cursor:"pointer",borderRadius:5,
                   background:panelOrient===o?"var(--amber-light)":"var(--bg3)",
@@ -2036,32 +2004,13 @@ export default function App(){
             ))}
           </div>
           <div className="pce">
-            <div className="pce-top">
-              <span className="pce-title">Klant keuze</span>
-              <span className="pce-reset" onClick={()=>setCustomCount(null)}>
-                {customCount!==null?`↩ Reset (max: ${autoPanels})`:`Auto: ${autoPanels}`}
-              </span>
-            </div>
+            <div className="pce-top"><span className="pce-title">Klant keuze</span><span className="pce-reset" onClick={()=>setCustomCount(10)}>{`↩ Reset (max: ${autoPanels})`}</span></div>
             <div className="pce-controls">
               <button className="pce-btn" onClick={()=>setCustomCount(Math.max(1,(customCount??autoPanels)-1))}>−</button>
               <div style={{textAlign:"center"}}>
-                {/* Manuele invoer van panelaantal */}
-                <input
-                  type="number"
-                  min="1"
-                  max={autoPanels+20}
-                  value={customCount??autoPanels}
-                  onChange={e=>{
-                    const v=parseInt(e.target.value,10);
-                    if(!isNaN(v)&&v>=1) setCustomCount(Math.min(v,autoPanels+20));
-                  }}
-                  style={{
-                    width:68,textAlign:"center",fontFamily:"'Syne',sans-serif",
-                    fontSize:22,fontWeight:800,color:"var(--amber)",
-                    border:"none",background:"transparent",outline:"none",
-                    padding:0,cursor:"text"
-                  }}
-                />
+                <input type="number" min="1" max={autoPanels+20} value={customCount??autoPanels}
+                  onChange={e=>{const v=parseInt(e.target.value,10);if(!isNaN(v)&&v>=1)setCustomCount(Math.min(v,autoPanels+20));}}
+                  style={{width:68,textAlign:"center",fontFamily:"'Syne',sans-serif",fontSize:22,fontWeight:800,color:"var(--amber)",border:"none",background:"transparent",outline:"none",padding:0,cursor:"text"}}/>
                 <div className="pce-sub">{((panelCount*(selPanel?.watt||400))/1000).toFixed(1)} kWp</div>
               </div>
               <button className="pce-btn" onClick={()=>setCustomCount(Math.min(autoPanels+20,(customCount??autoPanels)+1))}>+</button>
@@ -2080,43 +2029,37 @@ export default function App(){
         </div>
 
         <div className="divider"/>
-        {/* BUG 3 FIX: twee aparte knoppen — toon op kaart vs bereken resultaten */}
-        <button className="btn sec full" onClick={()=>{
+        <button className="btn sec full" style={{marginBottom:5}} onClick={()=>{
           if(!coords||!buildingCoords||!selPanel) return;
-          // Teken panelen op de kaart
+          if(panelDataRef) panelDataRef.current=null;
+          setPanelMoveMode(false);
           if(leafRef.current&&window.L){
             const L=window.L,map=leafRef.current;
             if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
             const _sf=detectedFaces?.[selFaceIdx];
             const _fp=_sf?.polygon||buildingCoords;
             const _ra=_sf?.ridgeAngleDeg||0;
-            if(panelDataRef) panelDataRef.current=null; // reset posities bij hertekenen
-            setPanelMoveMode(false);
             panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,false);
             setPanelsDrawn(true);
           }
           setActiveTab("configuratie");
-          setTimeout(()=>{if(leafRef.current&&window.L) leafRef.current.invalidateSize();},100);
-        }} disabled={!coords||!buildingCoords||isLoading} style={{marginBottom:5}}>
+          setTimeout(()=>{if(leafRef.current) leafRef.current.invalidateSize();},100);
+        }} disabled={!coords||!buildingCoords||isLoading}>
           🏠 Toon {panelCount} panelen op dak
         </button>
-        {panelsDrawn&&<button
-          className={"btn full "+(panelMoveMode?"green":"")}
-          style={{marginBottom:5}}
-          onClick={()=>{
-            const nm=!panelMoveMode;
-            setPanelMoveMode(nm);
-            if(leafRef.current&&window.L){
-              const L=window.L,map=leafRef.current;
-              if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
-              const _sf=detectedFaces?.[selFaceIdx];
-              const _fp=_sf?.polygon||buildingCoords;
-              const _ra=_sf?.ridgeAngleDeg||0;
-              panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,nm);
-            }
-            if(nm){setActiveTab("configuratie");setTimeout(()=>{if(leafRef.current) leafRef.current.invalidateSize();},50);}
-          }}>
-          {panelMoveMode?"✅ Klaar met verplaatsen":"↔️ Verplaats panelen"}
+        {panelsDrawn&&<button className={"btn full "+(panelMoveMode?"green":"")} style={{marginBottom:5}} onClick={()=>{
+          const nm=!panelMoveMode;setPanelMoveMode(nm);
+          if(leafRef.current&&window.L){
+            const L=window.L,map=leafRef.current;
+            if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
+            const _sf=detectedFaces?.[selFaceIdx];
+            const _fp=_sf?.polygon||buildingCoords;
+            const _ra=_sf?.ridgeAngleDeg||0;
+            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,nm);
+          }
+          if(nm){setActiveTab("configuratie");setTimeout(()=>{if(leafRef.current) leafRef.current.invalidateSize();},50);}
+        }}>
+          {panelMoveMode?"✅ Klaar · klik paneel=select · dubbelklik=rij · sleep=verplaats":"↔️ Verplaats panelen"}
         </button>}
         <button className="btn full" onClick={calculate} disabled={!coords||aiLoading||!buildingCoords||isLoading}>
           {aiLoading?<><div className="spinner"/>Analyseren...</>:dhmStatus==="loading"?<><div className="spinner cyan"/>LiDAR verwerken...</>:grbStatus==="loading"?<><div className="spinner"/>Laden...</>:"☀️ Bereken resultaten"}
@@ -2135,9 +2078,9 @@ export default function App(){
           {/* Laagkiezer */}
           <div className="map-btns">
             <button className={`map-btn ${activeLayer==="luchtfoto"?"active":""}`} onClick={()=>setActiveLayer("luchtfoto")}>🛰️ Esri</button>
-            <button className={`map-btn ${activeLayer==="ortho"?"active":""}`} onClick={()=>setActiveLayer("ortho")} title="Orthofoto Vlaanderen (volledige dekking)">📷 Ortho VL</button>
+            <button className={`map-btn ${activeLayer==="ortho"?"active":""}`} onClick={()=>setActiveLayer("ortho")}>📷 Ortho VL</button>
             <button className={`map-btn ${activeLayer==="kaart"?"active":""}`} onClick={()=>setActiveLayer("kaart")}>🗺️ Kaart</button>
-            <button className={`map-btn ${activeLayer==="dsm"?"active":""}`} onClick={()=>setActiveLayer("dsm")}>📡 DSM</button>
+            <button className={`map-btn ${activeLayer==="dsm"?"active":""}`} onClick={()=>setActiveLayer("dsm")}>📡 DSM Hoogte</button>
           </div>
           {/* Status pill */}
           {coords&&<div className="status-pill">
@@ -2222,48 +2165,14 @@ export default function App(){
           <div className="results-wrap">
             {/* Badges */}
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-              {results.grbOk&&<div style={{padding:"4px 9px",background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:12,fontSize:8,color:"var(--green)",fontWeight:500}}>
-                ✅ GRB · 2D {results.footprintArea2d} m² · 3D {results.totalSlope3d} m²
-              </div>}
-              {results.dhmOk&&<div style={{padding:"4px 9px",background:"var(--alpha-bg)",border:"1px solid var(--alpha-border)",borderRadius:12,fontSize:8,color:"var(--alpha)",fontWeight:500}}>
-                ✅ LiDAR · {results.orientation} {results.slope}°
-              </div>}
-              {/* FIX: toon confidence van geselecteerd dakvlak */}
-              {results.faceConfidence!=null&&<div style={{padding:"4px 9px",background:results.faceConfidence>=0.7?"var(--green-bg)":results.faceConfidence>=0.4?"#fffbeb":"var(--red-bg)",border:`1px solid ${results.faceConfidence>=0.7?"var(--green-border)":results.faceConfidence>=0.4?"#fde68a":"var(--red-border)"}`,borderRadius:12,fontSize:8,color:results.faceConfidence>=0.7?"var(--green)":results.faceConfidence>=0.4?"#92400e":"var(--red)",fontWeight:500}}>
-                {results.faceConfidence>=0.7?"✅":results.faceConfidence>=0.4?"⚠️":"❌"} Conf: {Math.round(results.faceConfidence*100)}%
-              </div>}
-              {/* Status badge */}
-              {results.faceStatus&&<div style={{padding:"4px 9px",background:"var(--bg3)",border:"1px solid var(--border-dark)",borderRadius:12,fontSize:8,color:"var(--muted)",fontWeight:500}}>
-                {results.faceStatus==="auto"?"🤖 Automatisch":results.faceStatus==="manual"?"✏️ Manueel":"✅ Terrein bevestigd"}
-              </div>}
+              {results.grbOk&&<div style={{padding:"4px 9px",background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:12,fontSize:8,color:"var(--green)",fontWeight:500}}>✅ GRB dakcontour · {results.detectedArea} m²</div>}
+              {results.dhmOk&&<div style={{padding:"4px 9px",background:"var(--alpha-bg)",border:"1px solid var(--alpha-border)",borderRadius:12,fontSize:8,color:"var(--alpha)",fontWeight:500}}>✅ LiDAR · {results.orientation} {results.slope}°</div>}
               {customer.name&&<div style={{padding:"4px 9px",background:"var(--amber-light)",border:"1px solid #fde68a",borderRadius:12,fontSize:8,color:"var(--amber)",fontWeight:500}}>👤 {customer.name}</div>}
             </div>
 
             {/* Kaart notitie */}
             <div style={{padding:"7px 11px",background:"var(--blue-bg)",border:"1px solid var(--blue-border)",borderRadius:6,fontSize:9,color:"var(--blue)"}}>
               🗺️ <strong>Configuratie tab</strong> — {results.panelCount} panelen zichtbaar op het dak. +/− past het aantal live aan.
-            </div>
-
-            {/* FIX BUG-03: Dakoppervlak overzicht — 2D én 3D expliciet */}
-            <div style={{padding:"10px 12px",background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:7,fontSize:8}}>
-              <div style={{fontWeight:600,color:"var(--text)",marginBottom:6,fontSize:9}}>📐 Dakoppervlaktemeting (EPSG:31370 · Lambert72)</div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6}}>
-                <div>
-                  <div style={{color:"var(--muted)"}}>2D footprint</div>
-                  <div style={{fontFamily:"'Syne',sans-serif",fontSize:15,fontWeight:700,color:"var(--text)"}}>{results.footprintArea2d} m²</div>
-                  <div style={{color:"var(--muted2)",fontSize:7}}>Projectie-oppervlak</div>
-                </div>
-                <div>
-                  <div style={{color:"var(--muted)"}}>3D schuine opp.</div>
-                  <div style={{fontFamily:"'Syne',sans-serif",fontSize:15,fontWeight:700,color:"var(--blue)"}}>{results.totalSlope3d} m²</div>
-                  <div style={{color:"var(--muted2)",fontSize:7}}>×{results.slopeFactor} bij {results.slope}°</div>
-                </div>
-                <div>
-                  <div style={{color:"var(--muted)"}}>Geselecteerd vlak</div>
-                  <div style={{fontFamily:"'Syne',sans-serif",fontSize:15,fontWeight:700,color:"var(--alpha)"}}>{results.faceArea3d} m²</div>
-                  <div style={{color:"var(--muted2)",fontSize:7}}>{results.orientation} · bruikbaar</div>
-                </div>
-              </div>
             </div>
 
             {/* Systeemoverzicht */}
