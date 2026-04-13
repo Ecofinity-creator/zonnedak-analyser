@@ -867,31 +867,25 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
         }
       }
     }
-    // Wijs polys toe via centroïde-verificatie:
-    // polys[0] = punten met crossComp>=0 (rechts van nok, richting ridgeAngleDeg+90)
-    // polys[1] = punten met crossComp<0  (links van nok, richting ridgeAngleDeg-90)
-    // Gebruik centroïde van elk polygoon om te verifiëren welke kant het is.
-    const getCentroid=poly=>{
-      if(!poly||!poly.length) return null;
-      const la=poly.reduce((s,p)=>s+p[0],0)/poly.length;
-      const ln=poly.reduce((s,p)=>s+p[1],0)/poly.length;
-      return[la,ln];
+    // Wijs polygonen toe via dot-product van centroïde met verwachte aspect-richting.
+    // Voor elke face: de aspect-richting is een geografisch azimut (graden kloksgewijs v Noord).
+    // De eenheidsvector in (Oost,Noord): [sin(asp), cos(asp)].
+    // Het polygoon waarvan het centroïde het meest in die richting ligt t.o.v. het gebouwcentroïde
+    // is het correcte polygoon — onafhankelijk van ridgeAngleDeg-conventies.
+    const polyCtr=poly=>{
+      if(!poly||!poly.length) return [cLat,cLng];
+      return[poly.reduce((s,p)=>s+p[0],0)/poly.length,
+             poly.reduce((s,p)=>s+p[1],0)/poly.length];
     };
-    const c0=getCentroid(polys[0]),c1=getCentroid(polys[1]);
-    // crossComp van het centroïde: positief = rechts (polys[0]), negatief = links (polys[1])
-    const crossSign=(pt)=>{
-      if(!pt) return 0;
-      const dx=pt[1]-cLng,dy=pt[0]-cLat;
-      return dx*cosR-dy*sinR; // positief = rechts
-    };
-    // polys[0] MOET de rechtse zijn (crossSign>0), polys[1] de linkse
-    // Als ze verwisseld zijn, swap
-    const rightPoly=crossSign(c0)>=0?polys[0]:polys[1];
-    const leftPoly =crossSign(c0)>=0?polys[1]:polys[0];
     return faces.map(f=>{
-      // aspect richting: rechts = ridgeAngleDeg+90, links = ridgeAngleDeg-90
-      const diff=((f.aspectDeg||0)-(ridgeAngleDeg||0)+360)%360;
-      const poly=diff<180?rightPoly:leftPoly;
+      const aspRad=(f.aspectDeg||0)*Math.PI/180;
+      const expE=Math.sin(aspRad),expN=Math.cos(aspRad); // verwachte richting (Oost, Noord)
+      const score=poly=>{
+        const c=polyCtr(poly);
+        const dE=c[1]-cLng, dN=c[0]-cLat; // richting van gebouwcentroïde naar polygooncentroïde
+        return dE*expE+dN*expN; // dot-product: groter = meer in verwachte richting
+      };
+      const poly=score(polys[0])>=score(polys[1])?polys[0]:polys[1];
       return {...f,polygon:poly&&poly.length>=3?poly:lc};
     });
   }
@@ -1707,32 +1701,25 @@ export default function App(){
         const len2d=Math.max(...proj1)-Math.min(...proj1); // langs nok
         const wid2d=Math.max(...proj2)-Math.min(...proj2); // loodrecht op nok (2D)
         const wid3d=wid2d/Math.cos((f.slope||0)*Math.PI/180); // werkelijke schuine breedte
-        // Label op de buitenste lange zijkant van het vlak (langs de nok)
-        // Zoek het punt met de grootste proj2 (meest naar buiten t.o.v. centroïde)
-        const proj2Vals=lamPts.map(([x,y])=>(-(x-cx2)*sinA+(y-cy2)*cosA));
-        const maxP2=Math.max(...proj2Vals),minP2=Math.min(...proj2Vals);
-        // Kies de buitenzijde (grootste absolute proj2 waarde = meest weg van nok)
-        const outerSign=Math.abs(maxP2)>Math.abs(minP2)?1:-1;
-        // Middenste punt langs de langste as op de buitenzijde
-        const midP1=(Math.max(...proj1)+Math.min(...proj1))/2;
-        // Terug naar WGS84
-        const mEdgX=cx2+(midP1*cosA+outerSign*Math.abs(maxP2>Math.abs(minP2)?maxP2:minP2)*(-sinA));
-        const mEdgY=cy2+(midP1*sinA+outerSign*Math.abs(maxP2>Math.abs(minP2)?maxP2:minP2)*(cosA));
-        const mLat111=111320,mLng111=111320*Math.cos(cx2/mLat111); // approx - use fixed
+        // Label op midpunt van de buitenste rand:
+        // de rand van het polygoon waarvan het midpunt de grootste afstand heeft
+        // tot de noklijn (= grootste |crossComp| in geografische coords).
+        // Noklijn: door (cLat,cLng) in richting (sin(ridgeRad),cos(ridgeRad)).
         const cLat2=f.polygon.reduce((s,p)=>s+p[0],0)/f.polygon.length;
         const cLng2=f.polygon.reduce((s,p)=>s+p[1],0)/f.polygon.length;
-        // Simpeler: gebruik het midpunt van de buitenste rand (edge met grootste gem. proj2)
-        const edges=f.polygon.map((_,ei)=>{
-          const a2=f.polygon[ei],b2=f.polygon[(ei+1)%f.polygon.length];
-          const aMid=[(a2[0]+b2[0])/2,(a2[1]+b2[1])/2];
-          const aLam=wgs84ToLambert72(aMid[0],aMid[1]);
-          const p2Val=(-(aLam[0]-cx2)*sinA+(aLam[1]-cy2)*cosA);
-          return{midPt:aMid,p2:p2Val};
-        });
-        edges.sort((a,b)=>Math.abs(b.p2)-Math.abs(a.p2));
-        const edgeMid=edges[0].midPt; // midpunt van de langste buitenzijde
-        const mLat111320=111320,mLng111320=111320*Math.cos(cLat2*Math.PI/180);
-        L.marker(edgeMid,{icon:L.divIcon({
+        const ridgeRadL=(detectedFaces[0]?.ridgeAngleDeg||0)*Math.PI/180;
+        const cosRL=Math.cos(ridgeRadL),sinRL=Math.sin(ridgeRadL);
+        const crossDist=(la,ln)=>Math.abs((ln-cLng2)*cosRL-(la-cLat2)*sinRL);
+        let bestEdgeMid=null,bestDist=-1;
+        const np=f.polygon.length;
+        for(let ei=0;ei<np;ei++){
+          const a2=f.polygon[ei],b2=f.polygon[(ei+1)%np];
+          const mid=[(a2[0]+b2[0])/2,(a2[1]+b2[1])/2];
+          const d=crossDist(mid[0],mid[1]);
+          if(d>bestDist){bestDist=d;bestEdgeMid=mid;}
+        }
+        const labelPos=bestEdgeMid||[cLat2,cLng2];
+        L.marker(labelPos,{icon:L.divIcon({
           html:"<div style='background:rgba(0,0,0,.72);color:#fff;padding:2px 7px;border-radius:3px;font-size:9px;font-family:IBM Plex Mono,monospace;white-space:nowrap;transform:translate(-50%,-50%)'>"
             +len2d.toFixed(1)+"m × "+wid3d.toFixed(1)+"m</div>",
           className:""
@@ -1839,7 +1826,7 @@ export default function App(){
       if(bld){
         const ring=bld.geometry.type==="Polygon"?bld.geometry.coordinates[0]:bld.geometry.coordinates[0][0];
         lCoords=geoToLeaflet(ring);
-        setDetectedArea(Math.round(polyAreaM2(lCoords)));setBuildingCoords(lCoords);setCustomCount(null);setGrbStatus("ok");
+        setDetectedArea(Math.round(polyAreaLambert72(lCoords)));setBuildingCoords(lCoords);setCustomCount(10);setGrbStatus("ok");
       } else setGrbStatus("fallback");
     }catch(e){console.warn("GRB:",e);setGrbStatus("fallback");}
 
@@ -2234,7 +2221,7 @@ export default function App(){
         {activeTab==="panelen"&&<div className="section">
           <div className="sl">Panelenlijst</div>
           <div className="info-box" style={{fontSize:8}}><strong>⭐ Standaard:</strong> Qcells 440W en Trina 500W zijn uw meest gebruikte panelen.</div>
-          <div className="list">{panels.map(p=><PanelCard key={p.id} p={p} selected={p.id===selPanelId} onSelect={id=>{setSelPanelId(id);setCustomCount(null);}} onDelete={id=>setPanels(ps=>ps.filter(x=>x.id!==id))} canDelete={panels.length>1}/>)}</div>
+          <div className="list">{panels.map(p=><PanelCard key={p.id} p={p} selected={p.id===selPanelId} onSelect={id=>{setSelPanelId(id);setCustomCount(10);}} onDelete={id=>setPanels(ps=>ps.filter(x=>x.id!==id))} canDelete={panels.length>1}/>)}</div>
           <NewPanelForm onAdd={p=>setPanels(ps=>[...ps,p])}/>
         </div>}
 
