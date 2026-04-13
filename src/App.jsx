@@ -430,17 +430,21 @@ function packPanels(facePoly,pW,pH,maxN,_ridgeAngleDeg,orient){
   const cyM=polyM.reduce((s,p)=>s+p[1],0)/polyM.length;
   let sxx=0,sxy=0,syy=0;
   polyM.forEach(([x,y])=>{const dx=x-cxM,dy=y-cyM;sxx+=dx*dx;sxy+=dx*dy;syy+=dy*dy;});
-  // Hoek van de langste eigenvector t.o.v. X-as (Oost)
-  const pcaAng=Math.atan2(2*sxy,sxx-syy)/2; // hoek van langste as in radialen t.o.v. Oost
-
-  // Roteer zodat langste as (nok) langs Y-as ligt.
-  // Eigenvector van langste as: [cos(pcaAng), sin(pcaAng)]
-  // Rotatiematrix die deze vector naar [0,1] mapt:
-  //   rotFwd([x,y]) = [x·sin(a) - y·cos(a),  x·cos(a) + y·sin(a)]
-  //   Check: rotFwd([cos(a), sin(a)]) = [0, cos²+sin²] = [0, 1] ✓
+  const pcaAng=Math.atan2(2*sxy,sxx-syy)/2;
   const cosA=Math.cos(pcaAng),sinA=Math.sin(pcaAng);
-  const rotFwd=([x,y])=>[ x*sinA - y*cosA,  x*cosA + y*sinA];
-  const rotInv=([x,y])=>[ x*sinA + y*cosA, -x*cosA + y*sinA]; // inverse (transpose)
+  // Test beide rotaties en kies degene waarbij Y-extent > X-extent (nok langs Y)
+  const tryRot=([x,y],c,s)=>[x*s-y*c, x*c+y*s];
+  const rp1=polyM.map(p=>tryRot([p[0]-cxM,p[1]-cyM],cosA,sinA));
+  const xExt1=Math.max(...rp1.map(p=>p[0]))-Math.min(...rp1.map(p=>p[0]));
+  const yExt1=Math.max(...rp1.map(p=>p[1]))-Math.min(...rp1.map(p=>p[1]));
+  // Als X-extent > Y-extent: assen verwisseld, roteer 90° extra
+  // 90° extra CCW: [x,y] → [-y,x], gecombineerd: rotFwd90 = [-sinA*x+cosA*y?, ...]
+  // Eenvoudiger: als xExt>yExt, gebruik andere hoek (pcaAng+90°)
+  const useSwap=xExt1>yExt1;
+  const cA=useSwap?(-sinA):cosA, sA=useSwap?cosA:sinA;
+  // rotFwd: [x,y] → [x*sA - y*cA, x*cA + y*sA] zodat langste as langs Y
+  const rotFwd=([x,y])=>[ x*sA - y*cA,  x*cA + y*sA];
+  const rotInv=([x,y])=>[ x*sA + y*cA, -x*cA + y*sA];
 
   const rotPoly=polyM.map(rotFwd);
   const rxs=rotPoly.map(p=>p[0]),rys=rotPoly.map(p=>p[1]);
@@ -863,17 +867,31 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
         }
       }
     }
-    // ← Wijs polys toe op basis van aspectDeg, NIET op array-index.
-    // Na sort((a,b)=>b.n-a.n) in computeRoofFaces kan faces[0] de "linker" face zijn.
-    // rightAspect = ridgeAngleDeg + 90 → polys[0]  (crossComp ≥ 0, "rechts")
-    // leftAspect  = ridgeAngleDeg - 90 → polys[1]  (crossComp < 0, "links")
+    // Wijs polys toe via centroïde-verificatie:
+    // polys[0] = punten met crossComp>=0 (rechts van nok, richting ridgeAngleDeg+90)
+    // polys[1] = punten met crossComp<0  (links van nok, richting ridgeAngleDeg-90)
+    // Gebruik centroïde van elk polygoon om te verifiëren welke kant het is.
+    const getCentroid=poly=>{
+      if(!poly||!poly.length) return null;
+      const la=poly.reduce((s,p)=>s+p[0],0)/poly.length;
+      const ln=poly.reduce((s,p)=>s+p[1],0)/poly.length;
+      return[la,ln];
+    };
+    const c0=getCentroid(polys[0]),c1=getCentroid(polys[1]);
+    // crossComp van het centroïde: positief = rechts (polys[0]), negatief = links (polys[1])
+    const crossSign=(pt)=>{
+      if(!pt) return 0;
+      const dx=pt[1]-cLng,dy=pt[0]-cLat;
+      return dx*cosR-dy*sinR; // positief = rechts
+    };
+    // polys[0] MOET de rechtse zijn (crossSign>0), polys[1] de linkse
+    // Als ze verwisseld zijn, swap
+    const rightPoly=crossSign(c0)>=0?polys[0]:polys[1];
+    const leftPoly =crossSign(c0)>=0?polys[1]:polys[0];
     return faces.map(f=>{
-      // Hoekafstand van de face t.o.v. de rechts-loodrechte (ridgeAngle+90)
+      // aspect richting: rechts = ridgeAngleDeg+90, links = ridgeAngleDeg-90
       const diff=((f.aspectDeg||0)-(ridgeAngleDeg||0)+360)%360;
-      // 0–180° kloksgewijs van nok = rechterzijde (polys[0])
-      // 180–360° = linkerzijde (polys[1])
-      const polyIdx=diff<180?0:1;
-      const poly=polys[polyIdx];
+      const poly=diff<180?rightPoly:leftPoly;
       return {...f,polygon:poly&&poly.length>=3?poly:lc};
     });
   }
@@ -1129,6 +1147,7 @@ function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDat
         let hasMoved=false,toMove=null,startSnap2=null;
 
         // Disable map drag METEEN — anders "steelt" Leaflet de mousemove events
+        const downEvent=e; // bewaar voor dubbelklik detectie in onUp
         map.dragging.disable();
         map.getContainer().style.cursor="grab";
 
@@ -1160,8 +1179,12 @@ function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDat
           map.off("mousemove",onMove);map.off("mouseup",onUp);
           map.dragging.enable();map.getContainer().style.cursor="";
           if(!hasMoved){
-            // Geen beweging = click → toggle selectie
-            toggleSel(i);
+            // Dubbelklik (detail>=2) = selecteer hele rij; enkelvoudig klik = toggle paneel
+            if(downEvent.originalEvent&&downEvent.originalEvent.detail>=2){
+              selRow(rowOf[i]);
+            } else {
+              toggleSel(i);
+            }
           } else if(toMove){
             const final=polyLayers.map((pl2,j)=>{
               const lls=pl2.getLatLngs()[0];
@@ -1684,14 +1707,36 @@ export default function App(){
         const len2d=Math.max(...proj1)-Math.min(...proj1); // langs nok
         const wid2d=Math.max(...proj2)-Math.min(...proj2); // loodrecht op nok (2D)
         const wid3d=wid2d/Math.cos((f.slope||0)*Math.PI/180); // werkelijke schuine breedte
-        // Label op centroïde van het vlak
-        const cLat=f.polygon.reduce((s,p)=>s+p[0],0)/f.polygon.length;
-        const cLng=f.polygon.reduce((s,p)=>s+p[1],0)/f.polygon.length;
-        L.marker([cLat,cLng],{icon:L.divIcon({
-          html:"<div style='background:rgba(0,0,0,.65);color:#fff;padding:2px 6px;border-radius:3px;font-size:9px;font-family:IBM Plex Mono,monospace;white-space:nowrap;transform:translate(-50%,-50%)'>"
-            +len2d.toFixed(1)+"m × "+wid3d.toFixed(1)+"m*</div>",
+        // Label op de buitenste lange zijkant van het vlak (langs de nok)
+        // Zoek het punt met de grootste proj2 (meest naar buiten t.o.v. centroïde)
+        const proj2Vals=lamPts.map(([x,y])=>(-(x-cx2)*sinA+(y-cy2)*cosA));
+        const maxP2=Math.max(...proj2Vals),minP2=Math.min(...proj2Vals);
+        // Kies de buitenzijde (grootste absolute proj2 waarde = meest weg van nok)
+        const outerSign=Math.abs(maxP2)>Math.abs(minP2)?1:-1;
+        // Middenste punt langs de langste as op de buitenzijde
+        const midP1=(Math.max(...proj1)+Math.min(...proj1))/2;
+        // Terug naar WGS84
+        const mEdgX=cx2+(midP1*cosA+outerSign*Math.abs(maxP2>Math.abs(minP2)?maxP2:minP2)*(-sinA));
+        const mEdgY=cy2+(midP1*sinA+outerSign*Math.abs(maxP2>Math.abs(minP2)?maxP2:minP2)*(cosA));
+        const mLat111=111320,mLng111=111320*Math.cos(cx2/mLat111); // approx - use fixed
+        const cLat2=f.polygon.reduce((s,p)=>s+p[0],0)/f.polygon.length;
+        const cLng2=f.polygon.reduce((s,p)=>s+p[1],0)/f.polygon.length;
+        // Simpeler: gebruik het midpunt van de buitenste rand (edge met grootste gem. proj2)
+        const edges=f.polygon.map((_,ei)=>{
+          const a2=f.polygon[ei],b2=f.polygon[(ei+1)%f.polygon.length];
+          const aMid=[(a2[0]+b2[0])/2,(a2[1]+b2[1])/2];
+          const aLam=wgs84ToLambert72(aMid[0],aMid[1]);
+          const p2Val=(-(aLam[0]-cx2)*sinA+(aLam[1]-cy2)*cosA);
+          return{midPt:aMid,p2:p2Val};
+        });
+        edges.sort((a,b)=>Math.abs(b.p2)-Math.abs(a.p2));
+        const edgeMid=edges[0].midPt; // midpunt van de langste buitenzijde
+        const mLat111320=111320,mLng111320=111320*Math.cos(cLat2*Math.PI/180);
+        L.marker(edgeMid,{icon:L.divIcon({
+          html:"<div style='background:rgba(0,0,0,.72);color:#fff;padding:2px 7px;border-radius:3px;font-size:9px;font-family:IBM Plex Mono,monospace;white-space:nowrap;transform:translate(-50%,-50%)'>"
+            +len2d.toFixed(1)+"m × "+wid3d.toFixed(1)+"m</div>",
           className:""
-        })}).addTo(outlineLayer instanceof L.LayerGroup?outlineLayer:map);
+        })}).addTo(map);
       });
 
       const faceGroup=drawFacePolygons(
