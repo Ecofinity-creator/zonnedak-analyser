@@ -430,21 +430,14 @@ function packPanels(facePoly,pW,pH,maxN,_ridgeAngleDeg,orient){
   const cyM=polyM.reduce((s,p)=>s+p[1],0)/polyM.length;
   let sxx=0,sxy=0,syy=0;
   polyM.forEach(([x,y])=>{const dx=x-cxM,dy=y-cyM;sxx+=dx*dx;sxy+=dx*dy;syy+=dy*dy;});
+  // pcaAng = hoek van de eigenvector met de GROOTSTE eigenwaarde (= nokrichting)
+  // Bewijs: atan2(2*sxy, sxx-syy)/2 geeft altijd de grootste-eigenwaarde eigenvector.
+  // rotFwd mapt deze eigenvector [cosA,sinA] naar [0,1] (langs Y-as = langs nok).
+  // rotFwd([cosA,sinA]) = [cosA*sinA-sinA*cosA, cosA^2+sinA^2] = [0,1] ✓
   const pcaAng=Math.atan2(2*sxy,sxx-syy)/2;
   const cosA=Math.cos(pcaAng),sinA=Math.sin(pcaAng);
-  // Test beide rotaties en kies degene waarbij Y-extent > X-extent (nok langs Y)
-  const tryRot=([x,y],c,s)=>[x*s-y*c, x*c+y*s];
-  const rp1=polyM.map(p=>tryRot([p[0]-cxM,p[1]-cyM],cosA,sinA));
-  const xExt1=Math.max(...rp1.map(p=>p[0]))-Math.min(...rp1.map(p=>p[0]));
-  const yExt1=Math.max(...rp1.map(p=>p[1]))-Math.min(...rp1.map(p=>p[1]));
-  // Als X-extent > Y-extent: assen verwisseld, roteer 90° extra
-  // 90° extra CCW: [x,y] → [-y,x], gecombineerd: rotFwd90 = [-sinA*x+cosA*y?, ...]
-  // Eenvoudiger: als xExt>yExt, gebruik andere hoek (pcaAng+90°)
-  const useSwap=xExt1>yExt1;
-  const cA=useSwap?(-sinA):cosA, sA=useSwap?cosA:sinA;
-  // rotFwd: [x,y] → [x*sA - y*cA, x*cA + y*sA] zodat langste as langs Y
-  const rotFwd=([x,y])=>[ x*sA - y*cA,  x*cA + y*sA];
-  const rotInv=([x,y])=>[ x*sA + y*cA, -x*cA + y*sA];
+  const rotFwd=([x,y])=>[ x*sinA - y*cosA,  x*cosA + y*sinA];
+  const rotInv=([x,y])=>[ x*sinA + y*cosA, -x*cosA + y*sinA]; // transpose = inverse
 
   const rotPoly=polyM.map(rotFwd);
   const rxs=rotPoly.map(p=>p[0]),rys=rotPoly.map(p=>p[1]);
@@ -867,25 +860,15 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
         }
       }
     }
-    // Wijs polygonen toe via dot-product van centroïde met verwachte aspect-richting.
-    // Voor elke face: de aspect-richting is een geografisch azimut (graden kloksgewijs v Noord).
-    // De eenheidsvector in (Oost,Noord): [sin(asp), cos(asp)].
-    // Het polygoon waarvan het centroïde het meest in die richting ligt t.o.v. het gebouwcentroïde
-    // is het correcte polygoon — onafhankelijk van ridgeAngleDeg-conventies.
-    const polyCtr=poly=>{
-      if(!poly||!poly.length) return [cLat,cLng];
-      return[poly.reduce((s,p)=>s+p[0],0)/poly.length,
-             poly.reduce((s,p)=>s+p[1],0)/poly.length];
-    };
+    // polys[0] = punten met crossComp>=0 = RECHTS van nok (per constructie van side())
+    // polys[1] = punten met crossComp<0  = LINKS  van nok
+    // rightAspect = ridgeAngleDeg+90° (kloksgewijs van Noord)
+    // Face waarvan aspectDeg het dichtstbij rightAspect ligt (circulaire afstand<90°) → polys[0]
+    const rightAspect=((ridgeAngleDeg||0)+90+360)%360;
     return faces.map(f=>{
-      const aspRad=(f.aspectDeg||0)*Math.PI/180;
-      const expE=Math.sin(aspRad),expN=Math.cos(aspRad); // verwachte richting (Oost, Noord)
-      const score=poly=>{
-        const c=polyCtr(poly);
-        const dE=c[1]-cLng, dN=c[0]-cLat; // richting van gebouwcentroïde naar polygooncentroïde
-        return dE*expE+dN*expN; // dot-product: groter = meer in verwachte richting
-      };
-      const poly=score(polys[0])>=score(polys[1])?polys[0]:polys[1];
+      const asp=f.aspectDeg!=null?f.aspectDeg:ASP_MAP[f.orientation]||0;
+      const distToRight=Math.abs(((asp-rightAspect)+540)%360-180); // 0..180
+      const poly=distToRight<90?polys[0]:polys[1];
       return {...f,polygon:poly&&poly.length>=3?poly:lc};
     });
   }
@@ -1702,14 +1685,15 @@ export default function App(){
         const wid2d=Math.max(...proj2)-Math.min(...proj2); // loodrecht op nok (2D)
         const wid3d=wid2d/Math.cos((f.slope||0)*Math.PI/180); // werkelijke schuine breedte
         // Label op midpunt van de buitenste rand:
-        // de rand van het polygoon waarvan het midpunt de grootste afstand heeft
-        // tot de noklijn (= grootste |crossComp| in geografische coords).
-        // Noklijn: door (cLat,cLng) in richting (sin(ridgeRad),cos(ridgeRad)).
-        const cLat2=f.polygon.reduce((s,p)=>s+p[0],0)/f.polygon.length;
-        const cLng2=f.polygon.reduce((s,p)=>s+p[1],0)/f.polygon.length;
+        // Noklijn loopt door het GEBOUW-centroïde (bounding-box midden van buildingCoords).
+        // Rand met grootste |crossComp| t.o.v. noklijn = buitenste rand van het dakvlak.
+        const bLats=buildingCoords.map(p=>p[0]),bLngs=buildingCoords.map(p=>p[1]);
+        const bldCLat=(Math.min(...bLats)+Math.max(...bLats))/2;
+        const bldCLng=(Math.min(...bLngs)+Math.max(...bLngs))/2;
         const ridgeRadL=(detectedFaces[0]?.ridgeAngleDeg||0)*Math.PI/180;
         const cosRL=Math.cos(ridgeRadL),sinRL=Math.sin(ridgeRadL);
-        const crossDist=(la,ln)=>Math.abs((ln-cLng2)*cosRL-(la-cLat2)*sinRL);
+        // crossComp van rankmidpunt t.o.v. gebouw-centroïde
+        const crossDist=(la,ln)=>Math.abs((ln-bldCLng)*cosRL-(la-bldCLat)*sinRL);
         let bestEdgeMid=null,bestDist=-1;
         const np=f.polygon.length;
         for(let ei=0;ei<np;ei++){
