@@ -264,7 +264,7 @@ function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts,buildingWidthM,rid
       0.5*(pct/50)+0.3*(slope>=5&&slope<=60?1:0.3)+0.2*(slopeStdVal<0.5?1:slopeStdVal<1?0.7:0.4)));
     faces.push({orientation:DIRS8[dirIdx],slope,avgH,pct,n:rightN,
                 slopeStd:slopeStdVal,confidence:+conf.toFixed(2),
-                status:"auto",aspectDeg:+rightAspect.toFixed(1)});
+                status:"auto",aspectDeg:+rightAspect.toFixed(1),ridgeAngleDeg:+ridgeAngleDeg.toFixed(1)});
   }
   if(leftN>=total*0.08){
     const pct=Math.round(leftN/total*100);
@@ -273,7 +273,7 @@ function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts,buildingWidthM,rid
       0.5*(pct/50)+0.3*(slope>=5&&slope<=60?1:0.3)+0.2*(slopeStdVal<0.5?1:slopeStdVal<1?0.7:0.4)));
     faces.push({orientation:DIRS8[dirIdx],slope,avgH,pct,n:leftN,
                 slopeStd:slopeStdVal,confidence:+conf.toFixed(2),
-                status:"auto",aspectDeg:+leftAspect.toFixed(1)});
+                status:"auto",aspectDeg:+leftAspect.toFixed(1),ridgeAngleDeg:+ridgeAngleDeg.toFixed(1)});
   }
   console.info(`[ZonneDak] GRB-aspect: nok=${ridgeAngleDeg.toFixed(1)}° → ${faces.map(f=>`${f.orientation}·${f.slope}°·${f.pct}%`).join(' / ')}`);
   return faces.length>=1?faces.sort((a,b)=>b.n-a.n):null;
@@ -856,27 +856,29 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
         }
       }
     }
-    // faces zijn gesorteerd op grootte (b.n-a.n): face[0] = grootste, face[1] = kleinste.
-    // De oppervlakte van het polygoon evenredig met de grootte van de face.
-    // Vergelijk polygoon-oppervlaktes via Shoelace; grootste poly → face[0].
-    const shoelace=poly=>{
-      let s=0;
-      for(let i=0;i<poly.length;i++){
-        const[x1,y1]=poly[i],[x2,y2]=poly[(i+1)%poly.length];
-        s+=(x1*y2-x2*y1);
+    // Elk vlak berekent zijn eigen half-polygoon op basis van zijn aspectDeg.
+    // Geen toewijzing van polys[]: elke face clipt de footprint zelf.
+    // Noklijn door (cLat,cLng), richting ridgeAngleDeg.
+    // De helft die face hoort bij: punten waarvoor het dot-product met de
+    // verwachte richting van de face >= 0.
+    // dot(p) = (p.lng-cLng)*sin(asp) + (p.lat-cLat)*cos(asp)
+    // Snijpunt: da/(da-db) langs de kant-vector
+    return faces.map(f=>{
+      const asp=(f.aspectDeg!=null?f.aspectDeg:ASP_MAP[f.orientation]||0)*Math.PI/180;
+      const eE=Math.sin(asp),eN=Math.cos(asp);
+      const dot=([la,ln])=>(ln-cLng)*eE+(la-cLat)*eN;
+      const poly=[];
+      for(let i=0;i<lc.length;i++){
+        const a=lc[i],b=lc[(i+1)%lc.length];
+        const da=dot(a),db=dot(b);
+        if(da>=0) poly.push(a);
+        if((da>=0)!==(db>=0)){
+          const t=da/(da-db);
+          poly.push([a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);
+        }
       }
-      return Math.abs(s)/2;
-    };
-    const a0=polys[0]&&polys[0].length>=3?shoelace(polys[0]):0;
-    const a1=polys[1]&&polys[1].length>=3?shoelace(polys[1]):0;
-    // poly0groot = het grootste polygoon; face[0] (grootste face) krijgt dit.
-    const bigPoly=a0>=a1?polys[0]:polys[1];
-    const smlPoly=a0>=a1?polys[1]:polys[0];
-    return faces.map((f,fi)=>({
-      ...f,
-      polygon:(fi===0?bigPoly:smlPoly)&&(fi===0?bigPoly:smlPoly).length>=3
-        ?(fi===0?bigPoly:smlPoly):lc
-    }));
+      return{...f,polygon:poly.length>=3?poly:lc};
+    });
   }
 
   // Voor 3-4 vlakken (schilddak): driehoeken vanuit centroïde
@@ -1788,7 +1790,7 @@ export default function App(){
     if(!query||query.length<3){setSuggs([]);return;}
     clearTimeout(searchTO.current);
     searchTO.current=setTimeout(async()=>{
-      try{const r=await fetch(`${NOMINATIM}?q=${encodeURIComponent(query)}&format=json&limit=6&countrycodes=be`);setSuggs(await r.json());setShowSuggs(true);}catch{}
+      try{const r=await fetch(`${NOMINATIM}?q=${encodeURIComponent(query)}&format=json&limit=6&countrycodes=be`);setSuggs(await r.json());}catch{}
     },350);
   },[query]);
 
