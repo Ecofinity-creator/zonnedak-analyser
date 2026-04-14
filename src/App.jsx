@@ -415,7 +415,7 @@ function getSlopeFactor(deg){
 // De langste as van het polygoon = nokrichting (robuust na vertex-aanpassingen)
 // Portrait:  pH (lang) langs de nok, pW (kort) loodrecht
 // Landscape: pW (lang) langs de nok, pH (kort) loodrecht
-function packPanels(facePoly,pW,pH,maxN,_ridgeAngleDeg,orient){
+function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
   if(!facePoly||facePoly.length<3) return [];
   const cLat=facePoly.reduce((s,p)=>s+p[0],0)/facePoly.length;
   const cLng=facePoly.reduce((s,p)=>s+p[1],0)/facePoly.length;
@@ -425,19 +425,15 @@ function packPanels(facePoly,pW,pH,maxN,_ridgeAngleDeg,orient){
   const toM=([lat,lng])=>[(lng-cLng)*mLng,(lat-cLat)*mLat];
   const polyM=facePoly.map(toM);
 
-  // PCA op het polygoon → langste as = nokrichting
-  const cxM=polyM.reduce((s,p)=>s+p[0],0)/polyM.length;
-  const cyM=polyM.reduce((s,p)=>s+p[1],0)/polyM.length;
-  let sxx=0,sxy=0,syy=0;
-  polyM.forEach(([x,y])=>{const dx=x-cxM,dy=y-cyM;sxx+=dx*dx;sxy+=dx*dy;syy+=dy*dy;});
-  // pcaAng = hoek van de eigenvector met de GROOTSTE eigenwaarde (= nokrichting)
-  // Bewijs: atan2(2*sxy, sxx-syy)/2 geeft altijd de grootste-eigenwaarde eigenvector.
-  // rotFwd mapt deze eigenvector [cosA,sinA] naar [0,1] (langs Y-as = langs nok).
-  // rotFwd([cosA,sinA]) = [cosA*sinA-sinA*cosA, cosA^2+sinA^2] = [0,1] ✓
-  const pcaAng=Math.atan2(2*sxy,sxx-syy)/2;
-  const cosA=Math.cos(pcaAng),sinA=Math.sin(pcaAng);
-  const rotFwd=([x,y])=>[ x*sinA - y*cosA,  x*cosA + y*sinA];
-  const rotInv=([x,y])=>[ x*sinA + y*cosA, -x*cosA + y*sinA]; // transpose = inverse
+  // Gebruik ridgeAngleDeg direct (geografisch azimut: 0=Noord, 90=Oost).
+  // Nokrichting in (Oost,Noord): [sin(r), cos(r)].
+  // Rotatiematrix M die [sin(r),cos(r)] → [0,1] (langs Y-as = nok langs Y):
+  // M = [[cos(r), -sin(r)], [sin(r), cos(r)]]
+  // Bewijs: M*[sin(r),cos(r)] = [0, sin²+cos²] = [0,1] ✓
+  const r=(ridgeAngleDeg||0)*Math.PI/180;
+  const cosA=Math.cos(r),sinA=Math.sin(r);
+  const rotFwd=([x,y])=>[ x*cosA - y*sinA,  x*sinA + y*cosA];
+  const rotInv=([x,y])=>[ x*cosA + y*sinA, -x*sinA + y*cosA];
 
   const rotPoly=polyM.map(rotFwd);
   const rxs=rotPoly.map(p=>p[0]),rys=rotPoly.map(p=>p[1]);
@@ -860,17 +856,27 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
         }
       }
     }
-    // polys[0] = punten met crossComp>=0 = RECHTS van nok (per constructie van side())
-    // polys[1] = punten met crossComp<0  = LINKS  van nok
-    // rightAspect = ridgeAngleDeg+90° (kloksgewijs van Noord)
-    // Face waarvan aspectDeg het dichtstbij rightAspect ligt (circulaire afstand<90°) → polys[0]
-    const rightAspect=((ridgeAngleDeg||0)+90+360)%360;
-    return faces.map(f=>{
-      const asp=f.aspectDeg!=null?f.aspectDeg:ASP_MAP[f.orientation]||0;
-      const distToRight=Math.abs(((asp-rightAspect)+540)%360-180); // 0..180
-      const poly=distToRight<90?polys[0]:polys[1];
-      return {...f,polygon:poly&&poly.length>=3?poly:lc};
-    });
+    // faces zijn gesorteerd op grootte (b.n-a.n): face[0] = grootste, face[1] = kleinste.
+    // De oppervlakte van het polygoon evenredig met de grootte van de face.
+    // Vergelijk polygoon-oppervlaktes via Shoelace; grootste poly → face[0].
+    const shoelace=poly=>{
+      let s=0;
+      for(let i=0;i<poly.length;i++){
+        const[x1,y1]=poly[i],[x2,y2]=poly[(i+1)%poly.length];
+        s+=(x1*y2-x2*y1);
+      }
+      return Math.abs(s)/2;
+    };
+    const a0=polys[0]&&polys[0].length>=3?shoelace(polys[0]):0;
+    const a1=polys[1]&&polys[1].length>=3?shoelace(polys[1]):0;
+    // poly0groot = het grootste polygoon; face[0] (grootste face) krijgt dit.
+    const bigPoly=a0>=a1?polys[0]:polys[1];
+    const smlPoly=a0>=a1?polys[1]:polys[0];
+    return faces.map((f,fi)=>({
+      ...f,
+      polygon:(fi===0?bigPoly:smlPoly)&&(fi===0?bigPoly:smlPoly).length>=3
+        ?(fi===0?bigPoly:smlPoly):lc
+    }));
   }
 
   // Voor 3-4 vlakken (schilddak): driehoeken vanuit centroïde
