@@ -41,8 +41,12 @@ const DHM_WMS   = "https://geoservices.informatievlaanderen.be/raadpleegdiensten
 const ORTHO_WMS = "https://geoservices.informatievlaanderen.be/raadpleegdiensten/OMWRGBMRVL/wms";
 const ORTHO_LYR = "OMWRGBMRVL";
 const WCS_URLS  = [
+  // Directe endpoints (werken als CORS-headers aanwezig zijn)
   "https://geo.api.vlaanderen.be/DHMV/wcs",
   "https://geoservices.informatievlaanderen.be/raadpleegdiensten/DHMVII/wcs",
+  // CORS-proxy fallbacks
+  "https://corsproxy.io/?https://geo.api.vlaanderen.be/DHMV/wcs",
+  "https://corsproxy.io/?https://geoservices.informatievlaanderen.be/raadpleegdiensten/DHMVII/wcs",
 ];
 
 // ─── Zonneirradiantie Vlaanderen ─────────────────────────────────────────────
@@ -992,7 +996,9 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
             marker.setLatLng(ll);
             liveLatLngs[vi]=ll;
             facePoly.setLatLngs(liveLatLngs);
-            // Positie updaten (geen auto-merge: rood feedback ook verwijderd)
+            // Rood als binnen 0.5m van naburig punt
+            const nearClose=f.polygon.some((other,oi)=>oi!==vi&&distPts([ll.lat,ll.lng],other)<0.5);
+            marker.setStyle({fillColor:nearClose?"#dc2626":"#f59e0b"});
             if(onVertexDrag) onVertexDrag(fi,vi,[ll.lat,ll.lng]);
           };
           const onUp=function(){
@@ -1001,8 +1007,30 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
             map.dragging.enable();
             map.getContainer().style.cursor="";
             marker.setStyle({fillColor:"#f59e0b"});
-            // Auto-merge verwijderd: vervormt het polygoon per ongeluk.
-            // Gebruik de Splits-knop voor polygoonbewerking.
+            // Merge als punt binnen 0.5m van naburig punt bij loslaten
+            const curLL2=marker.getLatLng();
+            const curPt2=[curLL2.lat,curLL2.lng];
+            const livePts2=liveLatLngs.map(ll=>Array.isArray(ll)?ll:[ll.lat,ll.lng]);
+            let didMerge=false;
+            if(livePts2.length>3){
+              const n3=livePts2.length;
+              for(const ni of[(vi+1)%n3,(vi-1+n3)%n3]){
+                const other=livePts2[ni];
+                const otherPt=Array.isArray(other)?other:[other.lat,other.lng];
+                if(distPts(curPt2,otherPt)<0.5){ // 0.5m drempel
+                  // Samenvoegen: vervang ni door gemiddelde, verwijder vi
+                  const avg=[(curPt2[0]+otherPt[0])/2,(curPt2[1]+otherPt[1])/2];
+                  livePts2.splice(Math.max(vi,ni),1);
+                  livePts2[Math.min(vi,ni)]=avg;
+                  didMerge=true;
+                  console.info("[ZonneDak] Punten samengevoegd op <0.5m");
+                  break;
+                }
+              }
+            }
+            if(didMerge&&onVertexDrag){
+              livePts2.forEach((pt,idx)=>{const p=Array.isArray(pt)?pt:[pt.lat,pt.lng];onVertexDrag(fi,idx,p);});
+            }
             if(onVertexDragEnd) onVertexDragEnd(fi,vi);
           };
           map.on("mousemove",onMove);
@@ -2195,7 +2223,7 @@ export default function App(){
               {panelRotOffset!==0&&<span onClick={()=>{setPanelRotOffset(0);if(panelsDrawn)setPanelsDrawn(false);setTimeout(()=>setPanelsDrawn(true),10);}} style={{marginLeft:4,cursor:"pointer",color:"var(--amber)"}}>↩</span>}
             </span>
           </div>
-          <input type="range" min="-45" max="45" step="5" value={panelRotOffset}
+          <input type="range" min="-30" max="30" step="2" value={panelRotOffset}
             style={{width:"100%"}}
             onChange={e=>{
               setPanelRotOffset(+e.target.value);
