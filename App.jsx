@@ -457,10 +457,15 @@ function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
   const rotInv=([x,y])=>[ x*cosA + y*sinA, -x*sinA + y*cosA];
 
   const rotPoly=polyM.map(rotFwd);
-  // Gebruik convex hull voor panel-plaatsing: vermijdt gaten door L-vormige polygonen (aanbouwen)
+  // Gebruik convex hull, maar met getrimde bounds (exclusie aanbouw-uitstulpingen).
+  // De convex hull van een L-vorm is een 5-6-punt veelhoek.
+  // Door 1 punt aan elke kant te skippen, negeren we de extreme aanbouw-hoeken.
   const rotPolyHull=convexHullPts(rotPoly);
-  const rxs=rotPolyHull.map(p=>p[0]),rys=rotPolyHull.map(p=>p[1]);
-  const[minRX,maxRX,minRY,maxRY]=[Math.min(...rxs),Math.max(...rxs),Math.min(...rys),Math.max(...rys)];
+  const rxsSorted=[...rotPolyHull.map(p=>p[0])].sort((a,b)=>a-b);
+  const rysSorted=[...rotPolyHull.map(p=>p[1])].sort((a,b)=>a-b);
+  const nt=rotPolyHull.length>5?1:0; // trim 1 punt als hull>5 punten (aanbouw aanwezig)
+  const minRX=rxsSorted[nt],    maxRX=rxsSorted[rxsSorted.length-1-nt];
+  const minRY=rysSorted[nt],    maxRY=rysSorted[rysSorted.length-1-nt];
 
   // Industrie-definitie:
   //   Portrait  = lange zijde pH loodrecht op nok (langs X-as = langs de helling)
