@@ -857,27 +857,26 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
         }
       }
     }
-    // Toewijzing via dot-product score op centroïde:
-    // Bereken voor elk polygoon (polys[0] en polys[1]) het centroïde.
-    // De face krijgt het polygoon waarvan het centroïde het meest in de richting
-    // van de face's aspectDeg ligt t.o.v. het gebouw-centroïde.
-    // Dit is robuust: werkt ongeacht ridgeAngleDeg-conventie of sorteerorde.
-    const gcLat=lc.reduce((s,p)=>s+p[0],0)/lc.length;
-    const gcLng=lc.reduce((s,p)=>s+p[1],0)/lc.length;
-    const polyCtr=poly=>{
-      if(!poly||!poly.length) return[gcLat,gcLng];
-      return[poly.reduce((s,p)=>s+p[0],0)/poly.length,
-             poly.reduce((s,p)=>s+p[1],0)/poly.length];
+    // Toewijzing via oppervlakte-rank matching:
+    // faces zijn gesorteerd op n (pixelcount): faces[0]=grootste face.
+    // Bereken polygon-oppervlaktes via Shoelace.
+    // Grootste polygon → grootste face, kleinste → kleinste.
+    // Dit werkt ook voor asymmetrische gebouwen met aanbouwen.
+    const shoelaceArea=poly=>{
+      if(!poly||poly.length<3) return 0;
+      let s=0;
+      for(let i=0;i<poly.length;i++){
+        const[x1,y1]=poly[i],[x2,y2]=poly[(i+1)%poly.length];
+        s+=x1*y2-x2*y1;
+      }
+      return Math.abs(s)/2;
     };
-    // Gebruik polys[0] en polys[1] die hierboven al correct berekend zijn.
-    // Beide polygonen zijn gegarandeerd gevuld (complementaire helften).
-    const c0=polyCtr(polys[0]),c1=polyCtr(polys[1]);
-    return faces.map(f=>{
-      const asp=(f.aspectDeg!=null?f.aspectDeg:ASP_MAP[f.orientation]||0)*Math.PI/180;
-      const eE=Math.sin(asp),eN=Math.cos(asp);
-      // Score = dot-product van centroïde-richting met verwachte aspect-richting
-      const score=([la,ln])=>(ln-gcLng)*eE+(la-gcLat)*eN;
-      const poly=score(c0)>=score(c1)?polys[0]:polys[1];
+    const a0=shoelaceArea(polys[0]),a1=shoelaceArea(polys[1]);
+    // Sorteer polys op oppervlakte (groot eerst), wijs toe aan faces (groot eerst)
+    const sortedPolys=a0>=a1?[polys[0],polys[1]]:[polys[1],polys[0]];
+    // faces zijn al gesorteerd op n (groot eerst), dus faces[i] → sortedPolys[i]
+    return faces.map((f,fi)=>{
+      const poly=sortedPolys[fi];
       return{...f,polygon:poly&&poly.length>=3?poly:lc};
     });
   }
@@ -1935,7 +1934,7 @@ export default function App(){
       </div>
       <div className="badge">GRB · DHMV II</div>
     </header>
-    <div className="tabs">{TABS.map(t=><button key={t.k} className={`tab ${activeTab===t.k?"active":""}`} onClick={()=>setActiveTab(t.k)}>{t.l}</button>)}</div>
+    <div className="tabs">{TABS.map(t=><button key={t.k} className={`tab ${activeTab===t.k?"active":""}`} onClick={()=>{setActiveTab(t.k);if(t.k==="configuratie")setTimeout(()=>{if(leafRef.current)leafRef.current.invalidateSize?.();},80);}}>{t.l}</button>)}</div>
     <div className="main">
       {/* ── Sidebar ── */}
       <aside className="sidebar">
