@@ -415,6 +415,27 @@ function getSlopeFactor(deg){
 // De langste as van het polygoon = nokrichting (robuust na vertex-aanpassingen)
 // Portrait:  pH (lang) langs de nok, pW (kort) loodrecht
 // Landscape: pW (lang) langs de nok, pH (kort) loodrecht
+
+// ─── Convex hull (Jarvis march) voor panel-plaatsing ─────────────────────────
+// Geeft de convex omhullende van een puntenwolk in [x,y] formaat terug.
+function convexHullPts(pts){
+  if(pts.length<3) return pts;
+  // Startpunt: meest links (kleinste x)
+  let start=0;
+  for(let i=1;i<pts.length;i++) if(pts[i][0]<pts[start][0]) start=i;
+  const hull=[];let cur=start;
+  do{
+    hull.push(pts[cur]);
+    let nxt=(cur+1)%pts.length;
+    for(let i=0;i<pts.length;i++){
+      const cx=(pts[nxt][0]-pts[cur][0])*(pts[i][1]-pts[cur][1])
+              -(pts[nxt][1]-pts[cur][1])*(pts[i][0]-pts[cur][0]);
+      if(cx<0) nxt=i;
+    }
+    cur=nxt;
+  }while(cur!==start&&hull.length<=pts.length);
+  return hull;
+}
 function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
   if(!facePoly||facePoly.length<3) return [];
   const cLat=facePoly.reduce((s,p)=>s+p[0],0)/facePoly.length;
@@ -436,7 +457,9 @@ function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
   const rotInv=([x,y])=>[ x*cosA + y*sinA, -x*sinA + y*cosA];
 
   const rotPoly=polyM.map(rotFwd);
-  const rxs=rotPoly.map(p=>p[0]),rys=rotPoly.map(p=>p[1]);
+  // Gebruik convex hull voor panel-plaatsing: vermijdt gaten door L-vormige polygonen (aanbouwen)
+  const rotPolyHull=convexHullPts(rotPoly);
+  const rxs=rotPolyHull.map(p=>p[0]),rys=rotPolyHull.map(p=>p[1]);
   const[minRX,maxRX,minRY,maxRY]=[Math.min(...rxs),Math.max(...rxs),Math.min(...rys),Math.max(...rys)];
 
   // Industrie-definitie:
@@ -452,7 +475,7 @@ function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
   // Stap over X (rijen loodrecht op nok), kolommen langs Y (langs nok)
   for(let rx=minRX+margin;rx+W<=maxRX-margin&&panels.length<maxN;rx+=W+gapX){
     for(let ry=minRY+margin;ry+H<=maxRY-margin&&panels.length<maxN;ry+=H+gapY){
-      if(!pointInPoly([rx+W/2,ry+H/2],rotPoly)) continue;
+      if(!pointInPoly([rx+W/2,ry+H/2],rotPolyHull)) continue;
       const corners=[[rx,ry],[rx+W,ry],[rx+W,ry+H],[rx,ry+H]]
         .map(pt=>{const[mx,my]=rotInv(pt);return[cLat+my/mLat,cLng+mx/mLng];});
       // Middellijn langs de paneel-breedte (horizontale lijn op het dak)
@@ -1812,8 +1835,11 @@ export default function App(){
     },350);
   },[query]);
 
+  const selectingRef2=useRef(false);
   const selectAddr=async(item)=>{
-    // FIX: direct instellen zonder blur-problemen
+    if(selectingRef2.current) return; // voorkom dubbele aanroep
+    selectingRef2.current=true;
+    setTimeout(()=>{selectingRef2.current=false;},2000);
     setShowSuggs(false);setSuggs([]);
     setQuery(item.display_name.split(",").slice(0,3).join(","));
     const lat=parseFloat(item.lat),lng=parseFloat(item.lon);
