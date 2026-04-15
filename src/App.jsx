@@ -419,6 +419,27 @@ function getSlopeFactor(deg){
 
 // ─── Convex hull (Jarvis march) voor panel-plaatsing ─────────────────────────
 // Geeft de convex omhullende van een puntenwolk in [x,y] formaat terug.
+
+// ─── Maak synthetisch face-polygoon op basis van oriëntatie + nokrichting ─────
+function makeFacePoly(buildingCoords, orientation, ridgeAngleDeg){
+  if(!buildingCoords||buildingCoords.length<3) return buildingCoords;
+  const asp=(ASP_MAP[orientation]||0)*Math.PI/180;
+  const eE=Math.sin(asp),eN=Math.cos(asp);
+  const cLat=buildingCoords.reduce((s,p)=>s+p[0],0)/buildingCoords.length;
+  const cLng=buildingCoords.reduce((s,p)=>s+p[1],0)/buildingCoords.length;
+  const dot=([la,ln])=>(ln-cLng)*eE+(la-cLat)*eN;
+  const poly=[];
+  for(let i=0;i<buildingCoords.length;i++){
+    const a=buildingCoords[i],b=buildingCoords[(i+1)%buildingCoords.length];
+    const da=dot(a),db=dot(b);
+    if(da>=0) poly.push(a);
+    if((da>=0)!==(db>=0)){
+      const t=da/(da-db);
+      poly.push([a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);
+    }
+  }
+  return poly.length>=3?poly:buildingCoords;
+}
 function convexHullPts(pts){
   if(pts.length<3) return pts;
   // Startpunt: meest links (kleinste x)
@@ -541,6 +562,7 @@ function loadScript(src){
 async function loadPdfLibs(){
   await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
   await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js");
+  await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
   await loadScript("https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js");
 }
 async function fetchPdfBytes(path){
@@ -1458,6 +1480,33 @@ async function generatePDF(results,customer,displayName,slope,orientation){
     y+=56;
   }
 
+  // ── Luchtfoto met panelen ──
+  try{
+    const mapEl=document.getElementById("leaflet-map");
+    if(mapEl&&window.html2canvas){
+      doc.addPage();
+      // Mini-header
+      doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
+      sf(9,"bold");sc(WHT);doc.text("EcoFinity BV",M,9);
+      sf(9,"normal");doc.text("Project: "+(customer.name||"—"),M+32,9);
+      sf(8,"normal");doc.text("Luchtfoto",W-M,9,{align:"right"});
+      y=22;
+      y=secTitle("Paneelplaatsing op het dak",y);
+      // Capture kaart
+      const canvas=await window.html2canvas(mapEl,{
+        useCORS:true,allowTaint:true,scale:1.5,
+        logging:false,backgroundColor:"#f1f5f9"
+      });
+      const imgData=canvas.toDataURL("image/jpeg",0.85);
+      const imgW=W-2*M,imgH=Math.min(140,imgW*(canvas.height/canvas.width));
+      doc.addImage(imgData,"JPEG",M,y,imgW,imgH);
+      y+=imgH+5;
+      sf(8,"normal");sc(MUT);
+      doc.text("Luchtfoto: Esri World Imagery · Paneelplaatsing is een schatting.",M,y);
+      y+=8;
+    }
+  }catch(mapErr){console.warn("Kaartfoto mislukt:",mapErr);}
+
   // Footer
   const pgC=doc.getNumberOfPages();
   for(let i=1;i<=pgC;i++){
@@ -1819,9 +1868,10 @@ export default function App(){
       _sf=withPolys?.[selFaceIdx]||_sf;
     }
     const _fp=_sf?.polygon||buildingCoords;
-    const _ra=(ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0)+panelRotOffset;
-    console.info("[ZonneDak] Panel draw: ridge="+ridgeAngleDegRef.current+"° offset="+panelRotOffset+"° → total="+_ra+"° poly_pts="+_fp.length);
-    panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,panelMoveMode);
+    const _ridge2=ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0;
+    const _fp2=_fp.length>=3?_fp:(buildingCoords?makeFacePoly(buildingCoords,orientation,_ridge2):buildingCoords)||buildingCoords;
+    const _ra=_ridge2+panelRotOffset;
+    panelLayerRef.current=drawPanelLayer(map,L,_fp2,panelCount,selPanel,_ra,panelOrient,panelDataRef,panelMoveMode);
   },[panelCount,selPanel,panelsDrawn,panelRotOffset]);
 
   useEffect(()=>{
@@ -2214,9 +2264,11 @@ export default function App(){
               const wp=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);
               setDetectedFaces(wp);_sf=wp?.[selFaceIdx]||_sf;
             }
-            const _fp=_sf?.polygon||buildingCoords;
-            const _ra=(ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0)+panelRotOffset;
-            console.info("[ZonneDak] Toon panelen: ridge="+ridgeAngleDegRef.current+"° offset="+panelRotOffset+"° → total="+_ra+"°");
+            const _ridge=ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0;
+            // Als geen face-polygon: clip GRB op geselecteerde oriëntatie
+            const _fp=_sf?.polygon||(buildingCoords?makeFacePoly(buildingCoords,orientation,_ridge):buildingCoords)||buildingCoords;
+            const _ra=_ridge+panelRotOffset;
+            console.info("[ZonneDak] Toon panelen: ridge="+_ridge+"° orient="+orientation+" fp_pts="+_fp.length);
             panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,false);
             setPanelsDrawn(true);
           }
