@@ -41,8 +41,12 @@ const DHM_WMS   = "https://geoservices.informatievlaanderen.be/raadpleegdiensten
 const ORTHO_WMS = "https://geoservices.informatievlaanderen.be/raadpleegdiensten/OMWRGBMRVL/wms";
 const ORTHO_LYR = "OMWRGBMRVL";
 const WCS_URLS  = [
+  // Directe endpoints (werken als CORS-headers aanwezig zijn)
   "https://geo.api.vlaanderen.be/DHMV/wcs",
   "https://geoservices.informatievlaanderen.be/raadpleegdiensten/DHMVII/wcs",
+  // CORS-proxy fallbacks
+  "https://corsproxy.io/?https://geo.api.vlaanderen.be/DHMV/wcs",
+  "https://corsproxy.io/?https://geoservices.informatievlaanderen.be/raadpleegdiensten/DHMVII/wcs",
 ];
 
 // ─── Zonneirradiantie Vlaanderen ─────────────────────────────────────────────
@@ -457,10 +461,15 @@ function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
   const rotInv=([x,y])=>[ x*cosA + y*sinA, -x*sinA + y*cosA];
 
   const rotPoly=polyM.map(rotFwd);
-  // Gebruik convex hull voor panel-plaatsing: vermijdt gaten door L-vormige polygonen (aanbouwen)
+  // Gebruik convex hull, maar met getrimde bounds (exclusie aanbouw-uitstulpingen).
+  // De convex hull van een L-vorm is een 5-6-punt veelhoek.
+  // Door 1 punt aan elke kant te skippen, negeren we de extreme aanbouw-hoeken.
   const rotPolyHull=convexHullPts(rotPoly);
-  const rxs=rotPolyHull.map(p=>p[0]),rys=rotPolyHull.map(p=>p[1]);
-  const[minRX,maxRX,minRY,maxRY]=[Math.min(...rxs),Math.max(...rxs),Math.min(...rys),Math.max(...rys)];
+  const rxsSorted=[...rotPolyHull.map(p=>p[0])].sort((a,b)=>a-b);
+  const rysSorted=[...rotPolyHull.map(p=>p[1])].sort((a,b)=>a-b);
+  const nt=rotPolyHull.length>5?1:0; // trim 1 punt als hull>5 punten (aanbouw aanwezig)
+  const minRX=rxsSorted[nt],    maxRX=rxsSorted[rxsSorted.length-1-nt];
+  const minRY=rysSorted[nt],    maxRY=rysSorted[rysSorted.length-1-nt];
 
   // Industrie-definitie:
   //   Portrait  = lange zijde pH loodrecht op nok (langs X-as = langs de helling)
@@ -473,12 +482,10 @@ function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
   const panels=[];
 
   // Stap over Y (langs nok) eerst, dan X (loodrecht op nok)
-  // Geen pointInPoly check: gebruik het volledige MBR zodat er geen gaten vallen.
-  // Panelen die buiten het dakvlak vallen worden na plaatsing gefilterd via het originele rotPoly.
+  // Geen pointInPoly filter: het bounding box van het geroteerde face-polygoon
+  // geeft al een goede rechthoek. Zo krijgen we een netjes raster zonder gaten.
   for(let ry=minRY+margin;ry+H<=maxRY-margin&&panels.length<maxN;ry+=H+gapY){
     for(let rx=minRX+margin;rx+W<=maxRX-margin&&panels.length<maxN;rx+=W+gapX){
-      // Filter op origineel (niet-convex) polygoon: centroïde moet binnen liggen
-      if(!pointInPoly([rx+W/2,ry+H/2],rotPoly)) continue;
       const corners=[[rx,ry],[rx+W,ry],[rx+W,ry+H],[rx,ry+H]]
         .map(pt=>{const[mx,my]=rotInv(pt);return[cLat+my/mLat,cLng+mx/mLng];});
       const midLine=[[rx,ry+H/2],[rx+W,ry+H/2]]
@@ -989,7 +996,9 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
             marker.setLatLng(ll);
             liveLatLngs[vi]=ll;
             facePoly.setLatLngs(liveLatLngs);
-            // Positie updaten (geen auto-merge: rood feedback ook verwijderd)
+            // Rood als binnen 0.5m van naburig punt
+            const nearClose=f.polygon.some((other,oi)=>oi!==vi&&distPts([ll.lat,ll.lng],other)<0.5);
+            marker.setStyle({fillColor:nearClose?"#dc2626":"#f59e0b"});
             if(onVertexDrag) onVertexDrag(fi,vi,[ll.lat,ll.lng]);
           };
           const onUp=function(){
@@ -998,8 +1007,30 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
             map.dragging.enable();
             map.getContainer().style.cursor="";
             marker.setStyle({fillColor:"#f59e0b"});
-            // Auto-merge verwijderd: vervormt het polygoon per ongeluk.
-            // Gebruik de Splits-knop voor polygoonbewerking.
+            // Merge als punt binnen 0.5m van naburig punt bij loslaten
+            const curLL2=marker.getLatLng();
+            const curPt2=[curLL2.lat,curLL2.lng];
+            const livePts2=liveLatLngs.map(ll=>Array.isArray(ll)?ll:[ll.lat,ll.lng]);
+            let didMerge=false;
+            if(livePts2.length>3){
+              const n3=livePts2.length;
+              for(const ni of[(vi+1)%n3,(vi-1+n3)%n3]){
+                const other=livePts2[ni];
+                const otherPt=Array.isArray(other)?other:[other.lat,other.lng];
+                if(distPts(curPt2,otherPt)<0.5){ // 0.5m drempel
+                  // Samenvoegen: vervang ni door gemiddelde, verwijder vi
+                  const avg=[(curPt2[0]+otherPt[0])/2,(curPt2[1]+otherPt[1])/2];
+                  livePts2.splice(Math.max(vi,ni),1);
+                  livePts2[Math.min(vi,ni)]=avg;
+                  didMerge=true;
+                  console.info("[ZonneDak] Punten samengevoegd op <0.5m");
+                  break;
+                }
+              }
+            }
+            if(didMerge&&onVertexDrag){
+              livePts2.forEach((pt,idx)=>{const p=Array.isArray(pt)?pt:[pt.lat,pt.lng];onVertexDrag(fi,idx,p);});
+            }
             if(onVertexDragEnd) onVertexDragEnd(fi,vi);
           };
           map.on("mousemove",onMove);
@@ -2192,7 +2223,7 @@ export default function App(){
               {panelRotOffset!==0&&<span onClick={()=>{setPanelRotOffset(0);if(panelsDrawn)setPanelsDrawn(false);setTimeout(()=>setPanelsDrawn(true),10);}} style={{marginLeft:4,cursor:"pointer",color:"var(--amber)"}}>↩</span>}
             </span>
           </div>
-          <input type="range" min="-45" max="45" step="5" value={panelRotOffset}
+          <input type="range" min="-30" max="30" step="2" value={panelRotOffset}
             style={{width:"100%"}}
             onChange={e=>{
               setPanelRotOffset(+e.target.value);
