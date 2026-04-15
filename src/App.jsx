@@ -1619,8 +1619,10 @@ export default function App(){
   const[detectedFaces,setDetectedFaces]=useState(null);const[selFaceIdx,setSelFaceIdx]=useState(0);
   const[editMode,setEditMode]=useState(false);
   const[panelMoveMode,setPanelMoveMode]=useState(false);
+  const[panelRotOffset,setPanelRotOffset]=useState(0); // handmatige rotatie-offset °
   const[panelOrient,setPanelOrient]=useState("portrait");
   const panelDataRef=useRef(null);
+  const ridgeAngleDegRef=useRef(0); // altijd up-to-date nokrichting
   const detectedFacesRef=useRef(null);
   const draggedPolygonsRef=useRef(null);
 
@@ -1664,7 +1666,14 @@ export default function App(){
   const selectFace=useCallback((idx,faces)=>{
     const f=(faces||detectedFaces)?.[idx];if(!f) return;
     setSelFaceIdx(idx);setOrientation(f.orientation);setSlope(f.slope);
+    if(f.ridgeAngleDeg!=null) ridgeAngleDegRef.current=f.ridgeAngleDeg;
   },[detectedFaces]);
+
+  // Update ridgeAngleDegRef wanneer detectedFaces geladen wordt
+  useEffect(()=>{
+    const f=detectedFaces?.[selFaceIdx];
+    if(f?.ridgeAngleDeg!=null) ridgeAngleDegRef.current=f.ridgeAngleDeg;
+  },[detectedFaces,selFaceIdx]);
 
   // Vertex drag handlers
   useEffect(()=>{detectedFacesRef.current=detectedFaces;},[detectedFaces]);
@@ -1782,9 +1791,10 @@ export default function App(){
       _sf=withPolys?.[selFaceIdx]||_sf;
     }
     const _fp=_sf?.polygon||buildingCoords;
-    const _ra=_sf?.ridgeAngleDeg||0;
+    const _ra=(ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0)+panelRotOffset;
+    console.info("[ZonneDak] Panel draw: ridge="+ridgeAngleDegRef.current+"° offset="+panelRotOffset+"° → total="+_ra+"° poly_pts="+_fp.length);
     panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,panelMoveMode);
-  },[panelCount,selPanel,panelsDrawn]);
+  },[panelCount,selPanel,panelsDrawn,panelRotOffset]);
 
   useEffect(()=>{
     const lnk=document.createElement("link");lnk.rel="stylesheet";
@@ -2164,7 +2174,8 @@ export default function App(){
               setDetectedFaces(wp);_sf=wp?.[selFaceIdx]||_sf;
             }
             const _fp=_sf?.polygon||buildingCoords;
-            const _ra=_sf?.ridgeAngleDeg||0;
+            const _ra=(ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0)+panelRotOffset;
+            console.info("[ZonneDak] Toon panelen: ridge="+ridgeAngleDegRef.current+"° offset="+panelRotOffset+"° → total="+_ra+"°");
             panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,false);
             setPanelsDrawn(true);
           }
@@ -2173,6 +2184,31 @@ export default function App(){
         }} disabled={!coords||!buildingCoords||isLoading}>
           🏠 Toon {panelCount} panelen op dak
         </button>
+        {/* Rotatie-offset slider */}
+        {<div style={{marginBottom:6}}>
+          <div style={{display:"flex",justifyContent:"space-between",fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"var(--muted)",marginBottom:3}}>
+            <span>↺ Rotatie aanpassing</span>
+            <span style={{color:panelRotOffset!==0?"var(--amber)":"var(--muted)",fontWeight:700}}>{panelRotOffset>0?"+":""}{panelRotOffset}°
+              {panelRotOffset!==0&&<span onClick={()=>{setPanelRotOffset(0);if(panelsDrawn)setPanelsDrawn(false);setTimeout(()=>setPanelsDrawn(true),10);}} style={{marginLeft:4,cursor:"pointer",color:"var(--amber)"}}>↩</span>}
+            </span>
+          </div>
+          <input type="range" min="-45" max="45" step="5" value={panelRotOffset}
+            style={{width:"100%"}}
+            onChange={e=>{
+              setPanelRotOffset(+e.target.value);
+              if(panelsDrawn){
+                if(panelDataRef) panelDataRef.current=null;
+                if(leafRef.current&&window.L){
+                  const L=window.L,map=leafRef.current;
+                  if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
+                  const _sf=detectedFaces?.[selFaceIdx];
+                  const _fp=_sf?.polygon||buildingCoords;
+                  const _ra=(ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0)+(+e.target.value);
+                  panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,false);
+                }
+              }
+            }}/>
+        </div>}
         {panelsDrawn&&<button className={"btn full "+(panelMoveMode?"green":"")} style={{marginBottom:5}} onClick={()=>{
           const nm=!panelMoveMode;setPanelMoveMode(nm);
           if(leafRef.current&&window.L){
