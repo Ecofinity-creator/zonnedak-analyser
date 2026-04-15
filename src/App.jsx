@@ -1024,14 +1024,47 @@ function drawFaceSectors(map,L,lc,faces,selFaceIdx,onSelect){
 
 // Fallback: eenvoudig 2-helling dak (zonder LiDAR)
 function drawRealRoof(map,L,lc,orientation){
-  const[sQ,nQ]=ZONE_Q[orientation]||ZONE_Q.Z;
-  const lats=lc.map(p=>p[0]),mid=(Math.min(...lats)+Math.max(...lats))/2;
   const g=L.layerGroup();
-  const sP=clipPolyByLat(lc,true,mid);
-  if(sP?.length>=3) L.polygon(sP,{color:sQ.c,fillColor:sQ.c,fillOpacity:.4,weight:2,opacity:.9}).bindTooltip(`<b>Zuid-helling</b><br>${sQ.l}`,{sticky:true}).addTo(g);
-  const nP=clipPolyByLat(lc,false,mid);
-  if(nP?.length>=3) L.polygon(nP,{color:nQ.c,fillColor:nQ.c,fillOpacity:.4,weight:2,opacity:.9}).bindTooltip(`<b>Noord-helling</b><br>${nQ.l}`,{sticky:true}).addTo(g);
   L.polygon(lc,{color:"#e07b00",fillOpacity:0,weight:2.5,dashArray:"6,3"}).addTo(g);
+  // PCA van GRB-contour → nokrichting → splits langs die as (zelfde als analyzeDHM)
+  const mLat=111320,cLat0=lc.reduce((s,p)=>s+p[0],0)/lc.length;
+  const mLng=111320*Math.cos(cLat0*Math.PI/180);
+  const pts=lc.map(([la,ln])=>[(ln-lc.reduce((s,p)=>s+p[1],0)/lc.length)*mLng,(la-cLat0)*mLat]);
+  let cxx=0,cxy=0,cyy=0;
+  const plen=pts.length;
+  pts.forEach(([x,y])=>{cxx+=x*x;cxy+=x*y;cyy+=y*y;});
+  cxx/=plen;cxy/=plen;cyy/=plen;
+  const pcaAng=Math.atan2(2*cxy,cxx-cyy)/2; // hoek t.o.v. Oost
+  const ridgeDeg=((90-pcaAng*180/Math.PI)+360)%180; // azimut nok
+  const rightAsp=((ridgeDeg+90)+360)%360; // aspect rechterkant
+  const leftAsp =((ridgeDeg-90)+360)%360;
+  // Bepaal welke kant "zuidelijk" is (closer to 180° azimut = Zuid)
+  const distTo180=a=>Math.abs(((a-180)+540)%360-180);
+  const rightIsSouth=distTo180(rightAsp)<distTo180(leftAsp);
+  const sAsp=rightIsSouth?rightAsp:leftAsp;
+  const nAsp=rightIsSouth?leftAsp:rightAsp;
+  const[sQ]=ZONE_Q[orientation]||ZONE_Q.Z;
+  const[,nQ]=ZONE_Q[orientation]||ZONE_Q.Z;
+  // Clip langs de noklijn via dot-product
+  const cLat=lc.reduce((s,p)=>s+p[0],0)/lc.length;
+  const cLng=lc.reduce((s,p)=>s+p[1],0)/lc.length;
+  const clipSide=(asp)=>{
+    const ar=asp*Math.PI/180,eE=Math.sin(ar),eN=Math.cos(ar);
+    const dot=([la,ln])=>(ln-cLng)*eE+(la-cLat)*eN;
+    const poly=[];
+    for(let i=0;i<lc.length;i++){
+      const a=lc[i],b=lc[(i+1)%lc.length];
+      const da=dot(a),db=dot(b);
+      if(da>=0) poly.push(a);
+      if((da>=0)!==(db>=0)){const t=da/(da-db);poly.push([a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);}
+    }
+    return poly;
+  };
+  const sP=clipSide(sAsp),nP=clipSide(nAsp);
+  if(sP.length>=3) L.polygon(sP,{color:sQ.c,fillColor:sQ.c,fillOpacity:.4,weight:2,opacity:.9})
+    .bindTooltip(`<b>Zuidkant · ${Math.round(sAsp)}°</b><br>${sQ.l}`,{sticky:true}).on("click",()=>{}).addTo(g);
+  if(nP.length>=3) L.polygon(nP,{color:nQ.c,fillColor:nQ.c,fillOpacity:.4,weight:2,opacity:.9})
+    .bindTooltip(`<b>Noordkant · ${Math.round(nAsp)}°</b><br>${nQ.l}`,{sticky:true}).on("click",()=>{}).addTo(g);
   g.addTo(map);return g;
 }
 function shiftPanels(panels,dLat,dLng){
