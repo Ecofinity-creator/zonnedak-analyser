@@ -472,13 +472,15 @@ function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
   const margin=0.3,gapX=0.05,gapY=0.05;
   const panels=[];
 
-  // Stap over X (rijen loodrecht op nok), kolommen langs Y (langs nok)
-  for(let rx=minRX+margin;rx+W<=maxRX-margin&&panels.length<maxN;rx+=W+gapX){
-    for(let ry=minRY+margin;ry+H<=maxRY-margin&&panels.length<maxN;ry+=H+gapY){
-      if(!pointInPoly([rx+W/2,ry+H/2],rotPolyHull)) continue;
+  // Stap over Y (langs nok) eerst, dan X (loodrecht op nok)
+  // Geen pointInPoly check: gebruik het volledige MBR zodat er geen gaten vallen.
+  // Panelen die buiten het dakvlak vallen worden na plaatsing gefilterd via het originele rotPoly.
+  for(let ry=minRY+margin;ry+H<=maxRY-margin&&panels.length<maxN;ry+=H+gapY){
+    for(let rx=minRX+margin;rx+W<=maxRX-margin&&panels.length<maxN;rx+=W+gapX){
+      // Filter op origineel (niet-convex) polygoon: centroïde moet binnen liggen
+      if(!pointInPoly([rx+W/2,ry+H/2],rotPoly)) continue;
       const corners=[[rx,ry],[rx+W,ry],[rx+W,ry+H],[rx,ry+H]]
         .map(pt=>{const[mx,my]=rotInv(pt);return[cLat+my/mLat,cLng+mx/mLng];});
-      // Middellijn langs de paneel-breedte (horizontale lijn op het dak)
       const midLine=[[rx,ry+H/2],[rx+W,ry+H/2]]
         .map(pt=>{const[mx,my]=rotInv(pt);return[cLat+my/mLat,cLng+mx/mLng];});
       panels.push({corners,midLine});
