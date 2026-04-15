@@ -857,48 +857,28 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
         }
       }
     }
-    // Elk vlak berekent zijn eigen half-polygoon op basis van zijn aspectDeg.
-    // Geen toewijzing van polys[]: elke face clipt de footprint zelf.
-    // Noklijn door (cLat,cLng), richting ridgeAngleDeg.
-    // De helft die face hoort bij: punten waarvoor het dot-product met de
-    // verwachte richting van de face >= 0.
-    // dot(p) = (p.lng-cLng)*sin(asp) + (p.lat-cLat)*cos(asp)
-    // Snijpunt: da/(da-db) langs de kant-vector
-    // Gebruik de gemiddelde centroïde (niet bounding-box-midden) als splitsreferentie
+    // Toewijzing via dot-product score op centroïde:
+    // Bereken voor elk polygoon (polys[0] en polys[1]) het centroïde.
+    // De face krijgt het polygoon waarvan het centroïde het meest in de richting
+    // van de face's aspectDeg ligt t.o.v. het gebouw-centroïde.
+    // Dit is robuust: werkt ongeacht ridgeAngleDeg-conventie of sorteerorde.
     const gcLat=lc.reduce((s,p)=>s+p[0],0)/lc.length;
     const gcLng=lc.reduce((s,p)=>s+p[1],0)/lc.length;
-    const clipHalf=(eE,eN,positive)=>{
-      const dot=([la,ln])=>(ln-gcLng)*eE+(la-gcLat)*eN;
-      const poly=[];
-      for(let i=0;i<lc.length;i++){
-        const a=lc[i],b=lc[(i+1)%lc.length];
-        const da=dot(a),db=dot(b);
-        if(positive?(da>=0):(da<0)) poly.push(a);
-        if((da>=0)!==(db>=0)){
-          const t=da/(da-db);
-          poly.push([a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);
-        }
-      }
-      return poly;
+    const polyCtr=poly=>{
+      if(!poly||!poly.length) return[gcLat,gcLng];
+      return[poly.reduce((s,p)=>s+p[0],0)/poly.length,
+             poly.reduce((s,p)=>s+p[1],0)/poly.length];
     };
+    // Gebruik polys[0] en polys[1] die hierboven al correct berekend zijn.
+    // Beide polygonen zijn gegarandeerd gevuld (complementaire helften).
+    const c0=polyCtr(polys[0]),c1=polyCtr(polys[1]);
     return faces.map(f=>{
       const asp=(f.aspectDeg!=null?f.aspectDeg:ASP_MAP[f.orientation]||0)*Math.PI/180;
       const eE=Math.sin(asp),eN=Math.cos(asp);
-      // Genereer de clip in de verwachte richting
-      let poly=clipHalf(eE,eN,true);
-      // Centroïde-verificatie: als het centroïde op de VERKEERDE kant ligt, gebruik de andere helft
-      if(poly.length>=3){
-        const cLa=poly.reduce((s,p)=>s+p[0],0)/poly.length;
-        const cLn=poly.reduce((s,p)=>s+p[1],0)/poly.length;
-        const centDot=(cLn-gcLng)*eE+(cLa-gcLat)*eN;
-        if(centDot<0){
-          // Centroïde op verkeerde kant → gebruik complementaire clip
-          const alt=clipHalf(eE,eN,false);
-          if(alt.length>=3) poly=alt;
-          console.warn("[ZonneDak] generateFacePolygons: polygon centroïde was op verkeerde kant, gecorrigeerd voor aspect",f.aspectDeg);
-        }
-      }
-      return{...f,polygon:poly.length>=3?poly:lc};
+      // Score = dot-product van centroïde-richting met verwachte aspect-richting
+      const score=([la,ln])=>(ln-gcLng)*eE+(la-gcLat)*eN;
+      const poly=score(c0)>=score(c1)?polys[0]:polys[1];
+      return{...f,polygon:poly&&poly.length>=3?poly:lc};
     });
   }
 
@@ -939,11 +919,12 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
     const isSel=fi===selFaceIdx;
 
     // Polygon — sla referentie op voor live vertex-drag update
+    // In edit mode: geselecteerde face = amber fill 50%, andere = transparant
     const facePoly=L.polygon(f.polygon,{
-      color:isSel?'#1e293b':color,
-      fillColor:color,
-      fillOpacity:editMode?0:isSel?.65:.35,
-      weight:editMode?(isSel?3:2):isSel?2.5:1.5,
+      color:isSel?(editMode?"#f59e0b":"#1e293b"):color,
+      fillColor:editMode&&isSel?"#f59e0b":color,
+      fillOpacity:editMode?(isSel?0.45:0):isSel?0.65:0.35,
+      weight:editMode?(isSel?3:1.5):isSel?2.5:1.5,
       opacity:0.9,
     })
     .bindTooltip(`<b>${fi+1}. ${f.orientation} · ${f.slope}°</b><br>${(q[isGood?0:1]||{l:''}).l}<br>${f.pct}% van dak`,{sticky:true,direction:"top"})
@@ -1730,46 +1711,44 @@ export default function App(){
         setTimeout(()=>setDetectedFaces(facesToDraw),0);
       }
       const outlineLayer=L.polygon(buildingCoords,{color:"#e07b00",fillOpacity:0,weight:2,dashArray:"5,3"}).addTo(map);
+      const dimGroup=L.layerGroup().addTo(map); // voor afmetingslabels: wordt opgeruimd bij hertekenen
 
-      // Dakafmetingen tonen op de kaart
+      // Dakafmetingen langs ELKE ZIJDE van elk vlak
+      // Per edge: toon 3D lengte (slopcorrectie voor zijden loodrecht op nok)
+      const mLat111=111320;
+      const ridgeRad111=(detectedFaces[0]?.ridgeAngleDeg||0)*Math.PI/180;
+      const cosRidge=Math.cos(ridgeRad111),sinRidge=Math.sin(ridgeRad111);
       facesToDraw.forEach(f=>{
         if(!f.polygon||f.polygon.length<3) return;
-        const lamPts=f.polygon.map(([la,ln])=>wgs84ToLambert72(la,ln));
-        const cx2=lamPts.reduce((s,p)=>s+p[0],0)/lamPts.length;
-        const cy2=lamPts.reduce((s,p)=>s+p[1],0)/lamPts.length;
-        let sxx=0,sxy=0,syy=0;
-        lamPts.forEach(([x,y])=>{const dx=x-cx2,dy=y-cy2;sxx+=dx*dx;sxy+=dx*dy;syy+=dy*dy;});
-        const pcaAng=Math.atan2(2*sxy,sxx-syy)/2;
-        const cosA=Math.cos(pcaAng),sinA=Math.sin(pcaAng);
-        const proj1=lamPts.map(([x,y])=>(x-cx2)*cosA+(y-cy2)*sinA);
-        const proj2=lamPts.map(([x,y])=>(-(x-cx2)*sinA+(y-cy2)*cosA));
-        const len2d=Math.max(...proj1)-Math.min(...proj1); // langs nok
-        const wid2d=Math.max(...proj2)-Math.min(...proj2); // loodrecht op nok (2D)
-        const wid3d=wid2d/Math.cos((f.slope||0)*Math.PI/180); // werkelijke schuine breedte
-        // Label op midpunt van de buitenste rand:
-        // Noklijn loopt door het GEBOUW-centroïde (bounding-box midden van buildingCoords).
-        // Rand met grootste |crossComp| t.o.v. noklijn = buitenste rand van het dakvlak.
-        const bLats=buildingCoords.map(p=>p[0]),bLngs=buildingCoords.map(p=>p[1]);
-        const bldCLat=(Math.min(...bLats)+Math.max(...bLats))/2;
-        const bldCLng=(Math.min(...bLngs)+Math.max(...bLngs))/2;
-        const ridgeRadL=(detectedFaces[0]?.ridgeAngleDeg||0)*Math.PI/180;
-        const cosRL=Math.cos(ridgeRadL),sinRL=Math.sin(ridgeRadL);
-        // crossComp van rankmidpunt t.o.v. gebouw-centroïde
-        const crossDist=(la,ln)=>Math.abs((ln-bldCLng)*cosRL-(la-bldCLat)*sinRL);
-        let bestEdgeMid=null,bestDist=-1;
         const np=f.polygon.length;
+        const shown=new Set(); // voorkom dubbele labels op gedeelde nokranden
         for(let ei=0;ei<np;ei++){
-          const a2=f.polygon[ei],b2=f.polygon[(ei+1)%np];
-          const mid=[(a2[0]+b2[0])/2,(a2[1]+b2[1])/2];
-          const d=crossDist(mid[0],mid[1]);
-          if(d>bestDist){bestDist=d;bestEdgeMid=mid;}
+          const a=f.polygon[ei],b=f.polygon[(ei+1)%np];
+          const dLat=b[0]-a[0],dLng=b[1]-a[1];
+          const mLng111=111320*Math.cos(a[0]*Math.PI/180);
+          const dE=dLng*mLng111,dN=dLat*mLat111; // meter (Oost, Noord)
+          const len2d=Math.sqrt(dE*dE+dN*dN);
+          if(len2d<2) continue; // te kort om te labelen
+          // Bepaal of zijde evenwijdig (nok) of loodrecht (helling) is
+          // Project rand op nokrichting: |dot| groot = evenwijdig met nok = 2D lengte
+          // Project op loodrechte: |dot| groot = loodrecht op nok = helling → 3D lengte
+          const dotNok=Math.abs(dE*sinRidge+dN*cosRidge)/len2d; // cos(hoek met nok)
+          const slope3d=dotNok>0.5?len2d:len2d/Math.cos((f.slope||0)*Math.PI/180);
+          // Midpunt van de rand
+          const midLat=(a[0]+b[0])/2,midLng=(a[1]+b[1])/2;
+          // Kleine offset loodrecht naar buiten (weg van centroïde)
+          const cLat=f.polygon.reduce((s,p)=>s+p[0],0)/f.polygon.length;
+          const cLng=f.polygon.reduce((s,p)=>s+p[1],0)/f.polygon.length;
+          const offLat=(midLat-cLat)*0.18,offLng=(midLng-cLng)*0.18;
+          const lKey=slope3d.toFixed(0);
+          if(shown.has(lKey)&&dotNok>0.5) continue; // dedupliceer nokranden
+          shown.add(lKey);
+          L.marker([midLat+offLat,midLng+offLng],{icon:L.divIcon({
+            html:"<div style='background:rgba(0,0,0,.75);color:#fff;padding:1px 5px;border-radius:3px;font-size:8px;font-family:IBM Plex Mono,monospace;white-space:nowrap;transform:translate(-50%,-50%)'>"
+              +slope3d.toFixed(1)+"m</div>",
+            className:""
+          }),interactive:false}).addTo(dimGroup);
         }
-        const labelPos=bestEdgeMid||[cLat2,cLng2];
-        L.marker(labelPos,{icon:L.divIcon({
-          html:"<div style='background:rgba(0,0,0,.72);color:#fff;padding:2px 7px;border-radius:3px;font-size:9px;font-family:IBM Plex Mono,monospace;white-space:nowrap;transform:translate(-50%,-50%)'>"
-            +len2d.toFixed(1)+"m × "+wid3d.toFixed(1)+"m</div>",
-          className:""
-        })}).addTo(map);
       });
 
       const faceGroup=drawFacePolygons(
@@ -1777,7 +1756,7 @@ export default function App(){
         (idx)=>{setSelFaceIdx(idx);setOrientation(facesToDraw[idx].orientation);setSlope(facesToDraw[idx].slope);},
         editMode,selFaceIdx,onVertexDrag,onVertexDragEnd
       );
-      roofLayerRef.current={remove:()=>{map.removeLayer(outlineLayer);if(faceGroup) map.removeLayer(faceGroup);}};
+      roofLayerRef.current={remove:()=>{map.removeLayer(outlineLayer);map.removeLayer(dimGroup);if(faceGroup) map.removeLayer(faceGroup);}};
     } else {
       roofLayerRef.current=drawRealRoof(map,L,buildingCoords,orientation);
     }
