@@ -439,11 +439,12 @@ function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
   const rxs=rotPoly.map(p=>p[0]),rys=rotPoly.map(p=>p[1]);
   const[minRX,maxRX,minRY,maxRY]=[Math.min(...rxs),Math.max(...rxs),Math.min(...rys),Math.max(...rys)];
 
-  // Portrait:  pW langs X (loodrecht op nok), pH langs Y (langs nok)
-  // Landscape: pH langs X (loodrecht op nok), pW langs Y (langs nok)
+  // Industrie-definitie:
+  //   Portrait  = lange zijde pH loodrecht op nok (langs X-as = langs de helling)
+  //   Landscape = lange zijde pH evenwijdig met nok (langs Y-as = langs de dakrand)
   const isPortrait=(orient||"portrait")==="portrait";
-  const W=isPortrait?pW:pH; // afmeting langs X (loodrecht op nok)
-  const H=isPortrait?pH:pW; // afmeting langs Y (langs nok)
+  const W=isPortrait?pH:pW; // langs X (loodrecht op nok): portrait=lang, landscape=kort
+  const H=isPortrait?pW:pH; // langs Y (langs nok):        portrait=kort, landscape=lang
 
   const margin=0.3,gapX=0.05,gapY=0.05;
   const panels=[];
@@ -863,18 +864,38 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
     // verwachte richting van de face >= 0.
     // dot(p) = (p.lng-cLng)*sin(asp) + (p.lat-cLat)*cos(asp)
     // Snijpunt: da/(da-db) langs de kant-vector
-    return faces.map(f=>{
-      const asp=(f.aspectDeg!=null?f.aspectDeg:ASP_MAP[f.orientation]||0)*Math.PI/180;
-      const eE=Math.sin(asp),eN=Math.cos(asp);
-      const dot=([la,ln])=>(ln-cLng)*eE+(la-cLat)*eN;
+    // Gebruik de gemiddelde centroïde (niet bounding-box-midden) als splitsreferentie
+    const gcLat=lc.reduce((s,p)=>s+p[0],0)/lc.length;
+    const gcLng=lc.reduce((s,p)=>s+p[1],0)/lc.length;
+    const clipHalf=(eE,eN,positive)=>{
+      const dot=([la,ln])=>(ln-gcLng)*eE+(la-gcLat)*eN;
       const poly=[];
       for(let i=0;i<lc.length;i++){
         const a=lc[i],b=lc[(i+1)%lc.length];
         const da=dot(a),db=dot(b);
-        if(da>=0) poly.push(a);
+        if(positive?(da>=0):(da<0)) poly.push(a);
         if((da>=0)!==(db>=0)){
           const t=da/(da-db);
           poly.push([a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);
+        }
+      }
+      return poly;
+    };
+    return faces.map(f=>{
+      const asp=(f.aspectDeg!=null?f.aspectDeg:ASP_MAP[f.orientation]||0)*Math.PI/180;
+      const eE=Math.sin(asp),eN=Math.cos(asp);
+      // Genereer de clip in de verwachte richting
+      let poly=clipHalf(eE,eN,true);
+      // Centroïde-verificatie: als het centroïde op de VERKEERDE kant ligt, gebruik de andere helft
+      if(poly.length>=3){
+        const cLa=poly.reduce((s,p)=>s+p[0],0)/poly.length;
+        const cLn=poly.reduce((s,p)=>s+p[1],0)/poly.length;
+        const centDot=(cLn-gcLng)*eE+(cLa-gcLat)*eN;
+        if(centDot<0){
+          // Centroïde op verkeerde kant → gebruik complementaire clip
+          const alt=clipHalf(eE,eN,false);
+          if(alt.length>=3) poly=alt;
+          console.warn("[ZonneDak] generateFacePolygons: polygon centroïde was op verkeerde kant, gecorrigeerd voor aspect",f.aspectDeg);
         }
       }
       return{...f,polygon:poly.length>=3?poly:lc};
