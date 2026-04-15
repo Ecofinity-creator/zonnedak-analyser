@@ -1740,7 +1740,13 @@ export default function App(){
     if(!panelsDrawn||!buildingCoords||!selPanel||!leafRef.current||!window.L||!coords) return;
     const L=window.L,map=leafRef.current;
     if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
-    const _sf=detectedFaces?.[selFaceIdx];
+    // Zorg dat polygon aanwezig is — roep generateFacePolygons aan indien nodig
+    let _sf=detectedFaces?.[selFaceIdx];
+    if(_sf&&!_sf.polygon&&buildingCoords){
+      const withPolys=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);
+      setDetectedFaces(withPolys);
+      _sf=withPolys?.[selFaceIdx]||_sf;
+    }
     const _fp=_sf?.polygon||buildingCoords;
     const _ra=_sf?.ridgeAngleDeg||0;
     panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,panelMoveMode);
@@ -2115,7 +2121,11 @@ export default function App(){
           if(leafRef.current&&window.L){
             const L=window.L,map=leafRef.current;
             if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
-            const _sf=detectedFaces?.[selFaceIdx];
+            let _sf=detectedFaces?.[selFaceIdx];
+            if(_sf&&!_sf.polygon&&buildingCoords){
+              const wp=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);
+              setDetectedFaces(wp);_sf=wp?.[selFaceIdx]||_sf;
+            }
             const _fp=_sf?.polygon||buildingCoords;
             const _ra=_sf?.ridgeAngleDeg||0;
             panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,false);
@@ -2131,9 +2141,13 @@ export default function App(){
           if(leafRef.current&&window.L){
             const L=window.L,map=leafRef.current;
             if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
-            const _sf=detectedFaces?.[selFaceIdx];
-            const _fp=_sf?.polygon||buildingCoords;
-            const _ra=_sf?.ridgeAngleDeg||0;
+            let _sf2=detectedFaces?.[selFaceIdx];
+            if(_sf2&&!_sf2.polygon&&buildingCoords){
+              const wp2=generateFacePolygons(buildingCoords,detectedFaces,_sf2.ridgeAngleDeg);
+              setDetectedFaces(wp2);_sf2=wp2?.[selFaceIdx]||_sf2;
+            }
+            const _fp=_sf2?.polygon||buildingCoords;
+            const _ra=_sf2?.ridgeAngleDeg||0;
             panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,nm);
           }
           if(nm){setActiveTab("configuratie");setTimeout(()=>{if(leafRef.current) leafRef.current.invalidateSize();},50);}
