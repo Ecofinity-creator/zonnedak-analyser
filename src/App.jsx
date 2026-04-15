@@ -964,9 +964,7 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
             marker.setLatLng(ll);
             liveLatLngs[vi]=ll;
             facePoly.setLatLngs(liveLatLngs);
-            // Rood als overlap met naburig punt (< 3m)
-            const nearOther=f.polygon.some((other,oi)=>oi!==vi&&distPts([ll.lat,ll.lng],other)<3);
-            marker.setStyle({fillColor:nearOther?"#dc2626":"#f59e0b"});
+            // Positie updaten (geen auto-merge: rood feedback ook verwijderd)
             if(onVertexDrag) onVertexDrag(fi,vi,[ll.lat,ll.lng]);
           };
           const onUp=function(){
@@ -975,35 +973,8 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
             map.dragging.enable();
             map.getContainer().style.cursor="";
             marker.setStyle({fillColor:"#f59e0b"});
-            // Auto-merge: als gesleept punt < 3m van naburig punt
-            const curLL=marker.getLatLng();
-            const curPt=[curLL.lat,curLL.lng];
-            // Gebruik liveLatLngs (actuele posities), niet f.polygon (origineel)
-            const livePts=liveLatLngs.map(ll=>Array.isArray(ll)?ll:[ll.lat,ll.lng]);
-            let merged=false;
-            if(livePts.length>3){
-              const n2=livePts.length;
-              const prev2=(vi-1+n2)%n2;
-              const next2=(vi+1)%n2;
-              for(const ni of[next2,prev2]){
-                const other=livePts[ni];
-                const otherPt=Array.isArray(other)?other:[other.lat,other.lng];
-                if(distPts(curPt,otherPt)<3){
-                  const avg=[(curPt[0]+otherPt[0])/2,(curPt[1]+otherPt[1])/2];
-                  livePts[ni]=avg;
-                  livePts.splice(vi,1);
-                  merged=true;
-                  console.info("[ZonneDak] Punten "+vi+" en "+ni+" samengevoegd");
-                  break;
-                }
-              }
-            }
-            if(merged&&onVertexDrag){
-              livePts.forEach((pt,idx)=>{
-                const p=Array.isArray(pt)?pt:[pt.lat,pt.lng];
-                onVertexDrag(fi,idx,p);
-              });
-            }
+            // Auto-merge verwijderd: vervormt het polygoon per ongeluk.
+            // Gebruik de Splits-knop voor polygoonbewerking.
             if(onVertexDragEnd) onVertexDragEnd(fi,vi);
           };
           map.on("mousemove",onMove);
