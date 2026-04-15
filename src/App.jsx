@@ -1077,7 +1077,16 @@ function detectPanelRows(panels,facePoly){
 }
 
 function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDataRef,moveMode){
-  const ratio=1.56,pW=Math.sqrt(panel.area/ratio),pH=panel.area/pW;
+  // Lees echte paneelafmetingen uit dims als beschikbaar ("1762x1134x30mm")
+  let pW,pH;
+  const dimMatch=panel.dims&&panel.dims.match(/(\d+)[x×](\d+)/i);
+  if(dimMatch){
+    const d1=+dimMatch[1]/1000,d2=+dimMatch[2]/1000; // meters
+    pH=Math.max(d1,d2); // lange zijde
+    pW=Math.min(d1,d2); // korte zijde
+  } else {
+    const ratio=1.56;pW=Math.sqrt(panel.area/ratio);pH=panel.area/pW;
+  }
   let panels=panelDataRef?.current||packPanels(facePoly,pW,pH,count,ridgeAngleDeg||0,orient||"portrait");
   if(panelDataRef) panelDataRef.current=panels;
 
