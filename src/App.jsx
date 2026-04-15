@@ -40,14 +40,9 @@ const DHM_WMS   = "https://geoservices.informatievlaanderen.be/raadpleegdiensten
 // Digitaal Vlaanderen orthofoto — dekt heel Vlaanderen (beter dan Esri voor BE)
 const ORTHO_WMS = "https://geoservices.informatievlaanderen.be/raadpleegdiensten/OMWRGBMRVL/wms";
 const ORTHO_LYR = "OMWRGBMRVL";
-const WCS_URLS  = [
-  // Directe endpoints (werken als CORS-headers aanwezig zijn)
-  "https://geo.api.vlaanderen.be/DHMV/wcs",
-  "https://geoservices.informatievlaanderen.be/raadpleegdiensten/DHMVII/wcs",
-  // CORS-proxy fallbacks
-  "https://corsproxy.io/?https://geo.api.vlaanderen.be/DHMV/wcs",
-  "https://corsproxy.io/?https://geoservices.informatievlaanderen.be/raadpleegdiensten/DHMVII/wcs",
-];
+// WCS wordt via proxy gehaald omdat geo.api.vlaanderen.be geen CORS-headers stuurt
+const WCS_BASE = "https://geo.api.vlaanderen.be/DHMV/wcs";
+const WCS_PROXY = "https://api.allorigins.win/raw?url=";
 
 // ─── Zonneirradiantie Vlaanderen ─────────────────────────────────────────────
 const SOLAR_TABLE = {
@@ -139,17 +134,19 @@ function parseTIFF(buf){
 
 async function fetchWCS(xmin,ymin,xmax,ymax,mw,mh,cov){
   const p=new URLSearchParams({SERVICE:"WCS",VERSION:"1.0.0",REQUEST:"GetCoverage",COVERAGE:cov,CRS:"EPSG:31370",RESPONSE_CRS:"EPSG:31370",BBOX:`${Math.round(xmin)},${Math.round(ymin)},${Math.round(xmax)},${Math.round(ymax)}`,WIDTH:mw,HEIGHT:mh,FORMAT:"GeoTIFF"});
+  const directUrl=`${WCS_BASE}?${p}`;
+  const proxyUrl=`${WCS_PROXY}${encodeURIComponent(directUrl)}`;
   let lastErr="";
-  for(const url of WCS_URLS){
+  for(const url of[directUrl,proxyUrl]){
     try{
-      const r=await fetch(`${url}?${p}`,{mode:"cors"});
+      const r=await fetch(url,{cache:"no-store"});
       if(!r.ok){lastErr=`HTTP ${r.status}`;continue;}
       const ct=r.headers.get("content-type")||"";
       if(ct.includes("xml")||ct.includes("html")){lastErr=`WCS fout: ${(await r.text()).substring(0,100)}`;continue;}
       return parseTIFF(await r.arrayBuffer());
     }catch(e){lastErr=e.message;}
   }
-  throw new Error(lastErr||"Alle WCS endpoints mislukt");
+  throw new Error(lastErr||"WCS niet bereikbaar");
 }
 
 // ─── Hulpfuncties voor dakanalyse ────────────────────────────────────────────
@@ -1906,6 +1903,19 @@ export default function App(){
         const ring=bld.geometry.type==="Polygon"?bld.geometry.coordinates[0]:bld.geometry.coordinates[0][0];
         lCoords=geoToLeaflet(ring);
         setDetectedArea(Math.round(polyAreaLambert72(lCoords)));setBuildingCoords(lCoords);setCustomCount(10);setGrbStatus("ok");
+        // Bereken nokrichting via PCA van GRB-contour (ook beschikbaar als LiDAR faalt)
+        try{
+          const lamPts2=lCoords.map(([la,ln])=>wgs84ToLambert72(la,ln));
+          const cx3=lamPts2.reduce((s,p)=>s+p[0],0)/lamPts2.length;
+          const cy3=lamPts2.reduce((s,p)=>s+p[1],0)/lamPts2.length;
+          let cxx3=0,cxy3=0,cyy3=0;
+          lamPts2.forEach(([x,y])=>{const dx=x-cx3,dy=y-cy3;cxx3+=dx*dx;cxy3+=dx*dy;cyy3+=dy*dy;});
+          cxx3/=lamPts2.length;cxy3/=lamPts2.length;cyy3/=lamPts2.length;
+          const pca3=Math.atan2(2*cxy3,cxx3-cyy3)/2;
+          const ridge3=((90-pca3*180/Math.PI)+360)%180;
+          ridgeAngleDegRef.current=ridge3;
+          console.info("[ZonneDak] GRB PCA nokrichting="+ridge3.toFixed(1)+"° (fallback voor LiDAR-fout)");
+        }catch(e){console.warn("[ZonneDak] GRB PCA fout:",e);}
       } else setGrbStatus("fallback");
     }catch(e){console.warn("GRB:",e);setGrbStatus("fallback");}
 
