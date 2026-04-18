@@ -1227,12 +1227,12 @@ function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDat
 
         const onMove=function(me){
           const dLat=me.latlng.lat-startLL.lat,dLng=me.latlng.lng-startLL.lng;
-          const distM=Math.sqrt((dLat*111320)**2+(dLng*111320*Math.cos(startLL.lat*Math.PI/180))**2);
-          if(!hasMoved&&distM<1.5) return; // minder dan 1.5m = nog geen drag
+          const mLat=111320,mLng=111320*Math.cos(startLL.lat*Math.PI/180);
+          const distM=Math.sqrt((dLat*mLat)**2+(dLng*mLng)**2);
+          if(!hasMoved&&distM<1.5) return;
           if(!hasMoved){
             hasMoved=true;
             map.getContainer().style.cursor="grabbing";
-            // Bepaal nu welke panelen mee verplaatsen
             if(selected.size>0&&selected.has(i)) toMove=[...selected];
             else if(selected.size===0) toMove=[...Array(panels.length).keys()];
             else toMove=[i];
@@ -1243,10 +1243,31 @@ function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDat
             }));
           }
           if(!toMove||!startSnap2) return;
+
+          // Snap-to-grid: rond delta af op dichtstbijzijnde rasterstap
+          // in het geroteerde dakframe (langs nok = Y, loodrecht = X)
+          const r=(ridgeAngleDeg||0)*Math.PI/180;
+          const cosR=Math.cos(r),sinR=Math.sin(r);
+          // Delta in lokale meters (Oost, Noord)
+          const dE=dLng*mLng,dN=dLat*mLat;
+          // Projecteer op dakframe-assen
+          const dAlong= dE*sinR+dN*cosR;  // langs nok (Y)
+          const dAcross= dE*cosR-dN*sinR; // loodrecht op nok (X)
+          // Rasterstap = paneelgrootte + gap
+          const gapX=0.05,gapY=0.05;
+          const stepAlong=pH+gapY,stepAcross=W+gapX;
+          // Snap: dichtstbijzijnde veelvoud van de rasterstap
+          const snapAlong=Math.round(dAlong/stepAlong)*stepAlong;
+          const snapAcross=Math.round(dAcross/stepAcross)*stepAcross;
+          // Terug naar (Oost, Noord)
+          const snapE=snapAlong*sinR+snapAcross*cosR;
+          const snapN=snapAlong*cosR-snapAcross*sinR;
+          const snapDLat=snapN/mLat,snapDLng=snapE/mLng;
+
           toMove.forEach(idx=>{
             const np=startSnap2[idx];
-            polyLayers[idx]?.setLatLngs(np.corners.map(([la,ln])=>[la+dLat,ln+dLng]));
-            midLayers[idx]?.setLatLngs(np.midLine.map(([la,ln])=>[la+dLat,ln+dLng]));
+            polyLayers[idx]?.setLatLngs(np.corners.map(([la,ln])=>[la+snapDLat,ln+snapDLng]));
+            midLayers[idx]?.setLatLngs(np.midLine.map(([la,ln])=>[la+snapDLat,ln+snapDLng]));
           });
         };
         const onUp=function(){
