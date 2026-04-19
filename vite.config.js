@@ -10,5 +10,14 @@ export default defineConfig({
   base: '/zonnedak-analyser/',
   build: {
     outDir: 'dist',
+    // Force nieuwe filename om CDN cache te breken.
+    // Timestamp zorgt dat de output-filename altijd uniek is.
+    rollupOptions: {
+      output: {
+        entryFileNames: `assets/[name]-[hash]-${Date.now()}.js`,
+        chunkFileNames: `assets/[name]-[hash]-${Date.now()}.js`,
+        assetFileNames: `assets/[name]-[hash]-${Date.now()}.[ext]`,
+      },
+    },
   },
 });
