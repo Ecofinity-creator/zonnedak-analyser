@@ -526,7 +526,7 @@ function convexHullPts(pts){
 //   - Rotatie ongewijzigd: nokrichting (azimut) wordt X-as na rotatie,
 //     loodrecht op nok wordt Y-as. Grid is axis-aligned → evenwijdig met nok.
 function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
-  console.log('ZONNEDAK_FIX_MARKER_V2_2026_04_19');
+  console.log('ZONNEDAK_FIX_MARKER_V2', {ridgeAngleDeg, orient, facePoly_first3: facePoly.slice(0,3)});
   if(!facePoly||facePoly.length<3) return [];
 
   // 1) Transformeer face-polygoon naar Lambert72 (metrisch, EPSG:31370).
