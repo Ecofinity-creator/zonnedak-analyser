@@ -45,11 +45,22 @@ jobs:
           rm -rf dist
           rm -rf .vite
           echo "All caches cleaned at $(date)"
-          echo "src/App.jsx line 106:"
-          sed -n '106p' src/App.jsx
-          echo "---"
-          echo "packPanels first line:"
-          grep -n "^function packPanels" src/App.jsx
+          echo ""
+          echo "=== FILES IN src/ ON LINUX RUNNER ==="
+          ls -la src/
+          echo ""
+          echo "=== ALL JSX FILES (case-sensitive search) ==="
+          find . -name "*.jsx" -not -path "./node_modules/*" | sort
+          echo ""
+          echo "=== App.jsx size and first/last line ==="
+          wc -l src/App.jsx || echo "NOT FOUND: src/App.jsx"
+          echo ""
+          echo "=== main.jsx import line ==="
+          grep -n "App" src/main.jsx || echo "NOT FOUND"
+          echo ""
+          echo "=== Does src/App.jsx contain the fix? ==="
+          grep -c "lambert72ToWgs84" src/App.jsx || echo "0 matches"
+          grep -c "allInside" src/App.jsx || echo "0 matches"
 
       - name: Build
         run: npm run build
