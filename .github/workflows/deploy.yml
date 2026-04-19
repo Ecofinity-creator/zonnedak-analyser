@@ -32,7 +32,10 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # npm install (niet npm ci) — tolereert een onvolledige package-lock.json.
+        # De huidige lockfile mist platform-specifieke Rollup binaries (bekend npm issue),
+        # waardoor npm ci faalt. npm install regenereert de ontbrekende entries on-the-fly.
+        run: npm install
 
       - name: Build
         run: npm run build
