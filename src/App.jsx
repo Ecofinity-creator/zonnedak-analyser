@@ -507,16 +507,26 @@ function convexHullPts(pts){
   }while(cur!==start&&hull.length<=pts.length);
   return hull;
 }
-// ─── FIX BUG-10: packPanels — nokrichting uit polygon zelf via PCA ───────────
-// Regressie: de doorgegeven ridgeAngleDeg komt uit een eerdere PCA-stap op de
-// GRB-footprint en kan inconsistent zijn met de nok van het face-polygon dat
-// doorgegeven wordt (wanneer generateFacePolygons bv. niet opnieuw is gerund
-// na een ridgeAngle-update). Gevolg: panelen staan scheef ondanks correcte
-// packPanels-logica.
-// Oplossing: leid nokrichting af uit het face-polygon zelf via PCA (hoofdas
-// van de covariantiematrix). Robuust tegen inconsistenties tussen face-gen
-// en paneelplaatsing. ridgeAngleDeg-parameter blijft bestaan als fallback,
-// maar wordt genegeerd wanneer PCA een goede hoek vindt.
+// ─── FIX BUG-11: packPanels — nokrichting via edge-lengte²-gewogen voting ────
+// Achtergrond: de gebruiker kan footprint-vertices slepen om het dakvlak te
+// corrigeren. PCA (BUG-10 fix) werkte goed voor rechthoekige faces, maar
+// gaf bij trap-/L-vormige faces de hoofdas van de massa-verdeling i.p.v.
+// de echte noklijn. De twee dakvlakken kregen dan verschillende ridge-hoeken
+// (25.7° vs 20.1° op productie), terwijl de nok één gedeelde lijn is.
+//
+// Oplossing: detecteer de dominante edge-richting via gewogen circulair
+// gemiddelde in 2x-angle space. Gewicht = edge-length². Hierdoor dicteren
+// de lange randen (nok + parallelle dakrand) de oriëntatie, korte randen
+// (aanbouwuitsteeksels) hebben nauwelijks invloed.
+//
+// Waarom length² en niet length: legaal zwaarder gewogen dominante randen
+// zodat een iets-langere gedegenereerde edge niet toevallig wint van twee
+// parallelle lange randen.
+//
+// Waarom circulair gemiddelde in 2x-angle space: edges zijn bidirectioneel
+// (0° en 180° zijn dezelfde richting). Door alle hoeken te verdubbelen
+// gedragen 0° en 360° zich als dezelfde vector — standaardtruc voor
+// circular statistics op axiale data.
 function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
   if(!facePoly||facePoly.length<3) return [];
 
@@ -526,61 +536,60 @@ function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
   const cY=polyL72.reduce((s,p)=>s+p[1],0)/polyL72.length;
   const polyM=polyL72.map(([x,y])=>[x-cX,y-cY]);
 
-  // 2) Nokrichting uit het polygon via PCA.
-  //    Eigenvector van grootste eigenwaarde van 2D-covariantiematrix [[Sxx,Sxy],[Sxy,Syy]]
-  //    = hoofdas = langste as van het polygon = noklijn.
-  //    Dit omzeilt inconsistenties tussen de doorgegeven ridgeAngleDeg en
-  //    de werkelijke oriëntatie van het face-polygon.
-  let Sxx=0,Syy=0,Sxy=0;
-  for(const [x,y] of polyM){ Sxx+=x*x; Syy+=y*y; Sxy+=x*y; }
-  const trace=Sxx+Syy, detC=Sxx*Syy-Sxy*Sxy;
-  const disc=Math.sqrt(Math.max(0,trace*trace/4-detC));
-  const lambda1=trace/2+disc; // grootste eigenwaarde
-  let ex,ey;
-  if(Math.abs(Sxy)>1e-10){
-    ex=lambda1-Syy; ey=Sxy;
-  } else {
-    // Covariantie al diagonaal — hoofdas is X of Y
-    if(Sxx>=Syy){ ex=1; ey=0; } else { ex=0; ey=1; }
+  // 2) Nokrichting via edge-length²-gewogen circulair gemiddelde.
+  //    Itereer over alle edges, normaliseer elke richting naar [0, 180°),
+  //    verdubbel de hoek (bidirectioneel → unidirectioneel), weeg met length².
+  let sumCos=0,sumSin=0;
+  const nPoly=polyL72.length;
+  for(let i=0;i<nPoly;i++){
+    const[x1,y1]=polyL72[i],[x2,y2]=polyL72[(i+1)%nPoly];
+    const dx=x2-x1, dy=y2-y1;
+    const len=Math.hypot(dx,dy);
+    if(len<0.5) continue; // skip degenerate edges
+    // Azimut vanaf Noord (CW), bidirectioneel [0, 180)
+    let az=Math.atan2(dx,dy)*180/Math.PI;
+    az=((az%180)+180)%180;
+    const theta2=az*2*Math.PI/180;
+    const w=len*len;
+    sumCos+=w*Math.cos(theta2);
+    sumSin+=w*Math.sin(theta2);
   }
-  const enorm=Math.hypot(ex,ey)||1;
-  ex/=enorm; ey/=enorm;
+  const avgTheta2=Math.atan2(sumSin,sumCos);
+  let ridgeAzDeg=(avgTheta2*180/Math.PI)/2;
+  ridgeAzDeg=((ridgeAzDeg%180)+180)%180;
 
-  // Nokrichting vector in Lambert72: (ex, ey). In rotated frame willen we dat
-  // deze richting langs Y-as ligt. rotFwd moet (ex,ey) → (0,1) mappen.
-  // Matrix: rotFwd = [[ey, -ex], [ex, ey]]  (bewijs: [ey,-ex]·[ex,ey]=0, [ex,ey]·[ex,ey]=1)
+  const r=ridgeAzDeg*Math.PI/180;
+  const ex=Math.sin(r), ey=Math.cos(r);
+  // rotFwd mapt nokrichting (ex,ey) → (0,1) (nok langs Y-as).
+  // Matrix: rotFwd = [[ey, -ex], [ex, ey]]
   const rotFwd=([x,y])=>[ x*ey - y*ex,  x*ex + y*ey];
   const rotInv=([x,y])=>[ x*ey + y*ex, -x*ex + y*ey];
 
-  // PCA-afgeleide nok kan soms tegenovergesteld wijzen — geen probleem, ridgelijn
-  // is bidirectioneel. Log voor debugging.
-  const pcaAzDeg=((Math.atan2(ex,ey)*180/Math.PI)+360)%180;
   if(typeof console!=='undefined'&&console.info){
-    console.info(`[ZonneDak] packPanels: PCA-nok=${pcaAzDeg.toFixed(1)}° (param=${(ridgeAngleDeg||0).toFixed(1)}°)`);
+    console.info(`[ZonneDak] packPanels: edge-voting nok=${ridgeAzDeg.toFixed(1)}° (param=${(ridgeAngleDeg||0).toFixed(1)}°)`);
   }
 
   const rotPoly=polyM.map(rotFwd);
 
-  // 3) Bbox van geroteerd polygon. Axis-aligned in rotated frame = evenwijdig
-  //    met nok in Lambert72. Door PCA-rotatie is het polygon nu écht zo
-  //    axis-aligned als zijn geometrie toelaat.
+  // 3) Bbox van geroteerd polygon. Axis-aligned in rotated frame =
+  //    evenwijdig met de gedetecteerde nokrichting in Lambert72.
   const xs=rotPoly.map(p=>p[0]);
   const ys=rotPoly.map(p=>p[1]);
   const minRX=Math.min(...xs), maxRX=Math.max(...xs);
   const minRY=Math.min(...ys), maxRY=Math.max(...ys);
 
   // 4) Paneelafmetingen in rotated frame:
-  //    Y-as = langs nok, X-as = loodrecht op nok (langs helling in grondvlak).
+  //    Y-as = langs nok, X-as = loodrecht op nok (langs helling).
   //    Portrait  = korte zijde (pW) langs nok (Y), lange zijde (pH) langs helling (X).
   //    Landscape = lange zijde (pH) langs nok (Y), korte zijde (pW) langs helling (X).
   const isPortrait=(orient||"portrait")==="portrait";
-  const W=isPortrait?pH:pW; // langs X (loodrecht op nok)
-  const H=isPortrait?pW:pH; // langs Y (langs nok)
+  const W=isPortrait?pH:pW;
+  const H=isPortrait?pW:pH;
 
   const margin=0.3,gapX=0.05,gapY=0.05;
   const panels=[];
 
-  // 5) Ray-casting point-in-polygon. Punt en polygon beide in rotated frame.
+  // 5) Ray-casting point-in-polygon.
   const pointInPoly=(x,y,poly)=>{
     let inside=false;
     for(let i=0,j=poly.length-1;i<poly.length;j=i++){
@@ -590,14 +599,13 @@ function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
     return inside;
   };
 
-  // 6) Plaats panelen in axis-aligned grid (evenwijdig met nok).
-  //    STRICT containment: alle 4 hoeken in face-polygoon. Voorkomt lekken
-  //    over de noklijn én buiten het dak.
+  // 6) Plaats panelen in axis-aligned grid. STRICT containment: alle 4 hoeken
+  //    binnen face-polygoon. Voorkomt lekken over de nok of buiten het dak.
   for(let ry=minRY+margin;ry+H<=maxRY-margin&&panels.length<maxN;ry+=H+gapY){
     for(let rx=minRX+margin;rx+W<=maxRX-margin&&panels.length<maxN;rx+=W+gapX){
       const cornersRot=[[rx,ry],[rx+W,ry],[rx+W,ry+H],[rx,ry+H]];
       const allInside=cornersRot.every(([x,y])=>pointInPoly(x,y,rotPoly));
-      if(!allInside) continue; // ← regressievangnet
+      if(!allInside) continue;
 
       const toLatLng=pt=>{
         const[mx,my]=rotInv(pt);
