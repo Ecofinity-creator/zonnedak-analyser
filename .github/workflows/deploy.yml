@@ -29,13 +29,27 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
+          # Geen cache: npm cache kan oude artifacts meedragen tussen runs.
+          # Door dit uit te zetten wordt alles vanaf nul gebouwd.
 
       - name: Install dependencies
         # npm install (niet npm ci) — tolereert een onvolledige package-lock.json.
-        # De huidige lockfile mist platform-specifieke Rollup binaries (bekend npm issue),
-        # waardoor npm ci faalt. npm install regenereert de ontbrekende entries on-the-fly.
         run: npm install
+
+      - name: Nuke all caches
+        # Forceer een echte verse build. Vite, Rollup en esbuild kunnen allemaal
+        # cachen op manieren die intermediate bundle-resultaten behouden.
+        run: |
+          rm -rf node_modules/.vite
+          rm -rf node_modules/.cache
+          rm -rf dist
+          rm -rf .vite
+          echo "All caches cleaned at $(date)"
+          echo "src/App.jsx line 106:"
+          sed -n '106p' src/App.jsx
+          echo "---"
+          echo "packPanels first line:"
+          grep -n "^function packPanels" src/App.jsx
 
       - name: Build
         run: npm run build
