@@ -65,6 +65,27 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify bundle contents
+        # Controleer of de marker daadwerkelijk in de gebundelde output zit.
+        # Als deze stap faalt, weten we zeker dat Vite de source-code niet correct inleest.
+        run: |
+          echo "=== BUNDLE FILES ==="
+          ls -la dist/assets/
+          echo ""
+          echo "=== MARKER CHECK IN BUNDLE ==="
+          if grep -r "ZONNEDAK_FIX_MARKER" dist/assets/; then
+            echo "✅ Marker gevonden in bundle"
+          else
+            echo "❌ Marker NIET in bundle — Vite bundelt App.jsx niet correct"
+          fi
+          echo ""
+          echo "=== LAMBERT72 CHECK IN BUNDLE ==="
+          if grep -r "lambert72ToWgs84\|allInside" dist/assets/ > /dev/null; then
+            echo "✅ Fix-code gevonden in bundle"
+          else
+            echo "❌ Fix-code NIET in bundle"
+          fi
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
