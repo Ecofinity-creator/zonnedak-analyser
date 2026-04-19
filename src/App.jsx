@@ -100,6 +100,55 @@ function wgs84ToLambert72(latDeg,lngDeg){
   return [FE+rho*Math.sin(theta),FN-rho*Math.cos(theta)];
 }
 
+// Inverse: Lambert72 (X,Y in meters) → WGS84 [lat, lng] in graden.
+// Nodig voor packPanels: grid wordt in Lambert72 gebouwd, corners moeten terug
+// naar lat/lng voor Leaflet-rendering.
+function lambert72ToWgs84(X,Y){
+  const r=d=>d*Math.PI/180;
+  // Lambert Conformal Conic inverse (zelfde parameters als wgs84ToLambert72).
+  const aI=6378388,fI=1/297,e2I=2*fI-fI*fI,eI=Math.sqrt(e2I);
+  const phi1=r(49.8333333),phi2=r(51.1666667),lam0=r(4.3674867),FE=150000.013,FN=5400088.438;
+  const m_=ph=>Math.cos(ph)/Math.sqrt(1-e2I*Math.sin(ph)**2);
+  const t_=ph=>Math.tan(Math.PI/4-ph/2)*Math.pow((1+eI*Math.sin(ph))/(1-eI*Math.sin(ph)),eI/2);
+  const [m1,m2,t1,t2]=[m_(phi1),m_(phi2),t_(phi1),t_(phi2)];
+  const n=(Math.log(m1)-Math.log(m2))/(Math.log(t1)-Math.log(t2));
+  const F=m1/(n*Math.pow(t1,n));
+  const dx=X-FE, dy=FN-Y;
+  const rho=Math.sqrt(dx*dx+dy*dy)*Math.sign(n);
+  const theta=Math.atan2(dx,dy);
+  const t=Math.pow(rho/(aI*F),1/n);
+  // Iteratie voor lat72 (Hayford / Internationaal ellipsoïde).
+  let lat72=Math.PI/2-2*Math.atan(t);
+  for(let i=0;i<10;i++){
+    const esinphi=eI*Math.sin(lat72);
+    lat72=Math.PI/2-2*Math.atan(t*Math.pow((1-esinphi)/(1+esinphi),eI/2));
+  }
+  const lng72=theta/n+lam0;
+  // Hayford geocentrisch
+  const N_I=aI/Math.sqrt(1-e2I*Math.sin(lat72)**2);
+  const Xb=N_I*Math.cos(lat72)*Math.cos(lng72);
+  const Yb=N_I*Math.cos(lat72)*Math.sin(lng72);
+  const Zb=N_I*(1-e2I)*Math.sin(lat72);
+  // Inverse Helmert (omgekeerde tekens van wgs84ToLambert72).
+  const tx=-106.869,ty=52.2978,tz=-103.724;
+  const rx=r(0.3366/3600),ry=r(-0.457/3600),rz=r(1.8422/3600),s=1-1.2747e-6;
+  // Bereken (X,Y,Z) in WGS84 door inverse van: Xb = s*(X + rz*Y - ry*Z) + tx, enz.
+  // Voor kleine rotaties geldt: inverse ≈ tekens van rx,ry,rz,s,tx,ty,tz omdraaien.
+  const Xw=(Xb-tx)/s - rz*((Yb-ty)/s) + ry*((Zb-tz)/s);
+  const Yw=rz*((Xb-tx)/s) + (Yb-ty)/s - rx*((Zb-tz)/s);
+  const Zw=-ry*((Xb-tx)/s) + rx*((Yb-ty)/s) + (Zb-tz)/s;
+  // Geocentrisch → geodetisch (WGS84 ellipsoïde).
+  const aW=6378137,fW=1/298.257223563,e2W=2*fW-fW*fW;
+  const p=Math.sqrt(Xw*Xw+Yw*Yw);
+  const lngW=Math.atan2(Yw,Xw);
+  let latW=Math.atan2(Zw,p*(1-e2W));
+  for(let i=0;i<10;i++){
+    const NW=aW/Math.sqrt(1-e2W*Math.sin(latW)**2);
+    latW=Math.atan2(Zw+e2W*NW*Math.sin(latW),p);
+  }
+  return [latW*180/Math.PI, lngW*180/Math.PI];
+}
+
 // ─── Inline TIFF parser (Float32) ────────────────────────────────────────────
 function parseTIFF(buf){
   if(buf.byteLength<8) throw new Error("Buffer te klein");
@@ -458,56 +507,94 @@ function convexHullPts(pts){
   }while(cur!==start&&hull.length<=pts.length);
   return hull;
 }
+// ─── FIX BUG-09: packPanels strict-single-face + ridge-parallel ──────────────
+// Regressie: panelen werden geplaatst op basis van de bounding box van het
+// GEROTEERDE face-polygoon (lijnen 503-504 oude code: "Geen pointInPoly filter").
+// Twee gevolgen:
+//   1. Voor een zadeldak-half (waar de nok één rechte rand is) ziet de bbox er
+//      OK uit, maar voor L-vormige of trapezium-vormige vlakken overschrijdt
+//      de bbox de polygon-rand → panelen lekken over de nok naar het andere
+//      dakvlak, precies de fout op de screenshot.
+//   2. De convex-hull + trim-hack (oude regels 485-490) probeerde aanbouwen
+//      te negeren maar skewde de bbox en dus ook de gridpositie.
+// Fix:
+//   - Metingen in Lambert72 i.p.v. lokale lat/lng→meter approximatie (conform
+//     project CRS-regel: alle metingen in EPSG:31370).
+//   - STRICT: alle 4 hoeken van elk paneel moeten in het gekozen face-polygoon
+//     vallen (ray-casting point-in-polygon). Dit is het regressievangnet.
+//   - Convex hull + trimming verwijderd. Bbox van echt polygoon gebruikt.
+//   - Rotatie ongewijzigd: nokrichting (azimut) wordt X-as na rotatie,
+//     loodrecht op nok wordt Y-as. Grid is axis-aligned → evenwijdig met nok.
 function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
   if(!facePoly||facePoly.length<3) return [];
+
+  // 1) Transformeer face-polygoon naar Lambert72 (metrisch, EPSG:31370).
+  const polyL72=facePoly.map(([lat,lng])=>wgs84ToLambert72(lat,lng));
+  const cX=polyL72.reduce((s,p)=>s+p[0],0)/polyL72.length;
+  const cY=polyL72.reduce((s,p)=>s+p[1],0)/polyL72.length;
+  // Verschuif naar oorsprong (centroïde) zodat rotatie numeriek stabiel is.
+  const polyM=polyL72.map(([x,y])=>[x-cX,y-cY]);
+
+  // Rotatiecentrum in lat/lng voor terug-transformatie.
   const cLat=facePoly.reduce((s,p)=>s+p[0],0)/facePoly.length;
   const cLng=facePoly.reduce((s,p)=>s+p[1],0)/facePoly.length;
-  const mLat=111320,mLng=111320*Math.cos(cLat*Math.PI/180);
 
-  // Lokale meters: x=Oost, y=Noord
-  const toM=([lat,lng])=>[(lng-cLng)*mLng,(lat-cLat)*mLat];
-  const polyM=facePoly.map(toM);
-
-  // Gebruik ridgeAngleDeg direct (geografisch azimut: 0=Noord, 90=Oost).
-  // Nokrichting in (Oost,Noord): [sin(r), cos(r)].
-  // Rotatiematrix M die [sin(r),cos(r)] → [0,1] (langs Y-as = nok langs Y):
-  // M = [[cos(r), -sin(r)], [sin(r), cos(r)]]
-  // Bewijs: M*[sin(r),cos(r)] = [0, sin²+cos²] = [0,1] ✓
+  // 2) Rotatie. ridgeAngleDeg is geografisch azimut (0=Noord, CW).
+  // Lambert72 Y wijst Noord, X wijst Oost. Nokrichting in (X,Y): [sin r, cos r].
+  // Rotatiematrix rotFwd draait [sin r, cos r] → [0, 1] (nok langs Y-as).
+  // rotFwd = [[cos r, -sin r], [sin r, cos r]]
   const r=(ridgeAngleDeg||0)*Math.PI/180;
   const cosA=Math.cos(r),sinA=Math.sin(r);
   const rotFwd=([x,y])=>[ x*cosA - y*sinA,  x*sinA + y*cosA];
   const rotInv=([x,y])=>[ x*cosA + y*sinA, -x*sinA + y*cosA];
 
   const rotPoly=polyM.map(rotFwd);
-  // Gebruik convex hull, maar met getrimde bounds (exclusie aanbouw-uitstulpingen).
-  // De convex hull van een L-vorm is een 5-6-punt veelhoek.
-  // Door 1 punt aan elke kant te skippen, negeren we de extreme aanbouw-hoeken.
-  const rotPolyHull=convexHullPts(rotPoly);
-  const rxsSorted=[...rotPolyHull.map(p=>p[0])].sort((a,b)=>a-b);
-  const rysSorted=[...rotPolyHull.map(p=>p[1])].sort((a,b)=>a-b);
-  const nt=rotPolyHull.length>5?1:0; // trim 1 punt als hull>5 punten (aanbouw aanwezig)
-  const minRX=rxsSorted[nt],    maxRX=rxsSorted[rxsSorted.length-1-nt];
-  const minRY=rysSorted[nt],    maxRY=rysSorted[rysSorted.length-1-nt];
 
-  // Industrie-definitie:
-  //   Portrait  = lange zijde pH loodrecht op nok (langs X-as = langs de helling)
-  //   Landscape = lange zijde pH evenwijdig met nok (langs Y-as = langs de dakrand)
+  // 3) Bbox van ECHT geroteerd polygon (geen convex hull, geen trimming).
+  const xs=rotPoly.map(p=>p[0]);
+  const ys=rotPoly.map(p=>p[1]);
+  const minRX=Math.min(...xs), maxRX=Math.max(...xs);
+  const minRY=Math.min(...ys), maxRY=Math.max(...ys);
+
+  // 4) Paneelafmetingen in rotated frame:
+  //    Na rotatie is nok de Y-as. Lange zijde evenwijdig met nok = langs Y.
+  //    Portrait  = paneel staand t.o.v. nok: korte zijde (pW) langs nok (Y),
+  //                lange zijde (pH) loodrecht op nok (X) = langs de helling.
+  //    Landscape = paneel liggend t.o.v. nok: lange zijde (pH) langs nok (Y),
+  //                korte zijde (pW) loodrecht op nok (X).
   const isPortrait=(orient||"portrait")==="portrait";
-  const W=isPortrait?pH:pW; // langs X (loodrecht op nok): portrait=lang, landscape=kort
-  const H=isPortrait?pW:pH; // langs Y (langs nok):        portrait=kort, landscape=lang
+  const W=isPortrait?pH:pW; // langs X (loodrecht op nok)
+  const H=isPortrait?pW:pH; // langs Y (langs nok)
 
   const margin=0.3,gapX=0.05,gapY=0.05;
   const panels=[];
 
-  // Stap over Y (langs nok) eerst, dan X (loodrecht op nok)
-  // Geen pointInPoly filter: het bounding box van het geroteerde face-polygoon
-  // geeft al een goede rechthoek. Zo krijgen we een netjes raster zonder gaten.
+  // 5) Ray-casting point-in-polygon. Punt en polygon beide in rotated frame.
+  const pointInPoly=(x,y,poly)=>{
+    let inside=false;
+    for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+      const[xi,yi]=poly[i],[xj,yj]=poly[j];
+      if(((yi>y)!==(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi)+xi)) inside=!inside;
+    }
+    return inside;
+  };
+
+  // 6) Plaats panelen in axis-aligned grid (= evenwijdig met nok).
+  //    STRICT containment: alle 4 hoeken in face-polygoon. Voorkomt lekken
+  //    over de noklijn én buiten het dak.
   for(let ry=minRY+margin;ry+H<=maxRY-margin&&panels.length<maxN;ry+=H+gapY){
     for(let rx=minRX+margin;rx+W<=maxRX-margin&&panels.length<maxN;rx+=W+gapX){
-      const corners=[[rx,ry],[rx+W,ry],[rx+W,ry+H],[rx,ry+H]]
-        .map(pt=>{const[mx,my]=rotInv(pt);return[cLat+my/mLat,cLng+mx/mLng];});
-      const midLine=[[rx,ry+H/2],[rx+W,ry+H/2]]
-        .map(pt=>{const[mx,my]=rotInv(pt);return[cLat+my/mLat,cLng+mx/mLng];});
+      const cornersRot=[[rx,ry],[rx+W,ry],[rx+W,ry+H],[rx,ry+H]];
+      const allInside=cornersRot.every(([x,y])=>pointInPoly(x,y,rotPoly));
+      if(!allInside) continue; // ← regressievangnet
+
+      // Terug-transformatie: rotated → Lambert72 → WGS84 lat/lng.
+      const toLatLng=pt=>{
+        const[mx,my]=rotInv(pt);
+        return lambert72ToWgs84(cX+mx,cY+my);
+      };
+      const corners=cornersRot.map(toLatLng);
+      const midLine=[[rx,ry+H/2],[rx+W,ry+H/2]].map(toLatLng);
       panels.push({corners,midLine});
     }
   }
