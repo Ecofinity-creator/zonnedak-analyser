@@ -555,8 +555,15 @@ function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
     sumSin+=w*Math.sin(theta2);
   }
   const avgTheta2=Math.atan2(sumSin,sumCos);
-  let ridgeAzDeg=(avgTheta2*180/Math.PI)/2;
-  ridgeAzDeg=((ridgeAzDeg%180)+180)%180;
+  let detectedAzDeg=(avgTheta2*180/Math.PI)/2;
+  detectedAzDeg=((detectedAzDeg%180)+180)%180;
+
+  // Voeg de rotatie-offset uit de UI-slider toe. De aanroep-site geeft nu
+  // ALLEEN de offset door als ridgeAngleDeg-parameter (na BUG-11 aanpassing
+  // van de 3 aanroep-sites in App.jsx). Bij offset=0: panelen evenwijdig met
+  // edge-voting nok. Bij offset≠0: de gebruiker kan de rotatie manueel fine-tunen.
+  const rotOffset=(ridgeAngleDeg!=null&&isFinite(ridgeAngleDeg))?ridgeAngleDeg:0;
+  const ridgeAzDeg=((detectedAzDeg+rotOffset)%180+180)%180;
 
   const r=ridgeAzDeg*Math.PI/180;
   const ex=Math.sin(r), ey=Math.cos(r);
@@ -566,7 +573,7 @@ function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
   const rotInv=([x,y])=>[ x*ey + y*ex, -x*ex + y*ey];
 
   if(typeof console!=='undefined'&&console.info){
-    console.info(`[ZonneDak] packPanels: edge-voting nok=${ridgeAzDeg.toFixed(1)}° (param=${(ridgeAngleDeg||0).toFixed(1)}°)`);
+    console.info(`[ZonneDak] packPanels: edge-voting=${detectedAzDeg.toFixed(1)}° + offset=${rotOffset.toFixed(1)}° → nok=${ridgeAzDeg.toFixed(1)}°`);
   }
 
   const rotPoly=polyM.map(rotFwd);
@@ -1996,7 +2003,9 @@ export default function App(){
     const _fp=_sf?.polygon||buildingCoords;
     const _ridge2=ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0;
     const _fp2=_fp.length>=3?_fp:(buildingCoords?makeFacePoly(buildingCoords,orientation,_ridge2):buildingCoords)||buildingCoords;
-    const _ra=_ridge2+panelRotOffset;
+    // Na BUG-11: packPanels detecteert nokrichting zelf via edge-voting.
+    // We geven hier alleen de slider-offset door, niet het totaal.
+    const _ra=panelRotOffset;
     panelLayerRef.current=drawPanelLayer(map,L,_fp2,panelCount,selPanel,_ra,panelOrient,panelDataRef,panelMoveMode);
   },[panelCount,selPanel,panelsDrawn,panelRotOffset]);
 
@@ -2393,8 +2402,8 @@ export default function App(){
             const _ridge=ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0;
             // Als geen face-polygon: clip GRB op geselecteerde oriëntatie
             const _fp=_sf?.polygon||(buildingCoords?makeFacePoly(buildingCoords,orientation,_ridge):buildingCoords)||buildingCoords;
-            const _ra=_ridge+panelRotOffset;
-            console.info("[ZonneDak] Toon panelen: ridge="+_ridge+"° orient="+orientation+" fp_pts="+_fp.length);
+            const _ra=panelRotOffset; // na BUG-11: alleen offset, nok-detectie gebeurt in packPanels
+            console.info("[ZonneDak] Toon panelen: auto_ridge="+_ridge+"° offset="+panelRotOffset+"° orient="+orientation+" fp_pts="+_fp.length);
             panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,false);
             setPanelsDrawn(true);
           }
@@ -2422,7 +2431,7 @@ export default function App(){
                   if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
                   const _sf=detectedFaces?.[selFaceIdx];
                   const _fp=_sf?.polygon||buildingCoords;
-                  const _ra=(ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0)+(+e.target.value);
+                  const _ra=(+e.target.value); // na BUG-11: alleen offset doorgeven
                   panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,false);
                 }
               }
@@ -2439,7 +2448,7 @@ export default function App(){
               setDetectedFaces(wp2);_sf2=wp2?.[selFaceIdx]||_sf2;
             }
             const _fp=_sf2?.polygon||buildingCoords;
-            const _ra=_sf2?.ridgeAngleDeg||0;
+            const _ra=panelRotOffset; // na BUG-11: alleen offset; nokrichting via edge-voting in packPanels
             panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,nm);
           }
           if(nm){setActiveTab("configuratie");setTimeout(()=>{if(leafRef.current) leafRef.current.invalidateSize();},50);}
