@@ -1,4 +1,43 @@
 import { useState, useEffect, useRef, useCallback, Component } from "react";
+import {
+  wgs84ToLambert72 as _wgs84ToLambert72,
+  lambert72ToWgs84 as _lambert72ToWgs84,
+  packPanels as _packPanels,
+} from "./panelPlacement.js";
+import {
+  saveProject,
+  loadProject,
+  deleteProject,
+  listProjects,
+  projectExists,
+  downloadProjectAsJSON,
+  importProjectFromJSON,
+  createAutoSaver,
+} from "./projectStorage.js";
+
+// Re-export under local names so the rest of App.jsx (which still uses the
+// original call syntax) continues to work without modifications.
+// packPanels wrapper: de module accepteert een opts-object, App.jsx roept
+// nog met positional args aan. We converteren hier.
+const wgs84ToLambert72 = _wgs84ToLambert72;
+const lambert72ToWgs84 = _lambert72ToWgs84;
+const packPanels = (facePoly, pW, pH, maxN, rotOffsetDeg, orient) =>
+  _packPanels({
+    facePoly,
+    panelWidth: pW,
+    panelHeight: pH,
+    maxPanels: maxN,
+    rotOffsetDeg,
+    orient,
+    logger: msg => console.info(`[ZonneDak] ${msg}`),
+  });
+
+// URL van de Cloudflare Worker die de Anthropic API proxy draait.
+// Anthropic accepteert geen browser-calls (CORS + API-sleutel moet server-side).
+// De Worker voegt CORS-headers toe en injecteert de sleutel uit zijn env.
+// Deploy-instructies: zie anthropic-proxy.worker.js
+// Placeholder — na deploy van de Worker vervang door je echte URL.
+const AI_PROXY_URL = "https://zonnedak-ai-proxy.ecofinity-creator.workers.dev/";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  ZonneDak Analyzer — App.jsx  (GECORRIGEERDE VERSIE)
@@ -77,77 +116,7 @@ function getSolarIrr(o,s){
   return t[[15,30,45,60,90].reduce((a,b)=>Math.abs(b-s)<Math.abs(a-s)?b:a)];
 }
 
-// ─── Inline Lambert72 (geen externe lib) ─────────────────────────────────────
-function wgs84ToLambert72(latDeg,lngDeg){
-  const r=d=>d*Math.PI/180, lat=r(latDeg), lng=r(lngDeg);
-  const aW=6378137,fW=1/298.257223563,e2W=2*fW-fW*fW;
-  const NW=aW/Math.sqrt(1-e2W*Math.sin(lat)**2);
-  const X=NW*Math.cos(lat)*Math.cos(lng),Y=NW*Math.cos(lat)*Math.sin(lng),Z=NW*(1-e2W)*Math.sin(lat);
-  const tx=-106.869,ty=52.2978,tz=-103.724;
-  const rx=r(0.3366/3600),ry=r(-0.457/3600),rz=r(1.8422/3600),s=1-1.2747e-6;
-  const Xb=s*(X+rz*Y-ry*Z)+tx,Yb=s*(-rz*X+Y+rx*Z)+ty,Zb=s*(ry*X-rx*Y+Z)+tz;
-  const aI=6378388,fI=1/297,e2I=2*fI-fI*fI,eI=Math.sqrt(e2I);
-  const p=Math.sqrt(Xb*Xb+Yb*Yb);
-  const lng72=Math.atan2(Yb,Xb);
-  let lat72=Math.atan2(Zb,p*(1-e2I));
-  for(let i=0;i<10;i++){const N=aI/Math.sqrt(1-e2I*Math.sin(lat72)**2);lat72=Math.atan2(Zb+e2I*N*Math.sin(lat72),p);}
-  const phi1=r(49.8333333),phi2=r(51.1666667),lam0=r(4.3674867),FE=150000.013,FN=5400088.438;
-  const m_=ph=>Math.cos(ph)/Math.sqrt(1-e2I*Math.sin(ph)**2);
-  const t_=ph=>Math.tan(Math.PI/4-ph/2)*Math.pow((1+eI*Math.sin(ph))/(1-eI*Math.sin(ph)),eI/2);
-  const [m1,m2,t1,t2]=[m_(phi1),m_(phi2),t_(phi1),t_(phi2)];
-  const n=(Math.log(m1)-Math.log(m2))/(Math.log(t1)-Math.log(t2));
-  const F=m1/(n*Math.pow(t1,n)),rho=aI*F*Math.pow(t_(lat72),n),theta=n*(lng72-lam0);
-  return [FE+rho*Math.sin(theta),FN-rho*Math.cos(theta)];
-}
-
-// Inverse: Lambert72 (X,Y in meters) → WGS84 [lat, lng] in graden.
-// Nodig voor packPanels: grid wordt in Lambert72 gebouwd, corners moeten terug
-// naar lat/lng voor Leaflet-rendering.
-function lambert72ToWgs84(X,Y){
-  const r=d=>d*Math.PI/180;
-  // Lambert Conformal Conic inverse (zelfde parameters als wgs84ToLambert72).
-  const aI=6378388,fI=1/297,e2I=2*fI-fI*fI,eI=Math.sqrt(e2I);
-  const phi1=r(49.8333333),phi2=r(51.1666667),lam0=r(4.3674867),FE=150000.013,FN=5400088.438;
-  const m_=ph=>Math.cos(ph)/Math.sqrt(1-e2I*Math.sin(ph)**2);
-  const t_=ph=>Math.tan(Math.PI/4-ph/2)*Math.pow((1+eI*Math.sin(ph))/(1-eI*Math.sin(ph)),eI/2);
-  const [m1,m2,t1,t2]=[m_(phi1),m_(phi2),t_(phi1),t_(phi2)];
-  const n=(Math.log(m1)-Math.log(m2))/(Math.log(t1)-Math.log(t2));
-  const F=m1/(n*Math.pow(t1,n));
-  const dx=X-FE, dy=FN-Y;
-  const rho=Math.sqrt(dx*dx+dy*dy)*Math.sign(n);
-  const theta=Math.atan2(dx,dy);
-  const t=Math.pow(rho/(aI*F),1/n);
-  // Iteratie voor lat72 (Hayford / Internationaal ellipsoïde).
-  let lat72=Math.PI/2-2*Math.atan(t);
-  for(let i=0;i<10;i++){
-    const esinphi=eI*Math.sin(lat72);
-    lat72=Math.PI/2-2*Math.atan(t*Math.pow((1-esinphi)/(1+esinphi),eI/2));
-  }
-  const lng72=theta/n+lam0;
-  // Hayford geocentrisch
-  const N_I=aI/Math.sqrt(1-e2I*Math.sin(lat72)**2);
-  const Xb=N_I*Math.cos(lat72)*Math.cos(lng72);
-  const Yb=N_I*Math.cos(lat72)*Math.sin(lng72);
-  const Zb=N_I*(1-e2I)*Math.sin(lat72);
-  // Inverse Helmert (omgekeerde tekens van wgs84ToLambert72).
-  const tx=-106.869,ty=52.2978,tz=-103.724;
-  const rx=r(0.3366/3600),ry=r(-0.457/3600),rz=r(1.8422/3600),s=1-1.2747e-6;
-  // Bereken (X,Y,Z) in WGS84 door inverse van: Xb = s*(X + rz*Y - ry*Z) + tx, enz.
-  // Voor kleine rotaties geldt: inverse ≈ tekens van rx,ry,rz,s,tx,ty,tz omdraaien.
-  const Xw=(Xb-tx)/s - rz*((Yb-ty)/s) + ry*((Zb-tz)/s);
-  const Yw=rz*((Xb-tx)/s) + (Yb-ty)/s - rx*((Zb-tz)/s);
-  const Zw=-ry*((Xb-tx)/s) + rx*((Yb-ty)/s) + (Zb-tz)/s;
-  // Geocentrisch → geodetisch (WGS84 ellipsoïde).
-  const aW=6378137,fW=1/298.257223563,e2W=2*fW-fW*fW;
-  const p=Math.sqrt(Xw*Xw+Yw*Yw);
-  const lngW=Math.atan2(Yw,Xw);
-  let latW=Math.atan2(Zw,p*(1-e2W));
-  for(let i=0;i<10;i++){
-    const NW=aW/Math.sqrt(1-e2W*Math.sin(latW)**2);
-    latW=Math.atan2(Zw+e2W*NW*Math.sin(latW),p);
-  }
-  return [latW*180/Math.PI, lngW*180/Math.PI];
-}
+// ─── Lambert72 transforms verplaatst naar panelPlacement.js module ───────────
 
 // ─── Inline TIFF parser (Float32) ────────────────────────────────────────────
 function parseTIFF(buf){
@@ -507,125 +476,9 @@ function convexHullPts(pts){
   }while(cur!==start&&hull.length<=pts.length);
   return hull;
 }
-// ─── FIX BUG-11: packPanels — nokrichting via edge-lengte²-gewogen voting ────
-// Achtergrond: de gebruiker kan footprint-vertices slepen om het dakvlak te
-// corrigeren. PCA (BUG-10 fix) werkte goed voor rechthoekige faces, maar
-// gaf bij trap-/L-vormige faces de hoofdas van de massa-verdeling i.p.v.
-// de echte noklijn. De twee dakvlakken kregen dan verschillende ridge-hoeken
-// (25.7° vs 20.1° op productie), terwijl de nok één gedeelde lijn is.
-//
-// Oplossing: detecteer de dominante edge-richting via gewogen circulair
-// gemiddelde in 2x-angle space. Gewicht = edge-length². Hierdoor dicteren
-// de lange randen (nok + parallelle dakrand) de oriëntatie, korte randen
-// (aanbouwuitsteeksels) hebben nauwelijks invloed.
-//
-// Waarom length² en niet length: legaal zwaarder gewogen dominante randen
-// zodat een iets-langere gedegenereerde edge niet toevallig wint van twee
-// parallelle lange randen.
-//
-// Waarom circulair gemiddelde in 2x-angle space: edges zijn bidirectioneel
-// (0° en 180° zijn dezelfde richting). Door alle hoeken te verdubbelen
-// gedragen 0° en 360° zich als dezelfde vector — standaardtruc voor
-// circular statistics op axiale data.
-function packPanels(facePoly,pW,pH,maxN,ridgeAngleDeg,orient){
-  if(!facePoly||facePoly.length<3) return [];
-
-  // 1) Transformeer face-polygoon naar Lambert72 (metrisch, EPSG:31370).
-  const polyL72=facePoly.map(([lat,lng])=>wgs84ToLambert72(lat,lng));
-  const cX=polyL72.reduce((s,p)=>s+p[0],0)/polyL72.length;
-  const cY=polyL72.reduce((s,p)=>s+p[1],0)/polyL72.length;
-  const polyM=polyL72.map(([x,y])=>[x-cX,y-cY]);
-
-  // 2) Nokrichting via edge-length²-gewogen circulair gemiddelde.
-  //    Itereer over alle edges, normaliseer elke richting naar [0, 180°),
-  //    verdubbel de hoek (bidirectioneel → unidirectioneel), weeg met length².
-  let sumCos=0,sumSin=0;
-  const nPoly=polyL72.length;
-  for(let i=0;i<nPoly;i++){
-    const[x1,y1]=polyL72[i],[x2,y2]=polyL72[(i+1)%nPoly];
-    const dx=x2-x1, dy=y2-y1;
-    const len=Math.hypot(dx,dy);
-    if(len<0.5) continue; // skip degenerate edges
-    // Azimut vanaf Noord (CW), bidirectioneel [0, 180)
-    let az=Math.atan2(dx,dy)*180/Math.PI;
-    az=((az%180)+180)%180;
-    const theta2=az*2*Math.PI/180;
-    const w=len*len;
-    sumCos+=w*Math.cos(theta2);
-    sumSin+=w*Math.sin(theta2);
-  }
-  const avgTheta2=Math.atan2(sumSin,sumCos);
-  let detectedAzDeg=(avgTheta2*180/Math.PI)/2;
-  detectedAzDeg=((detectedAzDeg%180)+180)%180;
-
-  // Voeg de rotatie-offset uit de UI-slider toe. De aanroep-site geeft nu
-  // ALLEEN de offset door als ridgeAngleDeg-parameter (na BUG-11 aanpassing
-  // van de 3 aanroep-sites in App.jsx). Bij offset=0: panelen evenwijdig met
-  // edge-voting nok. Bij offset≠0: de gebruiker kan de rotatie manueel fine-tunen.
-  const rotOffset=(ridgeAngleDeg!=null&&isFinite(ridgeAngleDeg))?ridgeAngleDeg:0;
-  const ridgeAzDeg=((detectedAzDeg+rotOffset)%180+180)%180;
-
-  const r=ridgeAzDeg*Math.PI/180;
-  const ex=Math.sin(r), ey=Math.cos(r);
-  // rotFwd mapt nokrichting (ex,ey) → (0,1) (nok langs Y-as).
-  // Matrix: rotFwd = [[ey, -ex], [ex, ey]]
-  const rotFwd=([x,y])=>[ x*ey - y*ex,  x*ex + y*ey];
-  const rotInv=([x,y])=>[ x*ey + y*ex, -x*ex + y*ey];
-
-  if(typeof console!=='undefined'&&console.info){
-    console.info(`[ZonneDak] packPanels: edge-voting=${detectedAzDeg.toFixed(1)}° + offset=${rotOffset.toFixed(1)}° → nok=${ridgeAzDeg.toFixed(1)}°`);
-  }
-
-  const rotPoly=polyM.map(rotFwd);
-
-  // 3) Bbox van geroteerd polygon. Axis-aligned in rotated frame =
-  //    evenwijdig met de gedetecteerde nokrichting in Lambert72.
-  const xs=rotPoly.map(p=>p[0]);
-  const ys=rotPoly.map(p=>p[1]);
-  const minRX=Math.min(...xs), maxRX=Math.max(...xs);
-  const minRY=Math.min(...ys), maxRY=Math.max(...ys);
-
-  // 4) Paneelafmetingen in rotated frame:
-  //    Y-as = langs nok, X-as = loodrecht op nok (langs helling).
-  //    Portrait  = korte zijde (pW) langs nok (Y), lange zijde (pH) langs helling (X).
-  //    Landscape = lange zijde (pH) langs nok (Y), korte zijde (pW) langs helling (X).
-  const isPortrait=(orient||"portrait")==="portrait";
-  const W=isPortrait?pH:pW;
-  const H=isPortrait?pW:pH;
-
-  const margin=0.3,gapX=0.05,gapY=0.05;
-  const panels=[];
-
-  // 5) Ray-casting point-in-polygon.
-  const pointInPoly=(x,y,poly)=>{
-    let inside=false;
-    for(let i=0,j=poly.length-1;i<poly.length;j=i++){
-      const[xi,yi]=poly[i],[xj,yj]=poly[j];
-      if(((yi>y)!==(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi)+xi)) inside=!inside;
-    }
-    return inside;
-  };
-
-  // 6) Plaats panelen in axis-aligned grid. STRICT containment: alle 4 hoeken
-  //    binnen face-polygoon. Voorkomt lekken over de nok of buiten het dak.
-  for(let ry=minRY+margin;ry+H<=maxRY-margin&&panels.length<maxN;ry+=H+gapY){
-    for(let rx=minRX+margin;rx+W<=maxRX-margin&&panels.length<maxN;rx+=W+gapX){
-      const cornersRot=[[rx,ry],[rx+W,ry],[rx+W,ry+H],[rx,ry+H]];
-      const allInside=cornersRot.every(([x,y])=>pointInPoly(x,y,rotPoly));
-      if(!allInside) continue;
-
-      const toLatLng=pt=>{
-        const[mx,my]=rotInv(pt);
-        return lambert72ToWgs84(cX+mx,cY+my);
-      };
-      const corners=cornersRot.map(toLatLng);
-      const midLine=[[rx,ry+H/2],[rx+W,ry+H/2]].map(toLatLng);
-      panels.push({corners,midLine});
-    }
-  }
-  return panels;
-}
-
+// ─── packPanels verplaatst naar panelPlacement.js module ─────────────────────
+// Zie src/panelPlacement.js voor de implementatie en src/panelPlacement.test.js
+// voor de regressie-tests die voorkomen dat BUG-09, BUG-10, BUG-11 terugkomen.
 function geoToLeaflet(ring){return ring.map(([lo,la])=>[la,lo]);}
 
 // ─── GRB ─────────────────────────────────────────────────────────────────────
@@ -1569,7 +1422,7 @@ async function generatePDF(results,customer,displayName,slope,orientation){
     ["Terugverdientijd",results.paybackBase+" jaar"],
   ];
   if(results.battResult){
-    finRows.push(["Thuisbatterij "+(results.batt?.model||""),"€ "+results.batt?.price.toLocaleString("nl-BE")]);
+    finRows.push(["Thuisbatterij "+(results.batt?.model||""),"€ "+(results.battResult.battPrice??results.batt?.price).toLocaleString("nl-BE")]);
     finRows.push(["Extra besparing met batterij","€ "+results.battResult.extraSav.toLocaleString("nl-BE")+"/jaar"]);
     finRows.push(["Terugverdientijd incl. batterij",results.battResult.payback+" jaar"]);
   }
@@ -1733,6 +1586,67 @@ function NewBattForm({onAdd}){
   </div>);}
 
 // ─── Customer / Teamleader component ─────────────────────────────────────────
+// ─── Project opslag & beheer paneel ──────────────────────────────────────────
+// Identificatie op klantnaam. Auto-save (debounced) gebeurt via App-state.
+// Biedt: Nieuw / Openen / Download JSON / Upload JSON + status-indicator.
+function ProjectPanel({customer,projectList,lastSavedAt,isLoadingProject,
+  showProjectMenu,setShowProjectMenu,onNew,onLoad,onDelete,onDownload,onUpload}){
+  const fileInputRef=useRef(null);
+  const handleFileChange=e=>{
+    const f=e.target.files?.[0];
+    if(f) onUpload(f);
+    e.target.value=""; // reset zodat dezelfde file opnieuw kan worden geselecteerd
+  };
+  const hasName=!!customer?.name?.trim();
+  const savedLabel=lastSavedAt
+    ?(`💾 Opgeslagen · ${new Date(lastSavedAt).toLocaleTimeString("nl-BE",{hour:"2-digit",minute:"2-digit"})}`)
+    :(hasName?"💾 Nog niet opgeslagen":"💡 Vul klantnaam in om te starten");
+  return(
+    <div className="customer-section" style={{marginBottom:10}}>
+      <div className="sl">Project</div>
+      <div style={{fontSize:9,color:"var(--muted)"}}>{savedLabel}</div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+        <button className="btn sec" onClick={onNew} style={{flex:"1 1 auto",fontSize:9}}>
+          ➕ Nieuw
+        </button>
+        <button className="btn sec" onClick={()=>setShowProjectMenu(v=>!v)} style={{flex:"1 1 auto",fontSize:9}}
+                disabled={projectList.length===0}>
+          📂 Openen ({projectList.length})
+        </button>
+        <button className="btn sec" onClick={onDownload} style={{flex:"1 1 auto",fontSize:9}}
+                disabled={!hasName}>
+          ⬇ Download
+        </button>
+        <button className="btn sec" onClick={()=>fileInputRef.current?.click()} style={{flex:"1 1 auto",fontSize:9}}>
+          ⬆ Upload
+        </button>
+        <input ref={fileInputRef} type="file" accept="application/json,.json"
+               onChange={handleFileChange} style={{display:"none"}}/>
+      </div>
+      {showProjectMenu&&projectList.length>0&&<div style={{background:"var(--bg1)",border:"1px solid var(--border)",
+        borderRadius:6,maxHeight:200,overflowY:"auto",padding:4}}>
+        {projectList.map(p=>(
+          <div key={p.customerName} style={{display:"flex",alignItems:"center",gap:6,
+                padding:"5px 8px",borderRadius:4,cursor:"pointer"}}
+               onMouseEnter={e=>e.currentTarget.style.background="var(--bg2)"}
+               onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+            <div style={{flex:1,cursor:"pointer"}} onClick={()=>onLoad(p.customerName)}>
+              <div style={{fontSize:10,fontWeight:600}}>{p.customerName}</div>
+              <div style={{fontSize:8,color:"var(--muted)"}}>
+                {new Date(p.savedAt).toLocaleString("nl-BE",{dateStyle:"short",timeStyle:"short"})}
+              </div>
+            </div>
+            <button onClick={()=>onDelete(p.customerName)}
+                    style={{background:"none",border:"none",cursor:"pointer",color:"var(--muted)",fontSize:11,padding:"2px 6px"}}
+                    title="Verwijderen">🗑</button>
+          </div>
+        ))}
+      </div>}
+      {isLoadingProject&&<div style={{fontSize:9,color:"var(--alpha)"}}>⏳ Project wordt geladen...</div>}
+    </div>
+  );
+}
+
 function CustomerPanel({customer,setCustomer,tlToken,setTlToken}){
   const[search,setSearch]=useState("");
   const[tlResults,setTlResults]=useState([]);
@@ -1871,6 +1785,20 @@ export default function App(){
   const[tlToken,setTlToken]=useState("");
   const[pdfLoading,setPdfLoading]=useState(false);
 
+  // Manuele prijzen uit offerte (overschrijven automatische berekening als ingevuld).
+  // Leeg string = automatisch; een getal (positief) = manueel.
+  const[manualPanelPrice,setManualPanelPrice]=useState("");
+  const[manualBatteryPrice,setManualBatteryPrice]=useState("");
+
+  // Auto-save systeem: debounced saver die elk veranderd project opslaat.
+  const autoSaverRef=useRef(null);
+  const[lastSavedAt,setLastSavedAt]=useState(null);
+  const[projectList,setProjectList]=useState([]);
+  const[showProjectMenu,setShowProjectMenu]=useState(false);
+  const[isLoadingProject,setIsLoadingProject]=useState(false);
+  // Flag om te voorkomen dat auto-save triggert tijdens het laden zelf
+  const suppressAutoSaveRef=useRef(false);
+
   // customCount wordt NIET automatisch gereset naar autoPanels (gebruiker kiest zelf)
 
   const selectFace=useCallback((idx,faces)=>{
@@ -1915,6 +1843,145 @@ export default function App(){
   },[]);
 
   const redrawRoofRef=useRef(null);
+
+  // Initialiseer auto-saver (debounced: 1 seconde)
+  if(!autoSaverRef.current){
+    autoSaverRef.current=createAutoSaver(1000);
+  }
+
+  // Bouw de project-data snapshot op basis van de huidige app-state.
+  // Alles wat hier in zit wordt opgeslagen/hersteld bij project laden.
+  const buildProjectSnapshot=useCallback(()=>({
+    customer,
+    address,
+    coords,
+    displayName,
+    buildingCoords,
+    detectedFaces,
+    selFaceIdx,
+    selPanel,
+    selInv,
+    selBatt,
+    battEnabled,
+    panelCount,
+    panelOrient,
+    panelRotOffset,
+    orientation,
+    slope,
+    manualPanelPrice,
+    manualBatteryPrice,
+  }),[customer,address,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
+      selPanel,selInv,selBatt,battEnabled,panelCount,panelOrient,panelRotOffset,
+      orientation,slope,manualPanelPrice,manualBatteryPrice]);
+
+  // Auto-save: triggert telkens als iets in de snapshot verandert én er een
+  // klantnaam is ingevuld. Debounced tot 1 sec na laatste wijziging.
+  useEffect(()=>{
+    if(suppressAutoSaveRef.current) return; // tijdens project-laden niet saven
+    if(!customer?.name?.trim()) return;      // geen naam = geen opslag
+    const snapshot=buildProjectSnapshot();
+    autoSaverRef.current.saveNow(customer.name,snapshot);
+    // Update "laatst opgeslagen" indicator na debounce-interval + kleine marge
+    const t=setTimeout(()=>setLastSavedAt(new Date()),1100);
+    return()=>clearTimeout(t);
+  },[buildProjectSnapshot,customer.name]);
+
+  // Refresh project-lijst bij mount en na save-events
+  useEffect(()=>{
+    setProjectList(listProjects());
+  },[lastSavedAt]);
+
+  // Laad een bestaand project terug in de app-state.
+  // suppressAutoSaveRef voorkomt dat de state-updates direct terug opslaan.
+  const handleLoadProject=useCallback((customerName)=>{
+    const p=loadProject(customerName);
+    if(!p){alert("Project niet gevonden.");return;}
+    suppressAutoSaveRef.current=true;
+    setIsLoadingProject(true);
+    const d=p.data||{};
+    // Volgorde: eerst customer, dan rest (zodat auto-save niet tussendoor triggert)
+    if(d.customer) setCustomer(d.customer);
+    if(d.address!=null) setAddress(d.address);
+    if(d.coords) setCoords(d.coords);
+    if(d.displayName!=null) setDisplayName(d.displayName);
+    if(d.buildingCoords) setBuildingCoords(d.buildingCoords);
+    if(d.detectedFaces) setDetectedFaces(d.detectedFaces);
+    if(d.selFaceIdx!=null) setSelFaceIdx(d.selFaceIdx);
+    if(d.selPanel) setSelPanel(d.selPanel);
+    if(d.selInv!==undefined) setSelInv(d.selInv);
+    if(d.selBatt) setSelBatt(d.selBatt);
+    if(d.battEnabled!=null) setBattEnabled(d.battEnabled);
+    if(d.panelCount!=null) setPanelCount(d.panelCount);
+    if(d.panelOrient) setPanelOrient(d.panelOrient);
+    if(d.panelRotOffset!=null) setPanelRotOffset(d.panelRotOffset);
+    if(d.orientation) setOrientation(d.orientation);
+    if(d.slope!=null) setSlope(d.slope);
+    if(d.manualPanelPrice!=null) setManualPanelPrice(d.manualPanelPrice);
+    if(d.manualBatteryPrice!=null) setManualBatteryPrice(d.manualBatteryPrice);
+    // Na de batch state-updates: auto-save weer aanzetten.
+    // React batcht synchroon; setTimeout zorgt dat alle useEffects gelopen zijn.
+    setTimeout(()=>{
+      suppressAutoSaveRef.current=false;
+      setIsLoadingProject(false);
+      setShowProjectMenu(false);
+    },100);
+  },[]);
+
+  // Nieuw project: wis alle klantspecifieke state om opnieuw te beginnen.
+  const handleNewProject=useCallback(()=>{
+    if(!confirm("Huidig project afsluiten en een nieuw project starten?")) return;
+    // Flush eventuele pending auto-save voor we alles wissen
+    autoSaverRef.current?.flush();
+    suppressAutoSaveRef.current=true;
+    setCustomer({name:"",address:"",email:""});
+    setAddress("");
+    setCoords(null);
+    setDisplayName("");
+    setBuildingCoords(null);
+    setDetectedFaces(null);
+    setSelFaceIdx(0);
+    setBattEnabled(false);
+    setPanelCount(10);
+    setPanelRotOffset(0);
+    setManualPanelPrice("");
+    setManualBatteryPrice("");
+    setResults(null);
+    setAiText("");
+    setPanelsDrawn(false);
+    setTimeout(()=>{suppressAutoSaveRef.current=false;setShowProjectMenu(false);},100);
+  },[]);
+
+  // Download huidig project als JSON-bestand
+  const handleDownloadProject=useCallback(()=>{
+    if(!customer?.name?.trim()){alert("Vul eerst een klantnaam in.");return;}
+    autoSaverRef.current?.flush(); // zorg dat laatste state gesaved is
+    const ok=downloadProjectAsJSON(customer.name);
+    if(!ok) alert("Download mislukt.");
+  },[customer]);
+
+  // Upload een JSON-bestand als nieuw project
+  const handleUploadProject=useCallback((file)=>{
+    const reader=new FileReader();
+    reader.onload=e=>{
+      const result=importProjectFromJSON(e.target.result);
+      if(!result.success){alert("Import mislukt: "+result.error);return;}
+      // Direct dat project laden
+      handleLoadProject(result.customerName);
+      setLastSavedAt(new Date()); // refresh lijst
+    };
+    reader.readAsText(file);
+  },[handleLoadProject]);
+
+  // Verwijder project
+  const handleDeleteProject=useCallback((customerName)=>{
+    if(!confirm(`Project "${customerName}" definitief verwijderen?`)) return;
+    deleteProject(customerName);
+    setLastSavedAt(new Date()); // refresh lijst
+    // Als het huidige project werd verwijderd, start een nieuw
+    if(customer?.name?.toLowerCase()===customerName.toLowerCase()){
+      handleNewProject();
+    }
+  },[customer,handleNewProject]);
 
   const redrawRoof=useCallback(()=>{
     if(!leafRef.current||!buildingCoords||!window.L) return;
@@ -2124,13 +2191,20 @@ export default function App(){
     const irr=getSolarIrr(orientation,slope);
     const actualArea=panelCount*selPanel.area,annualKwh=Math.round(actualArea*irr*(selPanel.eff/100));
     const co2=Math.round(annualKwh*.202),coverage=Math.round((annualKwh/3500)*100);
-    const investPanels=Math.round(panelCount*selPanel.price+(selInv?selInv.price:1200));
+    // Installatieprijs panelen: manueel ingevoerd (offerte) of automatisch.
+    // Manueel wint: als gebruiker een getal > 0 invoert, gebruik dat i.p.v. de berekening.
+    const mpp=parseFloat(manualPanelPrice);
+    const autoPanelPrice=Math.round(panelCount*selPanel.price+(selInv?selInv.price:1200));
+    const investPanels=(isFinite(mpp)&&mpp>0)?Math.round(mpp):autoPanelPrice;
     const annualBase=Math.round(annualKwh*.28),paybackBase=Math.round(investPanels/annualBase);
     let battResult=null;
     if(battEnabled&&selBatt){
       const extra=Math.min(annualKwh*.70,annualKwh)-annualKwh*.30;
-      const extraSav=Math.round(extra*.28),totSav=annualBase+extraSav,totInv=investPanels+selBatt.price;
-      battResult={extraSav,totSav,totInv,payback:Math.round(totInv/totSav)};
+      // Installatieprijs batterij: manueel ingevoerd of automatisch (= selBatt.price)
+      const mbp=parseFloat(manualBatteryPrice);
+      const battPrice=(isFinite(mbp)&&mbp>0)?Math.round(mbp):selBatt.price;
+      const extraSav=Math.round(extra*.28),totSav=annualBase+extraSav,totInv=investPanels+battPrice;
+      battResult={extraSav,totSav,totInv,payback:Math.round(totInv/totSav),battPrice};
     }
     setResults({irr,panelCount,actualArea:Math.round(actualArea),annualKwh,co2,coverage,
       investPanels,annualBase,paybackBase,battResult,panel:selPanel,inv:selInv,batt:battEnabled?selBatt:null,
@@ -2146,11 +2220,11 @@ export default function App(){
       const dhmStr=dhmStatus==="ok"&&detectedFaces?`\nDHM LiDAR: ${detectedFaces.map(f=>`${f.orientation} ${f.slope}° (${f.pct}%)`).join(", ")}`:"\nHandmatige invoer.";
       const invStr=selInv?`\nOmvormer: ${selInv.brand} ${selInv.model} (${selInv.kw}kW)`:"Geen omvormer.";
       const battStr=battResult?`\nBatterij: ${selBatt.brand} ${selBatt.model} (${selBatt.kwh}kWh, €${selBatt.price}) · Extra: €${battResult.extraSav}/j · Terugverdien: ${battResult.payback}j`:"Geen batterij.";
-      const resp=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
+      const resp=await fetch(AI_PROXY_URL,{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,
           messages:[{role:"user",content:`Zonne-energie expert Vlaanderen. Beknopt professioneel advies in het Nederlands:\n\nLocatie: ${displayName}\nDak: ${grbStatus==="ok"?"GRB-contour":"Schatting"} · ${detectedArea||80} m²${dhmStr}\nPaneel: ${selPanel.brand} ${selPanel.model} (${selPanel.watt}W, ${selPanel.eff}%)\nAantal: ${panelCount} · ${Math.round(actualArea)} m² · ${((panelCount*selPanel.watt)/1000).toFixed(1)} kWp\nHelling: ${slope}° ${orientation} · ${irr} kWh/m²/j\n${invStr}\nOpbrengst: ${annualKwh} kWh/j · CO₂: ${co2} kg/j\nInvestering: €${investPanels.toLocaleString()} · Besparing: €${annualBase}/j · Terugverdien: ${paybackBase}j\n${battStr}\n\nMax 180 woorden:\n1. Kwaliteit dak & paneelkeuze\n2. AlphaESS G3 synergie\n3. Vlaamse premies (capaciteitstarief, BTW 6%, REG-premie)`}]})});
       const d=await resp.json();setAiText(d.content?.find(b=>b.type==="text")?.text||"Analyse niet beschikbaar.");
-    }catch{setAiText("AI-analyse tijdelijk niet beschikbaar.");}
+    }catch(e){setAiText("AI-analyse tijdelijk niet beschikbaar. "+(e.message||""));}
     setAiLoading(false);
   };
 
@@ -2455,6 +2529,26 @@ export default function App(){
         }}>
           {panelMoveMode?"✅ Klaar · klik paneel=select · dubbelklik=rij · sleep=verplaats":"↔️ Verplaats panelen"}
         </button>}
+        {/* Manuele prijzen uit offerte (overschrijven de automatische schatting) */}
+        <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:10,marginBottom:6}}>
+          <div className="sl" style={{marginBottom:6}}>Prijzen uit offerte (optioneel)</div>
+          <div style={{display:"flex",gap:6}}>
+            <div style={{flex:1}}>
+              <div className="inp-label" style={{fontSize:8}}>Panelen + installatie (€)</div>
+              <input className="inp" type="number" min="0" step="50" placeholder="auto"
+                value={manualPanelPrice} onChange={e=>setManualPanelPrice(e.target.value)}/>
+            </div>
+            <div style={{flex:1}}>
+              <div className="inp-label" style={{fontSize:8}}>Batterij (€)</div>
+              <input className="inp" type="number" min="0" step="50" placeholder="auto"
+                value={manualBatteryPrice} onChange={e=>setManualBatteryPrice(e.target.value)}
+                disabled={!battEnabled}/>
+            </div>
+          </div>
+          <div style={{fontSize:8,color:"var(--muted)",marginTop:4}}>
+            Leeg = automatische schatting. Vul in met offerte-prijzen voor correct rapport.
+          </div>
+        </div>
         <button className="btn full" onClick={calculate} disabled={!coords||aiLoading||!buildingCoords||isLoading}>
           {aiLoading?<><div className="spinner"/>Analyseren...</>:dhmStatus==="loading"?<><div className="spinner cyan"/>LiDAR verwerken...</>:grbStatus==="loading"?<><div className="spinner"/>Laden...</>:"☀️ Bereken resultaten"}
         </button>
@@ -2519,6 +2613,11 @@ export default function App(){
 
         {/* KLANT TAB */}
         {activeTab==="klant"&&<div className="section">
+          <ProjectPanel customer={customer} projectList={projectList} lastSavedAt={lastSavedAt}
+            isLoadingProject={isLoadingProject} showProjectMenu={showProjectMenu}
+            setShowProjectMenu={setShowProjectMenu}
+            onNew={handleNewProject} onLoad={handleLoadProject} onDelete={handleDeleteProject}
+            onDownload={handleDownloadProject} onUpload={handleUploadProject}/>
           <CustomerPanel customer={customer} setCustomer={setCustomer} tlToken={tlToken} setTlToken={setTlToken}/>
           <div className="info-box alpha-info">
             <strong>ℹ️ Teamleader integratie</strong><br/>
@@ -2602,7 +2701,7 @@ export default function App(){
                   <div className={`compare-col batt ${results.batt?.isAlpha?"alpha-col":""}`}>
                     <h4>{results.batt?.isAlpha?"⚡🔋":"🔋"} Met {results.batt?.brand} {results.batt?.model}</h4>
                     <div className="crow">Panelen + omvormer<span>€{results.investPanels.toLocaleString()}</span></div>
-                    <div className="crow">Batterij ({results.batt?.kwh} kWh)<span>€{results.batt?.price.toLocaleString()}</span></div>
+                    <div className="crow">Batterij ({results.batt?.kwh} kWh)<span>€{(results.battResult.battPrice??results.batt?.price).toLocaleString()}</span></div>
                     <div className="crow">Zelfverbruik<span>~70%</span></div>
                     <div className="crow">Extra besparing<span style={{color:"var(--green)"}}>+€{results.battResult.extraSav}/j</span></div>
                     <div className="crow">Totale besparing<span>€{results.battResult.totSav}/j</span></div>
