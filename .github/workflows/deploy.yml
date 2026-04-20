@@ -30,10 +30,9 @@ jobs:
         with:
           node-version: 20
           # Geen cache: npm cache kan oude artifacts meedragen tussen runs.
-          # Door dit uit te zetten wordt alles vanaf nul gebouwd.
 
       - name: Install dependencies
-        # npm install (niet npm ci) — tolereert een onvolledige package-lock.json.
+        # npm install (niet npm ci) — tolereert onvolledige package-lock.json.
         run: npm install
 
       - name: Nuke all caches
@@ -44,46 +43,29 @@ jobs:
           rm -rf node_modules/.cache
           rm -rf dist
           rm -rf .vite
-          echo "All caches cleaned at $(date)"
-          echo ""
-          echo "=== FILES IN src/ ON LINUX RUNNER ==="
-          ls -la src/
-          echo ""
-          echo "=== ALL JSX FILES (case-sensitive search) ==="
-          find . -name "*.jsx" -not -path "./node_modules/*" | sort
-          echo ""
-          echo "=== App.jsx size and first/last line ==="
-          wc -l src/App.jsx || echo "NOT FOUND: src/App.jsx"
-          echo ""
-          echo "=== main.jsx import line ==="
-          grep -n "App" src/main.jsx || echo "NOT FOUND"
-          echo ""
-          echo "=== Does src/App.jsx contain the fix? ==="
-          grep -c "lambert72ToWgs84" src/App.jsx || echo "0 matches"
-          grep -c "allInside" src/App.jsx || echo "0 matches"
+          echo "Caches cleaned at $(date)"
+
+      - name: Run unit tests
+        # Regressievangnet voor BUG-09, BUG-10, BUG-11 in panelPlacement.js
+        # Build/deploy wordt GEBLOKKEERD als ook maar één test faalt.
+        # Dit voorkomt dat regressies in de paneel-plaatsing in productie belanden.
+        run: npm test
 
       - name: Build
         run: npm run build
 
       - name: Verify bundle contents
-        # Controleer of de marker daadwerkelijk in de gebundelde output zit.
-        # Als deze stap faalt, weten we zeker dat Vite de source-code niet correct inleest.
+        # Sanity check: de gebundelde output moet de module code bevatten.
         run: |
           echo "=== BUNDLE FILES ==="
           ls -la dist/assets/
           echo ""
-          echo "=== MARKER CHECK IN BUNDLE ==="
-          if grep -r "ZONNEDAK_FIX_MARKER" dist/assets/; then
-            echo "✅ Marker gevonden in bundle"
+          echo "=== FIX-CODE CHECK IN BUNDLE ==="
+          if grep -r "lambert72ToWgs84\|detectRidgeAzimuth" dist/assets/ > /dev/null; then
+            echo "✅ panelPlacement module in bundle"
           else
-            echo "❌ Marker NIET in bundle — Vite bundelt App.jsx niet correct"
-          fi
-          echo ""
-          echo "=== LAMBERT72 CHECK IN BUNDLE ==="
-          if grep -r "lambert72ToWgs84\|allInside" dist/assets/ > /dev/null; then
-            echo "✅ Fix-code gevonden in bundle"
-          else
-            echo "❌ Fix-code NIET in bundle"
+            echo "❌ panelPlacement module NIET in bundle — build/import kapot"
+            exit 1
           fi
 
       - name: Setup Pages
