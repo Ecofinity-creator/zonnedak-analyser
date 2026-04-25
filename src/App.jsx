@@ -32,12 +32,13 @@ const packPanels = (facePoly, pW, pH, maxN, rotOffsetDeg, orient) =>
     logger: msg => console.info(`[ZonneDak] ${msg}`),
   });
 
-// URL van de Cloudflare Worker die de Anthropic API proxy draait.
+// URL van de Vercel serverless function die de Anthropic API proxy draait.
 // Anthropic accepteert geen browser-calls (CORS + API-sleutel moet server-side).
-// De Worker voegt CORS-headers toe en injecteert de sleutel uit zijn env.
-// Deploy-instructies: zie anthropic-proxy.worker.js
-// Placeholder — na deploy van de Worker vervang door je echte URL.
-const AI_PROXY_URL = "https://zonnedak-ai-proxy.ecofinity-creator.workers.dev/";
+// De proxy voegt CORS-headers toe en injecteert de sleutel uit zijn env.
+// Deploy-instructies: zie anthropic-proxy.vercel.js
+// BELANGRIJK: vervang deze URL door jouw echte Vercel URL na deploy.
+// Formaat: https://<jouw-project>.vercel.app/api/anthropic-proxy
+const AI_PROXY_URL = "https://zonnedak-ai-proxy-west.vercel.app/api/anthropic-proxy";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  ZonneDak Analyzer — App.jsx  (GECORRIGEERDE VERSIE)
@@ -1853,7 +1854,6 @@ export default function App(){
   // Alles wat hier in zit wordt opgeslagen/hersteld bij project laden.
   const buildProjectSnapshot=useCallback(()=>({
     customer,
-    address,
     coords,
     displayName,
     buildingCoords,
@@ -1870,7 +1870,7 @@ export default function App(){
     slope,
     manualPanelPrice,
     manualBatteryPrice,
-  }),[customer,address,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
+  }),[customer,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
       selPanel,selInv,selBatt,battEnabled,panelCount,panelOrient,panelRotOffset,
       orientation,slope,manualPanelPrice,manualBatteryPrice]);
 
@@ -1901,7 +1901,6 @@ export default function App(){
     const d=p.data||{};
     // Volgorde: eerst customer, dan rest (zodat auto-save niet tussendoor triggert)
     if(d.customer) setCustomer(d.customer);
-    if(d.address!=null) setAddress(d.address);
     if(d.coords) setCoords(d.coords);
     if(d.displayName!=null) setDisplayName(d.displayName);
     if(d.buildingCoords) setBuildingCoords(d.buildingCoords);
@@ -1934,7 +1933,6 @@ export default function App(){
     autoSaverRef.current?.flush();
     suppressAutoSaveRef.current=true;
     setCustomer({name:"",address:"",email:""});
-    setAddress("");
     setCoords(null);
     setDisplayName("");
     setBuildingCoords(null);
