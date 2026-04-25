@@ -1852,6 +1852,8 @@ export default function App(){
 
   // Bouw de project-data snapshot op basis van de huidige app-state.
   // Alles wat hier in zit wordt opgeslagen/hersteld bij project laden.
+  // We slaan de IDs op (selPanelId, selInvId, selBattId), niet de hele
+  // objecten — zo blijven projecten consistent met latere catalogus-updates.
   const buildProjectSnapshot=useCallback(()=>({
     customer,
     coords,
@@ -1859,11 +1861,11 @@ export default function App(){
     buildingCoords,
     detectedFaces,
     selFaceIdx,
-    selPanel,
-    selInv,
-    selBatt,
+    selPanelId,
+    selInvId,
+    selBattId,
     battEnabled,
-    panelCount,
+    customCount,
     panelOrient,
     panelRotOffset,
     orientation,
@@ -1871,7 +1873,7 @@ export default function App(){
     manualPanelPrice,
     manualBatteryPrice,
   }),[customer,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
-      selPanel,selInv,selBatt,battEnabled,panelCount,panelOrient,panelRotOffset,
+      selPanelId,selInvId,selBattId,battEnabled,customCount,panelOrient,panelRotOffset,
       orientation,slope,manualPanelPrice,manualBatteryPrice]);
 
   // Auto-save: triggert telkens als iets in de snapshot verandert én er een
@@ -1906,11 +1908,11 @@ export default function App(){
     if(d.buildingCoords) setBuildingCoords(d.buildingCoords);
     if(d.detectedFaces) setDetectedFaces(d.detectedFaces);
     if(d.selFaceIdx!=null) setSelFaceIdx(d.selFaceIdx);
-    if(d.selPanel) setSelPanel(d.selPanel);
-    if(d.selInv!==undefined) setSelInv(d.selInv);
-    if(d.selBatt) setSelBatt(d.selBatt);
+    if(d.selPanelId!=null) setSelPanelId(d.selPanelId);
+    if(d.selInvId!==undefined) setSelInvId(d.selInvId);
+    if(d.selBattId!=null) setSelBattId(d.selBattId);
     if(d.battEnabled!=null) setBattEnabled(d.battEnabled);
-    if(d.panelCount!=null) setPanelCount(d.panelCount);
+    if(d.customCount!=null) setCustomCount(d.customCount);
     if(d.panelOrient) setPanelOrient(d.panelOrient);
     if(d.panelRotOffset!=null) setPanelRotOffset(d.panelRotOffset);
     if(d.orientation) setOrientation(d.orientation);
@@ -1939,7 +1941,7 @@ export default function App(){
     setDetectedFaces(null);
     setSelFaceIdx(0);
     setBattEnabled(false);
-    setPanelCount(10);
+    setCustomCount(10);
     setPanelRotOffset(0);
     setManualPanelPrice("");
     setManualBatteryPrice("");
