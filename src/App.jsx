@@ -1443,11 +1443,17 @@ async function generatePDF(results,customer,displayName,slope,orientation){
     ["Zonnepanelen ("+results.panelCount+" × "+results.panel.model+")","€ "+(results.panelCount*results.panel.price).toLocaleString("nl-BE")],
     ["Installatie & omvormer","€ "+(results.inv?results.inv.price:1200).toLocaleString("nl-BE")],
     ["Totale investering","€ "+results.investPanels.toLocaleString("nl-BE")],
-    ["Jaarlijkse besparing (€0,28/kWh)","€ "+results.annualBase.toLocaleString("nl-BE")],
+    ["Jaarverbruik klant",results.consumption.toLocaleString("nl-BE")+" kWh"],
+    ["Jaaropbrengst PV",results.annualKwh.toLocaleString("nl-BE")+" kWh"],
+    ["Dekkingsgraad PV / verbruik",results.coverage+" %"],
+    ["Zelfverbruik (~"+Math.round(results.selfRatioBase*100)+"%)",results.selfKwhBase.toLocaleString("nl-BE")+" kWh"],
+    ["Injectie naar net",results.injectKwhBase.toLocaleString("nl-BE")+" kWh"],
+    ["Jaarlijkse besparing","€ "+results.annualBase.toLocaleString("nl-BE")],
     ["Terugverdientijd",results.paybackBase+" jaar"],
   ];
   if(results.battResult){
     finRows.push(["Thuisbatterij "+(results.batt?.model||""),"€ "+(results.battResult.battPrice??results.batt?.price).toLocaleString("nl-BE")]);
+    finRows.push(["Zelfverbruik met batterij (~70%)",results.battResult.selfKwh.toLocaleString("nl-BE")+" kWh"]);
     finRows.push(["Extra besparing met batterij","€ "+results.battResult.extraSav.toLocaleString("nl-BE")+"/jaar"]);
     finRows.push(["Terugverdientijd incl. batterij",results.battResult.payback+" jaar"]);
   }
@@ -1484,13 +1490,13 @@ async function generatePDF(results,customer,displayName,slope,orientation){
     doc.text("Limieten omvormer: max DC "+results.inv.maxDcVoltage+"V, min MPPT "+results.inv.mpptVoltageMin+"V, max stroom "+results.inv.maxInputCurrentPerMppt+"A per MPPT",M,y);
     y+=6;
     if(sd.warnings.length>0){
-      sf(9,"bold");sc(BLK);doc.text("Aandachtspunten:",M,y);y+=5;
+      sf(9,"bold");sc(TXT);doc.text("Aandachtspunten:",M,y);y+=5;
       sd.warnings.forEach(w=>{
         const col=w.severity==="critical"?[200,0,0]:w.severity==="warning"?[200,140,0]:[80,80,80];
         sf(8,"bold");sc(col);
         const prefix=w.severity==="critical"?"[KRITIEK] ":w.severity==="warning"?"[WAARSCHUWING] ":"[INFO] ";
         doc.text(prefix+w.title,M,y);y+=4;
-        sf(7,"normal");sc(BLK);
+        sf(7,"normal");sc(TXT);
         const lines=doc.splitTextToSize(w.detail,W-2*M);
         doc.text(lines,M+3,y);y+=lines.length*3.5+2;
       });
@@ -2134,11 +2140,8 @@ export default function App(){
   // Open het "nieuwe deal" formulier — laad opties on-demand (slechts 1× per sessie)
   const handleOpenNewDeal=useCallback(async()=>{
     setShowNewDealForm(true);
-    // Default titel: "Zonnepanelen [klant] [datum]"
-    const today=new Date();
-    const dateStr=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
-    const klantNaam=tlContact?.name||customer.name||"klant";
-    setNewDealTitle(`Zonnepanelen ${klantNaam} ${dateStr}`);
+    // Default titel is bewust kort — gebruiker mag aanpassen indien gewenst
+    setNewDealTitle("Zonnepanelen");
     setNewDealValue("");
     // Laad pipelines indien nog niet geladen
     if(!dealOptions){
@@ -2194,6 +2197,9 @@ export default function App(){
   // Leeg string = automatisch; een getal (positief) = manueel.
   const[manualPanelPrice,setManualPanelPrice]=useState("");
   const[manualBatteryPrice,setManualBatteryPrice]=useState("");
+  // Jaarlijks elektriciteitsverbruik van de klant (kWh). Default 3500 (Vlaams gemiddelde
+  // gezin van 4). Wordt gebruikt voor zelfconsumptiegraad + dekkingsgraad-berekening.
+  const[annualConsumption,setAnnualConsumption]=useState(3500);
 
   // Auto-save systeem: debounced saver die elk veranderd project opslaat.
   const autoSaverRef=useRef(null);
@@ -2276,13 +2282,14 @@ export default function App(){
     slope,
     manualPanelPrice,
     manualBatteryPrice,
+    annualConsumption,
     // Teamleader koppelingen — voor latere terugschrijving naar TL
     tlContactType:tlContact?.type||null,
     tlContactId:tlContact?.id||null,
     tlDealId:tlSelectedDealId,
   }),[customer,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
       selPanelId,selInvId,selBattId,battEnabled,customCount,panelOrient,panelRotOffset,
-      orientation,slope,manualPanelPrice,manualBatteryPrice,
+      orientation,slope,manualPanelPrice,manualBatteryPrice,annualConsumption,
       tlContact,tlSelectedDealId]);
 
   // Auto-save: triggert telkens als iets in de snapshot verandert én er een
@@ -2328,6 +2335,7 @@ export default function App(){
     if(d.slope!=null) setSlope(d.slope);
     if(d.manualPanelPrice!=null) setManualPanelPrice(d.manualPanelPrice);
     if(d.manualBatteryPrice!=null) setManualBatteryPrice(d.manualBatteryPrice);
+    if(d.annualConsumption!=null) setAnnualConsumption(d.annualConsumption);
     // Teamleader: selected deal ID herstellen. Het volledige tlContact wordt
     // niet hersteld — dat zou een nieuwe TL-call vragen. De gebruiker kan
     // het opnieuw zoeken in TL als hij wijzigingen wil maken aan de klantdata.
@@ -2358,6 +2366,7 @@ export default function App(){
     setPanelRotOffset(0);
     setManualPanelPrice("");
     setManualBatteryPrice("");
+    setAnnualConsumption(3500);
     setResults(null);
     setAiText("");
     setPanelsDrawn(false);
@@ -2611,26 +2620,56 @@ export default function App(){
     if(!coords||!selPanel||!buildingCoords) return;
     const irr=getSolarIrr(orientation,slope);
     const actualArea=panelCount*selPanel.area,annualKwh=Math.round(actualArea*irr*(selPanel.eff/100));
-    const co2=Math.round(annualKwh*.202),coverage=Math.round((annualKwh/3500)*100);
+    const co2=Math.round(annualKwh*.202);
+    // Dekkingsgraad t.o.v. werkelijk verbruik (was: hardcoded 3500 kWh aanname)
+    const consumption=Math.max(annualConsumption||3500,1);
+    const coverage=Math.round((annualKwh/consumption)*100);
     // Installatieprijs panelen: manueel ingevoerd (offerte) of automatisch.
-    // Manueel wint: als gebruiker een getal > 0 invoert, gebruik dat i.p.v. de berekening.
     const mpp=parseFloat(manualPanelPrice);
     const autoPanelPrice=Math.round(panelCount*selPanel.price+(selInv?selInv.price:1200));
     const investPanels=(isFinite(mpp)&&mpp>0)?Math.round(mpp):autoPanelPrice;
-    const annualBase=Math.round(annualKwh*.28),paybackBase=Math.round(investPanels/annualBase);
+
+    // ─── REALISTISCHE BESPARING in Vlaanderen 2026 ────────────────────────
+    // Salderen bestaat niet meer. Opwek splitst in:
+    //   - Zelfverbruik (eigen huis verbruikt direct) → bespaart aankoopprijs €0.28/kWh
+    //   - Injectie (overschot naar net) → vergoed aan ~€0.05/kWh
+    //
+    // Zelfconsumptiegraad zonder batterij: ~30% van opwek (typisch Vlaams huishouden)
+    // Met batterij: ~70%
+    // Plafond: zelfverbruik kan nooit groter zijn dan jaarverbruik.
+    const PRIJS_AANKOOP=0.28;  // €/kWh inclusief BTW + heffingen
+    const PRIJS_INJECTIE=0.05; // €/kWh injectievergoeding gemiddeld
+    const selfRatioBase=0.30;  // 30% zonder batterij
+    const selfRatioBatt=0.70;  // 70% met batterij
+
+    const selfKwhBase=Math.min(annualKwh*selfRatioBase,consumption);
+    const injectKwhBase=Math.max(annualKwh-selfKwhBase,0);
+    const annualBase=Math.round(selfKwhBase*PRIJS_AANKOOP+injectKwhBase*PRIJS_INJECTIE);
+    const paybackBase=Math.round(investPanels/Math.max(annualBase,1));
+
     let battResult=null;
     if(battEnabled&&selBatt){
-      const extra=Math.min(annualKwh*.70,annualKwh)-annualKwh*.30;
-      // Installatieprijs batterij: manueel ingevoerd of automatisch (= selBatt.price)
       const mbp=parseFloat(manualBatteryPrice);
       const battPrice=(isFinite(mbp)&&mbp>0)?Math.round(mbp):selBatt.price;
-      const extraSav=Math.round(extra*.28),totSav=annualBase+extraSav,totInv=investPanels+battPrice;
-      battResult={extraSav,totSav,totInv,payback:Math.round(totInv/totSav),battPrice};
+      const selfKwhBatt=Math.min(annualKwh*selfRatioBatt,consumption);
+      const injectKwhBatt=Math.max(annualKwh-selfKwhBatt,0);
+      const totSav=Math.round(selfKwhBatt*PRIJS_AANKOOP+injectKwhBatt*PRIJS_INJECTIE);
+      const extraSav=totSav-annualBase;
+      const totInv=investPanels+battPrice;
+      battResult={extraSav,totSav,totInv,payback:Math.round(totInv/Math.max(totSav,1)),battPrice,
+        selfRatio:selfRatioBatt,selfKwh:Math.round(selfKwhBatt),injectKwh:Math.round(injectKwhBatt)};
     }
     setResults({irr,panelCount,actualArea:Math.round(actualArea),annualKwh,co2,coverage,
       investPanels,annualBase,paybackBase,battResult,panel:selPanel,inv:selInv,batt:battEnabled?selBatt:null,
       detectedArea,grbOk:grbStatus==="ok",dhmOk:dhmStatus==="ok",orientation,slope,
-      stringDesign:stringDesign||null});
+      stringDesign:stringDesign||null,
+      // Nieuwe velden voor verbruik-informatie
+      consumption:Math.round(consumption),
+      selfKwhBase:Math.round(selfKwhBase),
+      injectKwhBase:Math.round(injectKwhBase),
+      selfRatioBase,
+      priceBuy:PRIJS_AANKOOP,
+      priceInject:PRIJS_INJECTIE});
     if(leafRef.current&&window.L){
       const L=window.L,map=leafRef.current;
       if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
@@ -2664,6 +2703,7 @@ Aantal: ${panelCount} · ${Math.round(actualArea)} m² · ${((panelCount*selPane
 Helling: ${slope}° ${orientation} · ${irr} kWh/m²/j
 ${invStr}
 Opbrengst: ${annualKwh} kWh/j · CO₂: ${co2} kg/j
+Klant jaarverbruik: ${consumption} kWh · dekkingsgraad ${coverage}% · zelfverbruik ${Math.round(selfRatioBase*100)}% (${Math.round(selfKwhBase)} kWh) · injectie ${Math.round(injectKwhBase)} kWh
 Investering: €${investPanels.toLocaleString()} · Besparing: €${annualBase}/j · Terugverdien: ${paybackBase}j
 ${battStr}
 
@@ -3102,6 +3142,14 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
             <input className="inp" value={customer.address} onChange={e=>setCustomer({...customer,address:e.target.value})}/>
             <div className="inp-label" style={{fontSize:8,marginTop:4}}>Email</div>
             <input className="inp" type="email" value={customer.email} onChange={e=>setCustomer({...customer,email:e.target.value})}/>
+            <div className="inp-label" style={{fontSize:8,marginTop:4}}>Jaarlijks elektriciteitsverbruik (kWh)</div>
+            <input className="inp" type="number" min="500" max="50000" step="100"
+                   value={annualConsumption}
+                   onChange={e=>setAnnualConsumption(parseInt(e.target.value)||3500)}
+                   placeholder="bv. 3500"/>
+            <div style={{fontSize:8,color:"var(--muted)",marginTop:2}}>
+              Te vinden op de eindafrekening van de leverancier (kWh/jaar). Vlaams gemiddelde gezin: 3500 kWh.
+            </div>
           </div>
         </div>}
 
