@@ -145,6 +145,62 @@ export async function getContactDetails(type, id) {
   }
 }
 
+/**
+ * Haal de opties op voor het "nieuwe deal" formulier (pipelines + huidige user).
+ * @returns {Promise<{pipelines: Array, currentUserId: string} | {error}>}
+ */
+export async function getDealOptions() {
+  const userId = getUserId();
+  try {
+    const resp = await fetch(`${PROXY_BASE}/tl-deal-options?user_id=${encodeURIComponent(userId)}`);
+    if (resp.status === 401) return { error: 'not_logged_in' };
+    if (!resp.ok) return { error: `HTTP ${resp.status}` };
+    return await resp.json();
+  } catch (err) {
+    return { error: err.message || 'Network error' };
+  }
+}
+
+/**
+ * Maak een nieuwe deal aan in TL.
+ *
+ * @param {object} dealData
+ * @param {string} dealData.title
+ * @param {'contact'|'company'} dealData.contactType
+ * @param {string} dealData.contactId
+ * @param {string} dealData.phaseId
+ * @param {string} [dealData.responsibleUserId]
+ * @param {number} [dealData.estimatedValueEur] - bedrag in EUR (optioneel)
+ * @returns {Promise<{ok: true, deal} | {error}>}
+ */
+export async function createDeal(dealData) {
+  const userId = getUserId();
+  const body = {
+    user_id: userId,
+    title: dealData.title,
+    contactType: dealData.contactType,
+    contactId: dealData.contactId,
+    phaseId: dealData.phaseId,
+  };
+  if (dealData.responsibleUserId) body.responsibleUserId = dealData.responsibleUserId;
+  if (dealData.estimatedValueEur && dealData.estimatedValueEur > 0) {
+    body.estimatedValue = { amount: dealData.estimatedValueEur, currency: 'EUR' };
+  }
+  try {
+    const resp = await fetch(`${PROXY_BASE}/tl-deal-create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (resp.status === 401) return { error: 'not_logged_in' };
+    const data = await resp.json();
+    if (!resp.ok) return { error: data.error || `HTTP ${resp.status}`, detail: data.detail };
+    return data;
+  } catch (err) {
+    return { error: err.message || 'Network error' };
+  }
+}
+
 // =============================================================================
 // DEBOUNCE HELPER (voor live search)
 // =============================================================================

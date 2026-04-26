@@ -1657,7 +1657,10 @@ function NewBattForm({onAdd}){
 // adres/email/deals selectie na keuze van een contact.
 function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearching,
   tlContact,tlLoadingDetails,tlSelectedAddressIdx,tlSelectedDealId,setTlSelectedDealId,
-  onLogin,onLogout,onSelectContact,onSelectAddress}){
+  onLogin,onLogout,onSelectContact,onSelectAddress,
+  showNewDealForm,newDealTitle,setNewDealTitle,newDealValue,setNewDealValue,
+  dealOptions,newDealPipelineId,setNewDealPipelineId,creatingDeal,
+  onOpenNewDeal,onCancelNewDeal,onCreateDeal}){
   // Niet ingelogd: login knop
   if(tlAuth===null) return <div className="customer-section"><div style={{fontSize:9,color:"var(--muted)"}}>Teamleader status laden...</div></div>;
   if(tlAuth===false||!tlAuth.logged_in){
@@ -1756,6 +1759,52 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
 
         {tlContact.deals?.length===0&&<div style={{fontSize:9,color:"var(--muted)",marginTop:6}}>
           Geen deals voor deze klant in TL.
+        </div>}
+
+        {/* Knop om nieuwe deal aan te maken — altijd zichtbaar (ook met bestaande deals) */}
+        {!showNewDealForm&&<button className="btn sec" onClick={onOpenNewDeal}
+                                    style={{marginTop:8,fontSize:9,width:"100%"}}>
+          + Nieuwe deal aanmaken in Teamleader
+        </button>}
+
+        {/* Inline form voor nieuwe deal */}
+        {showNewDealForm&&<div style={{marginTop:8,background:"var(--bg2)",border:"1px solid var(--border)",
+                                        borderRadius:6,padding:10}}>
+          <div className="sl" style={{fontSize:9,marginBottom:6}}>Nieuwe deal aanmaken</div>
+
+          <div className="inp-label" style={{fontSize:8}}>Titel</div>
+          <input className="inp" value={newDealTitle} onChange={e=>setNewDealTitle(e.target.value)}
+                 placeholder="bv. Zonnepanelen Janssens 2026-04-26" maxLength={200}/>
+
+          <div className="inp-label" style={{fontSize:8,marginTop:6}}>Pipeline</div>
+          {!dealOptions?<div style={{fontSize:9,color:"var(--muted)"}}>Pipelines laden...</div>:
+            dealOptions.pipelines?.length===0?<div style={{fontSize:9,color:"var(--red)"}}>
+              Geen pipelines gevonden in TL.
+            </div>:
+            <select className="inp" value={newDealPipelineId||""}
+                    onChange={e=>setNewDealPipelineId(e.target.value)}>
+              {dealOptions.pipelines.map(p=>(
+                <option key={p.id} value={p.id}>
+                  {p.name}{p.isDefault?" (standaard)":""}
+                  {p.firstPhaseName?` — start in fase: ${p.firstPhaseName}`:""}
+                </option>
+              ))}
+            </select>
+          }
+
+          <div className="inp-label" style={{fontSize:8,marginTop:6}}>Geschatte waarde (€) — optioneel</div>
+          <input className="inp" type="number" min="0" step="100"
+                 placeholder="Leeg laten als nog onbekend"
+                 value={newDealValue} onChange={e=>setNewDealValue(e.target.value)}/>
+
+          <div style={{display:"flex",gap:6,marginTop:10}}>
+            <button className="btn sec" onClick={onCancelNewDeal} disabled={creatingDeal}
+                    style={{flex:1,fontSize:9}}>Annuleren</button>
+            <button className="btn full" onClick={onCreateDeal} disabled={creatingDeal||!newDealTitle.trim()||!newDealPipelineId}
+                    style={{flex:2,fontSize:9}}>
+              {creatingDeal?"Aanmaken...":"✓ Aanmaken in Teamleader"}
+            </button>
+          </div>
         </div>}
       </>}
     </div>
@@ -1975,6 +2024,13 @@ export default function App(){
   // Welk adres + welke deal de gebruiker heeft gekozen
   const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
   const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
+  // Nieuwe deal form
+  const[showNewDealForm,setShowNewDealForm]=useState(false);
+  const[newDealTitle,setNewDealTitle]=useState("");
+  const[newDealValue,setNewDealValue]=useState(""); // optioneel — leeg = niet meegeven
+  const[dealOptions,setDealOptions]=useState(null); // {pipelines, currentUserId} of null
+  const[newDealPipelineId,setNewDealPipelineId]=useState(null);
+  const[creatingDeal,setCreatingDeal]=useState(false);
 
   // Bij eerste mount: check OAuth callback in URL + auth-status
   useEffect(()=>{
@@ -2028,31 +2084,17 @@ export default function App(){
       email:primaryEmail,
     });
     // Geocode primary address → coords + auto-laden van de kaart.
-    // Belangrijk: we triggeren ook setQuery() zodat het input-veld in
-    // Configuratie zich vult, en we resetten GRB/DHM zodat de kaart
-    // het nieuwe gebouw opzoekt (zelfde flow als manuele adres-keuze).
+    // We hergebruiken de bestaande selectAddr() flow zodat GRB+DHM ook
+    // correct laden. Daarvoor bouwen we een Nominatim-achtige struct.
     if(primaryAddress){
       const geo=await TL.geocodeAddress(primaryAddress);
       if(geo){
-        setCoords({lat:geo.lat,lng:geo.lng});
-        setDisplayName(geo.displayName);
-        // Vul het Configuratie zoekveld + reset GRB/DHM zodat alles opnieuw laadt
-        const shortAddr=geo.displayName.split(",").slice(0,3).join(",");
-        setQuery(shortAddr);
-        setShowSuggs(false);
-        setSuggs([]);
-        setPanelsDrawn(false);setBuildingCoords(null);setDetectedArea(null);
-        setDetectedFaces(null);setDhmStatus("idle");setDhmError("");setGrbStatus("loading");
-        // Verschuif kaart naar nieuwe locatie
-        if(leafRef.current&&mapReady&&window.L){
-          const L=window.L,map=leafRef.current;
-          map.setView([geo.lat,geo.lng],19);
-          if(markerRef.current) map.removeLayer(markerRef.current);
-          const icon=L.divIcon({html:`<div style="width:10px;height:10px;background:#e07b00;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px #e07b00"></div>`,iconSize:[10,10],iconAnchor:[5,5],className:""});
-          markerRef.current=L.marker([geo.lat,geo.lng],{icon}).addTo(map);
-        }
+        await selectAddr({
+          lat: String(geo.lat),
+          lon: String(geo.lng),
+          display_name: geo.displayName,
+        });
       }else{
-        // Geocoding faalde — vertel gebruiker
         alert("Adres niet gevonden in OpenStreetMap. Voer het adres handmatig in op het Configuratie-tabblad.");
       }
     }
@@ -2066,24 +2108,16 @@ export default function App(){
     setCustomer(c=>({...c,address:addr.full||""}));
     const geo=await TL.geocodeAddress(addr);
     if(geo){
-      setCoords({lat:geo.lat,lng:geo.lng});
-      setDisplayName(geo.displayName);
-      const shortAddr=geo.displayName.split(",").slice(0,3).join(",");
-      setQuery(shortAddr);
-      setShowSuggs(false);setSuggs([]);
-      setPanelsDrawn(false);setBuildingCoords(null);setDetectedArea(null);
-      setDetectedFaces(null);setDhmStatus("idle");setDhmError("");setGrbStatus("loading");
-      if(leafRef.current&&mapReady&&window.L){
-        const L=window.L,map=leafRef.current;
-        map.setView([geo.lat,geo.lng],19);
-        if(markerRef.current) map.removeLayer(markerRef.current);
-        const icon=L.divIcon({html:`<div style="width:10px;height:10px;background:#e07b00;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px #e07b00"></div>`,iconSize:[10,10],iconAnchor:[5,5],className:""});
-        markerRef.current=L.marker([geo.lat,geo.lng],{icon}).addTo(map);
-      }
+      // Hergebruik de bestaande selectAddr flow (incl. GRB+DHM laden)
+      await selectAddr({
+        lat: String(geo.lat),
+        lon: String(geo.lng),
+        display_name: geo.displayName,
+      });
     }else{
       alert("Adres niet gevonden in OpenStreetMap. Voer handmatig in.");
     }
-  },[tlContact,mapReady]);
+  },[tlContact]);
 
   const handleTlLogin=useCallback(()=>{
     TL.startTeamleaderLogin();
@@ -2096,6 +2130,63 @@ export default function App(){
     setTlResults([]);
     setTlQuery("");
   },[]);
+
+  // Open het "nieuwe deal" formulier — laad opties on-demand (slechts 1× per sessie)
+  const handleOpenNewDeal=useCallback(async()=>{
+    setShowNewDealForm(true);
+    // Default titel: "Zonnepanelen [klant] [datum]"
+    const today=new Date();
+    const dateStr=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+    const klantNaam=tlContact?.name||customer.name||"klant";
+    setNewDealTitle(`Zonnepanelen ${klantNaam} ${dateStr}`);
+    setNewDealValue("");
+    // Laad pipelines indien nog niet geladen
+    if(!dealOptions){
+      const opts=await TL.getDealOptions();
+      if(opts?.error){alert("Kon pipelines niet laden: "+opts.error);setShowNewDealForm(false);return;}
+      setDealOptions(opts);
+      // Default: eerste pipeline (= default pipeline want we sorteren erop)
+      if(opts.pipelines?.length>0){setNewDealPipelineId(opts.pipelines[0].id);}
+    }
+  },[tlContact,customer.name,dealOptions]);
+
+  const handleCancelNewDeal=useCallback(()=>{
+    setShowNewDealForm(false);
+    setNewDealTitle("");
+    setNewDealValue("");
+  },[]);
+
+  // Submit het nieuwe-deal formulier → API call → toevoegen aan tlContact.deals + selecteren
+  const handleCreateDeal=useCallback(async()=>{
+    if(!tlContact){alert("Geen klant geselecteerd");return;}
+    if(!newDealTitle.trim()){alert("Vul een titel in");return;}
+    if(!newDealPipelineId){alert("Kies een pipeline");return;}
+    const pipeline=dealOptions?.pipelines?.find(p=>p.id===newDealPipelineId);
+    if(!pipeline?.firstPhaseId){
+      alert("Deze pipeline heeft geen phases. Configureer eerst phases in Teamleader.");return;
+    }
+    setCreatingDeal(true);
+    const valueNum=parseFloat(newDealValue);
+    const result=await TL.createDeal({
+      title:newDealTitle.trim(),
+      contactType:tlContact.type,
+      contactId:tlContact.id,
+      phaseId:pipeline.firstPhaseId,
+      responsibleUserId:dealOptions.currentUserId||undefined,
+      estimatedValueEur:isFinite(valueNum)&&valueNum>0?valueNum:undefined,
+    });
+    setCreatingDeal(false);
+    if(result.error){alert("Deal aanmaken mislukt: "+result.error);return;}
+    // Voeg de nieuwe deal toe aan tlContact.deals én selecteer hem
+    setTlContact(prev=>prev?{
+      ...prev,
+      deals:[result.deal,...(prev.deals||[])],
+    }:prev);
+    setTlSelectedDealId(result.deal.id);
+    setShowNewDealForm(false);
+    setNewDealTitle("");
+    setNewDealValue("");
+  },[tlContact,newDealTitle,newDealPipelineId,newDealValue,dealOptions]);
 
   const[pdfLoading,setPdfLoading]=useState(false);
 
@@ -2275,6 +2366,9 @@ export default function App(){
     setTlQuery("");
     setTlResults([]);
     setTlSelectedDealId(null);
+    setShowNewDealForm(false);
+    setNewDealTitle("");
+    setNewDealValue("");
     setTimeout(()=>{suppressAutoSaveRef.current=false;setShowProjectMenu(false);},100);
   },[]);
 
@@ -2989,7 +3083,15 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
             tlSelectedAddressIdx={tlSelectedAddressIdx}
             tlSelectedDealId={tlSelectedDealId} setTlSelectedDealId={setTlSelectedDealId}
             onLogin={handleTlLogin} onLogout={handleTlLogout}
-            onSelectContact={handleSelectTlContact} onSelectAddress={handleSelectAddress}/>
+            onSelectContact={handleSelectTlContact} onSelectAddress={handleSelectAddress}
+            showNewDealForm={showNewDealForm}
+            newDealTitle={newDealTitle} setNewDealTitle={setNewDealTitle}
+            newDealValue={newDealValue} setNewDealValue={setNewDealValue}
+            dealOptions={dealOptions}
+            newDealPipelineId={newDealPipelineId} setNewDealPipelineId={setNewDealPipelineId}
+            creatingDeal={creatingDeal}
+            onOpenNewDeal={handleOpenNewDeal} onCancelNewDeal={handleCancelNewDeal}
+            onCreateDeal={handleCreateDeal}/>
           {/* Manuele override / aanvulling — gebruiker kan altijd de waarden bewerken
               ook al kwamen ze uit TL. Bv. tijdelijke afwijking in adres voor dit project. */}
           <div className="customer-section">
