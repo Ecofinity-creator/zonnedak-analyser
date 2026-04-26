@@ -84,7 +84,9 @@ const ORTHO_WMS = "https://geoservices.informatievlaanderen.be/raadpleegdiensten
 const ORTHO_LYR = "OMWRGBMRVL";
 // WCS wordt via proxy gehaald omdat geo.api.vlaanderen.be geen CORS-headers stuurt
 const WCS_BASE = "https://geo.api.vlaanderen.be/DHMV/wcs";
-const WCS_PROXY = "https://api.allorigins.win/raw?url=";
+// Onze eigen Vercel proxy is betrouwbaarder dan allorigins.win
+const WCS_PROXY_VERCEL = "https://zonnedak-ai-proxy-west.vercel.app/api/wcs-proxy?url=";
+const WCS_PROXY_ALLORIGINS = "https://api.allorigins.win/raw?url=";
 
 // ─── Zonneirradiantie Vlaanderen ─────────────────────────────────────────────
 const SOLAR_TABLE = {
@@ -156,9 +158,12 @@ function parseTIFF(buf){
 async function fetchWCS(xmin,ymin,xmax,ymax,mw,mh,cov){
   const p=new URLSearchParams({SERVICE:"WCS",VERSION:"1.0.0",REQUEST:"GetCoverage",COVERAGE:cov,CRS:"EPSG:31370",RESPONSE_CRS:"EPSG:31370",BBOX:`${Math.round(xmin)},${Math.round(ymin)},${Math.round(xmax)},${Math.round(ymax)}`,WIDTH:mw,HEIGHT:mh,FORMAT:"GeoTIFF"});
   const directUrl=`${WCS_BASE}?${p}`;
-  const proxyUrl=`${WCS_PROXY}${encodeURIComponent(directUrl)}`;
+  // Probeer in volgorde: direct (CORS faalt vaak), eigen Vercel proxy (betrouwbaar),
+  // allorigins.win als laatste redmiddel (vaak down maar gratis fallback)
+  const vercelUrl=`${WCS_PROXY_VERCEL}${encodeURIComponent(directUrl)}`;
+  const allOriginsUrl=`${WCS_PROXY_ALLORIGINS}${encodeURIComponent(directUrl)}`;
   let lastErr="";
-  for(const url of[directUrl,proxyUrl]){
+  for(const url of[directUrl,vercelUrl,allOriginsUrl]){
     try{
       const r=await fetch(url,{cache:"no-store"});
       if(!r.ok){lastErr=`HTTP ${r.status}`;continue;}
@@ -1696,7 +1701,7 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
 
       {/* Zoekveld met live suggesties */}
       <div style={{position:"relative"}}>
-        <div className="inp-label" style={{fontSize:8}}>Klant zoeken in Teamleader</div>
+        <div className="inp-label" style={{fontSize:9,fontWeight:600}}>1️⃣ Klant zoeken in Teamleader</div>
         <input className="inp" type="text" placeholder="Typ minstens 2 letters..."
                value={tlQuery} onChange={e=>setTlQuery(e.target.value)} autoComplete="off"/>
         {tlSearching&&<div style={{fontSize:8,color:"var(--muted)",marginTop:2}}>Zoeken...</div>}
@@ -3135,14 +3140,21 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
           {/* Manuele override / aanvulling — gebruiker kan altijd de waarden bewerken
               ook al kwamen ze uit TL. Bv. tijdelijke afwijking in adres voor dit project. */}
           <div className="customer-section">
-            <div className="sl">Klantgegevens (manueel bewerkbaar)</div>
-            <div className="inp-label" style={{fontSize:8}}>Naam</div>
-            <input className="inp" value={customer.name} onChange={e=>setCustomer({...customer,name:e.target.value})}/>
-            <div className="inp-label" style={{fontSize:8,marginTop:4}}>Adres</div>
-            <input className="inp" value={customer.address} onChange={e=>setCustomer({...customer,address:e.target.value})}/>
-            <div className="inp-label" style={{fontSize:8,marginTop:4}}>Email</div>
-            <input className="inp" type="email" value={customer.email} onChange={e=>setCustomer({...customer,email:e.target.value})}/>
-            <div className="inp-label" style={{fontSize:8,marginTop:4}}>Jaarlijks elektriciteitsverbruik (kWh)</div>
+            <div className="sl">2️⃣ Klantgegevens</div>
+            <div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>
+              Velden worden automatisch gevuld na keuze in Teamleader.<br/>
+              <strong>Niet gevonden in TL?</strong> Vul hier handmatig in.
+            </div>
+            <div className="inp-label" style={{fontSize:9,fontWeight:600}}>Naam <span style={{color:"var(--red)"}}>*</span></div>
+            <input className="inp" value={customer.name} onChange={e=>setCustomer({...customer,name:e.target.value})}
+                   placeholder="bv. Jan Janssens"/>
+            <div className="inp-label" style={{fontSize:8,marginTop:6}}>Adres</div>
+            <input className="inp" value={customer.address} onChange={e=>setCustomer({...customer,address:e.target.value})}
+                   placeholder="Straat huisnr, postcode gemeente"/>
+            <div className="inp-label" style={{fontSize:8,marginTop:6}}>Email</div>
+            <input className="inp" type="email" value={customer.email} onChange={e=>setCustomer({...customer,email:e.target.value})}
+                   placeholder="naam@voorbeeld.be"/>
+            <div className="inp-label" style={{fontSize:8,marginTop:6}}>Jaarlijks elektriciteitsverbruik (kWh)</div>
             <input className="inp" type="number" min="500" max="50000" step="100"
                    value={annualConsumption}
                    onChange={e=>setAnnualConsumption(parseInt(e.target.value)||3500)}
