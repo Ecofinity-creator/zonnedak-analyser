@@ -16,6 +16,7 @@ import {
 } from "./projectStorage.js";
 import { computeStringDesign } from "./stringDesign.js";
 import * as TL from "./teamleaderClient.js";
+import { ECOFINITY_LOGO_BASE64, ECOFINITY_LOGO_WIDTH, ECOFINITY_LOGO_HEIGHT } from "./ecofinityLogo.js";
 
 // Re-export under local names so the rest of App.jsx (which still uses the
 // original call syntax) continues to work without modifications.
@@ -1360,23 +1361,52 @@ async function generatePDF(results,customer,displayName,slope,orientation){
   };
 
   // ════ PAGINA 1 — Voorblad + Systeemoverzicht ════
-  doc.setFillColor(...OR);doc.rect(0,0,W,40,"F");
-  doc.setFillColor(...ORD);doc.rect(0,36,W,4,"F");
-  sf(22,"bold");sc(WHT);doc.text("EcoFinity BV",M,20);
-  sf(10,"normal");doc.text("Riedeplein 15 · 9660 Brakel · +32 55 495865 · info@ecofinity.eu",M,29);
-  sf(9,"normal");doc.text(new Date().toLocaleDateString("nl-BE"),W-M,14,{align:"right"});
+  // Header layout (briefhoofd-stijl): logo links, klantgegevens rechts.
+  //
+  //   ┌──────────────────────────────────────────────────────┐
+  //   │  [LOGO ECOFINITY]            Klant: Jan Janssens     │
+  //   │                              Adres: Hofstraat 12     │
+  //   │                              9000 Gent               │
+  //   │                              jan@example.com         │
+  //   └──────────────────────────────────────────────────────┘
 
-  // Projectblok
-  doc.setFillColor(...BG);doc.rect(0,44,W,34,"F");
-  sf(11,"bold");sc(TXT);doc.text("Project:",M,55);
-  sf(14,"bold");sc(OR);doc.text(customer.name||"—",M+23,55);
-  sf(9,"normal");sc(MUT);
-  doc.text("Locatie: "+displayName.split(",").slice(0,3).join(","),M,64);
-  doc.text("Datum: "+new Date().toLocaleDateString("nl-BE"),M,71);
-  if(customer.email){sf(9,"normal");sc(MUT);doc.text(customer.email,W-M,64,{align:"right"});}
-  if(customer.address){sf(9,"normal");sc(MUT);doc.text(customer.address,W-M,71,{align:"right"});}
+  // Logo links (50mm breed, hoogte op aspect ratio)
+  const LOGO_W = 50;
+  const LOGO_H = LOGO_W * (ECOFINITY_LOGO_HEIGHT / ECOFINITY_LOGO_WIDTH);
+  try {
+    doc.addImage(ECOFINITY_LOGO_BASE64, "JPEG", M, 12, LOGO_W, LOGO_H);
+  } catch(e) {
+    // Fallback bij logo-fout: tekst
+    sf(16,"bold");sc(OR);doc.text("ECOFINITY",M,22);
+    sf(8,"normal");sc(MUT);doc.text("Energy & Building Solutions",M,28);
+  }
 
-  let y=87;
+  // Klantgegevens rechts
+  const rightX = W - M;
+  let yh = 18;
+  sf(11,"bold");sc(TXT);doc.text((customer.name||"—"),rightX,yh,{align:"right"}); yh+=6;
+  if(customer.address){
+    sf(9,"normal");sc(MUT);
+    // Splits het adres in regels indien lang (TL geeft soms "straat, postcode gemeente, land")
+    const addrLines=customer.address.split(/,\s*/).filter(Boolean);
+    addrLines.forEach(line=>{doc.text(line,rightX,yh,{align:"right"});yh+=5;});
+  }
+  if(customer.email){sf(9,"normal");sc(MUT);doc.text(customer.email,rightX,yh,{align:"right"});yh+=5;}
+
+  // Datum onder klantblok
+  sf(8,"italic");sc(MUT);
+  doc.text("Rapport: "+new Date().toLocaleDateString("nl-BE"),rightX,yh+2,{align:"right"});
+
+  // Oranje scheidingslijn onder de header
+  const headerBottomY = Math.max(12 + LOGO_H + 4, yh + 6);
+  doc.setDrawColor(...OR);doc.setLineWidth(0.8);
+  doc.line(M, headerBottomY, W-M, headerBottomY);
+
+  // Projectsectie eronder met locatie
+  let y = headerBottomY + 8;
+  sf(11,"bold");sc(TXT);doc.text("Locatie:",M,y);
+  sf(11,"normal");sc(OR);doc.text(displayName.split(",").slice(0,3).join(","),M+25,y);
+  y += 10;
 
   // Systeemoverzicht
   y=secTitle("Systeemoverzicht",y);
@@ -1472,6 +1502,7 @@ async function generatePDF(results,customer,displayName,slope,orientation){
 
   // ─── Technische validatie · String-design ────────────────────────────────
   if(results.stringDesign&&results.stringDesign.mppts.length>0){
+    if(y>284-40){doc.addPage();y=20;}
     y=secTitle("Technische validatie - String-design",y);
     const sd=results.stringDesign;
     const stringRows=sd.mppts.map((m,i)=>([
@@ -1511,7 +1542,9 @@ async function generatePDF(results,customer,displayName,slope,orientation){
     y+=4;hLine(y);y+=8;
   }
 
-  // Maandwaarden
+  // Maandwaarden — forceer nieuwe pagina als titel + tabel niet meer past
+  // (titel ~6mm + tabel ~22mm + buffer ~10mm = 38mm benodigde ruimte; pagina = 297mm; footer start op 284)
+  if(y>284-40){doc.addPage();y=20;}
   y=secTitle("Maandwaarden — Energieopbrengst",y);
   const mVals=MONTHLY_FACTOR.map(f=>Math.round(results.annualKwh*f));
   doc.autoTable({startY:y,
@@ -1546,7 +1579,29 @@ async function generatePDF(results,customer,displayName,slope,orientation){
   // ── Luchtfoto met panelen ──
   try{
     const mapEl=document.getElementById("leaflet-map");
+    const mapArea=mapEl?.closest(".map-area");
     if(mapEl&&window.html2canvas){
+      // De map-area heeft display:none als de gebruiker NIET op Configuratie staat.
+      // Forceer zichtbaarheid tijdens de capture en herstel daarna.
+      const oldDisplay=mapArea?.style.display;
+      const oldPosition=mapArea?.style.position;
+      const oldOpacity=mapArea?.style.opacity;
+      if(mapArea&&oldDisplay==="none"){
+        // Off-screen positionering zodat de gebruiker geen flits ziet
+        mapArea.style.display="flex";
+        mapArea.style.position="absolute";
+        mapArea.style.left="-99999px";
+        mapArea.style.top="0";
+        mapArea.style.width="800px";
+        mapArea.style.height="500px";
+        mapArea.style.opacity="1";
+        // Leaflet detecteert size-changes via een interne loop;
+        // we wachten tot tegen renderen klaar is.
+        await new Promise(r=>setTimeout(r,800));
+        // Trigger window resize zodat Leaflet zijn tiles herrekent
+        window.dispatchEvent(new Event("resize"));
+        await new Promise(r=>setTimeout(r,400));
+      }
       doc.addPage();
       // Mini-header
       doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
@@ -1567,6 +1622,16 @@ async function generatePDF(results,customer,displayName,slope,orientation){
       sf(8,"normal");sc(MUT);
       doc.text("Luchtfoto: Esri World Imagery · Paneelplaatsing is een schatting.",M,y);
       y+=8;
+      // Herstel oorspronkelijke styling
+      if(mapArea&&oldDisplay==="none"){
+        mapArea.style.display=oldDisplay;
+        mapArea.style.position=oldPosition||"";
+        mapArea.style.left="";
+        mapArea.style.top="";
+        mapArea.style.width="";
+        mapArea.style.height="";
+        mapArea.style.opacity=oldOpacity||"";
+      }
     }
   }catch(mapErr){console.warn("Kaartfoto mislukt:",mapErr);}
 
@@ -1579,7 +1644,7 @@ async function generatePDF(results,customer,displayName,slope,orientation){
     sf(7,"normal");sc(MUT);
     doc.text("Pagina "+i+" / "+pgC,W-M,292,{align:"right"});
     doc.text("EcoFinity BV · www.ecofinity.eu · info@ecofinity.eu · +32 55 495865",M,292);
-    doc.text("Berekeningen zijn schattingen. Raadpleeg een erkend installateur voor definitieve offerte.",M,288,{maxWidth:W-2*M-20});
+    doc.text("Berekeningen zijn schattingen gebaseerd op een gemiddelde zonne-instraling in uw woonplaats.",M,288,{maxWidth:W-2*M-20});
   }
 
     // ── Datasheets samenvoegen via pdf-lib ──
@@ -3291,14 +3356,44 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
             {/* Maandelijkse grafiek */}
             <MonthlyChart annualKwh={results.annualKwh}/>
 
+            {/* INSTALLATIEKOSTEN — manueel invoerbaar uit offerte */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,boxShadow:"var(--shadow)"}}>
+              <div className="sl" style={{marginBottom:8}}>Installatiekosten uit offerte</div>
+              <div style={{fontSize:9,color:"var(--muted)",marginBottom:10}}>
+                Vul hier de werkelijke prijzen uit jouw offerte in. Leeg laten = automatische schatting.
+                Wijzigingen werken meteen door in de terugverdientijd hieronder.
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <div>
+                  <div className="inp-label" style={{fontSize:9,fontWeight:600}}>🔆 Panelen + installatie + omvormer (€)</div>
+                  <input className="inp" type="number" min="0" step="50"
+                    placeholder={`auto: €${(results.panelCount*results.panel.price+(results.inv?results.inv.price:1200)).toLocaleString()}`}
+                    value={manualPanelPrice} onChange={e=>setManualPanelPrice(e.target.value)}/>
+                </div>
+                <div>
+                  <div className="inp-label" style={{fontSize:9,fontWeight:600}}>🔋 Batterij (€)</div>
+                  <input className="inp" type="number" min="0" step="50"
+                    placeholder={battEnabled&&selBatt?`auto: €${selBatt.price.toLocaleString()}`:"Geen batterij gekozen"}
+                    value={manualBatteryPrice} onChange={e=>setManualBatteryPrice(e.target.value)}
+                    disabled={!battEnabled}/>
+                </div>
+              </div>
+              <div style={{fontSize:8,color:"var(--muted)",marginTop:8,fontStyle:"italic"}}>
+                Tip: na het wijzigen van prijzen → klik opnieuw "Bereken resultaten" voor het bijwerken van de tabellen.
+              </div>
+            </div>
+
             {/* Terugverdientijd */}
-            <div><div className="sl" style={{marginBottom:8}}>Terugverdientijd</div>
+            <div><div className="sl" style={{marginBottom:8}}>Terugverdientijd vergelijking</div>
               <div className="compare-grid">
                 <div className="compare-col">
                   <h4>🔆 Alleen zonnepanelen</h4>
                   <div className="crow">Panelen ({results.panelCount}×)<span>€{(results.panelCount*results.panel.price).toLocaleString()}</span></div>
                   {results.inv?<div className="crow">{results.inv.model}<span>€{results.inv.price.toLocaleString()}</span></div>:<div className="crow">Installatie forfait<span>€1.200</span></div>}
-                  <div className="crow">Zelfverbruik<span>~30%</span></div>
+                  <div className="crow">Jaarverbruik klant<span>{results.consumption.toLocaleString()} kWh</span></div>
+                  <div className="crow">Opbrengst PV<span>{results.annualKwh.toLocaleString()} kWh</span></div>
+                  <div className="crow">Zelfverbruik<span>~{Math.round(results.selfRatioBase*100)}% ({results.selfKwhBase.toLocaleString()} kWh)</span></div>
+                  <div className="crow">Injectie naar net<span>{results.injectKwhBase.toLocaleString()} kWh</span></div>
                   <div className="crow">Besparing/jaar<span>€{results.annualBase}</span></div>
                   <div className="ctotal"><span>Investering</span><span style={{fontSize:12}}>€{results.investPanels.toLocaleString()}</span></div>
                   <div className="ctotal"><span>Terugverdientijd</span><div className="cval">{results.paybackBase} jaar</div></div>
@@ -3309,7 +3404,10 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
                     <h4>{results.batt?.isAlpha?"⚡🔋":"🔋"} Met {results.batt?.brand} {results.batt?.model}</h4>
                     <div className="crow">Panelen + omvormer<span>€{results.investPanels.toLocaleString()}</span></div>
                     <div className="crow">Batterij ({results.batt?.kwh} kWh)<span>€{(results.battResult.battPrice??results.batt?.price).toLocaleString()}</span></div>
-                    <div className="crow">Zelfverbruik<span>~70%</span></div>
+                    <div className="crow">Jaarverbruik klant<span>{results.consumption.toLocaleString()} kWh</span></div>
+                    <div className="crow">Opbrengst PV<span>{results.annualKwh.toLocaleString()} kWh</span></div>
+                    <div className="crow">Zelfverbruik<span>~70% ({results.battResult.selfKwh.toLocaleString()} kWh)</span></div>
+                    <div className="crow">Injectie naar net<span>{results.battResult.injectKwh.toLocaleString()} kWh</span></div>
                     <div className="crow">Extra besparing<span style={{color:"var(--green)"}}>+€{results.battResult.extraSav}/j</span></div>
                     <div className="crow">Totale besparing<span>€{results.battResult.totSav}/j</span></div>
                     <div className="ctotal"><span>Investering</span><span style={{fontSize:12}}>€{results.battResult.totInv.toLocaleString()}</span></div>
@@ -3319,7 +3417,7 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
                 ):(
                   <div className="compare-col" style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:8,opacity:.6}}>
                     <div style={{fontSize:28}}>🔋</div>
-                    <div style={{fontSize:9,textAlign:"center",color:"var(--muted)"}}>Activeer batterij in de Batterij tab</div>
+                    <div style={{fontSize:9,textAlign:"center",color:"var(--muted)"}}>Activeer batterij in de Batterij tab voor vergelijking</div>
                     <button className="btn blue sm" onClick={()=>setActiveTab("batterij")}>Batterij instellen</button>
                   </div>
                 )}
