@@ -2027,12 +2027,36 @@ export default function App(){
       address:primaryAddress?.full||"",
       email:primaryEmail,
     });
-    // Geocode primary address → coords + auto-laden van de kaart
+    // Geocode primary address → coords + auto-laden van de kaart.
+    // Belangrijk: we triggeren ook setQuery() zodat het input-veld in
+    // Configuratie zich vult, en we resetten GRB/DHM zodat de kaart
+    // het nieuwe gebouw opzoekt (zelfde flow als manuele adres-keuze).
     if(primaryAddress){
       const geo=await TL.geocodeAddress(primaryAddress);
-      if(geo){setCoords({lat:geo.lat,lng:geo.lng});setDisplayName(geo.displayName);}
+      if(geo){
+        setCoords({lat:geo.lat,lng:geo.lng});
+        setDisplayName(geo.displayName);
+        // Vul het Configuratie zoekveld + reset GRB/DHM zodat alles opnieuw laadt
+        const shortAddr=geo.displayName.split(",").slice(0,3).join(",");
+        setQuery(shortAddr);
+        setShowSuggs(false);
+        setSuggs([]);
+        setPanelsDrawn(false);setBuildingCoords(null);setDetectedArea(null);
+        setDetectedFaces(null);setDhmStatus("idle");setDhmError("");setGrbStatus("loading");
+        // Verschuif kaart naar nieuwe locatie
+        if(leafRef.current&&mapReady&&window.L){
+          const L=window.L,map=leafRef.current;
+          map.setView([geo.lat,geo.lng],19);
+          if(markerRef.current) map.removeLayer(markerRef.current);
+          const icon=L.divIcon({html:`<div style="width:10px;height:10px;background:#e07b00;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px #e07b00"></div>`,iconSize:[10,10],iconAnchor:[5,5],className:""});
+          markerRef.current=L.marker([geo.lat,geo.lng],{icon}).addTo(map);
+        }
+      }else{
+        // Geocoding faalde — vertel gebruiker
+        alert("Adres niet gevonden in OpenStreetMap. Voer het adres handmatig in op het Configuratie-tabblad.");
+      }
     }
-  },[]);
+  },[mapReady]);
 
   // Wanneer gebruiker een ander adres kiest uit de lijst
   const handleSelectAddress=useCallback(async(idx)=>{
@@ -2041,8 +2065,25 @@ export default function App(){
     const addr=tlContact.addresses[idx];
     setCustomer(c=>({...c,address:addr.full||""}));
     const geo=await TL.geocodeAddress(addr);
-    if(geo){setCoords({lat:geo.lat,lng:geo.lng});setDisplayName(geo.displayName);}
-  },[tlContact]);
+    if(geo){
+      setCoords({lat:geo.lat,lng:geo.lng});
+      setDisplayName(geo.displayName);
+      const shortAddr=geo.displayName.split(",").slice(0,3).join(",");
+      setQuery(shortAddr);
+      setShowSuggs(false);setSuggs([]);
+      setPanelsDrawn(false);setBuildingCoords(null);setDetectedArea(null);
+      setDetectedFaces(null);setDhmStatus("idle");setDhmError("");setGrbStatus("loading");
+      if(leafRef.current&&mapReady&&window.L){
+        const L=window.L,map=leafRef.current;
+        map.setView([geo.lat,geo.lng],19);
+        if(markerRef.current) map.removeLayer(markerRef.current);
+        const icon=L.divIcon({html:`<div style="width:10px;height:10px;background:#e07b00;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px #e07b00"></div>`,iconSize:[10,10],iconAnchor:[5,5],className:""});
+        markerRef.current=L.marker([geo.lat,geo.lng],{icon}).addTo(map);
+      }
+    }else{
+      alert("Adres niet gevonden in OpenStreetMap. Voer handmatig in.");
+    }
+  },[tlContact,mapReady]);
 
   const handleTlLogin=useCallback(()=>{
     TL.startTeamleaderLogin();
