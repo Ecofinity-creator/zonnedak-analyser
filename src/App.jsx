@@ -15,6 +15,7 @@ import {
   createAutoSaver,
 } from "./projectStorage.js";
 import { computeStringDesign } from "./stringDesign.js";
+import * as TL from "./teamleaderClient.js";
 
 // Re-export under local names so the rest of App.jsx (which still uses the
 // original call syntax) continues to work without modifications.
@@ -1651,6 +1652,116 @@ function NewBattForm({onAdd}){
   </div>);}
 
 // ─── Customer / Teamleader component ─────────────────────────────────────────
+// ─── Teamleader integratie paneel ────────────────────────────────────────────
+// Toont login-knop bij niet-ingelogd, anders zoek-veld + suggesties +
+// adres/email/deals selectie na keuze van een contact.
+function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearching,
+  tlContact,tlLoadingDetails,tlSelectedAddressIdx,tlSelectedDealId,setTlSelectedDealId,
+  onLogin,onLogout,onSelectContact,onSelectAddress}){
+  // Niet ingelogd: login knop
+  if(tlAuth===null) return <div className="customer-section"><div style={{fontSize:9,color:"var(--muted)"}}>Teamleader status laden...</div></div>;
+  if(tlAuth===false||!tlAuth.logged_in){
+    return(
+      <div className="customer-section">
+        <div className="sl">Teamleader</div>
+        {tlAuthMsg&&<div style={{fontSize:9,color:tlAuthMsg.includes("succesvol")?"var(--green)":"var(--red)"}}>{tlAuthMsg}</div>}
+        <div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>
+          Niet ingelogd. Log in om klanten op te zoeken.
+        </div>
+        <button className="btn full" onClick={onLogin}>🔗 Inloggen via Teamleader</button>
+      </div>
+    );
+  }
+  // Ingelogd
+  return(
+    <div className="customer-section">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div className="sl">Teamleader</div>
+        <button onClick={onLogout} style={{background:"none",border:"none",color:"var(--muted)",fontSize:9,cursor:"pointer"}}
+                title="Uitloggen">⏻ Uitloggen</button>
+      </div>
+      <div style={{fontSize:9,color:"var(--muted)"}}>
+        Ingelogd als <strong>{tlAuth.user?.name||tlAuth.user?.email||"?"}</strong>
+      </div>
+      {tlAuthMsg&&<div style={{fontSize:9,color:"var(--green)"}}>{tlAuthMsg}</div>}
+
+      {/* Zoekveld met live suggesties */}
+      <div style={{position:"relative"}}>
+        <div className="inp-label" style={{fontSize:8}}>Klant zoeken in Teamleader</div>
+        <input className="inp" type="text" placeholder="Typ minstens 2 letters..."
+               value={tlQuery} onChange={e=>setTlQuery(e.target.value)} autoComplete="off"/>
+        {tlSearching&&<div style={{fontSize:8,color:"var(--muted)",marginTop:2}}>Zoeken...</div>}
+        {tlResults.length>0&&!tlContact&&<div style={{position:"absolute",top:"100%",left:0,right:0,
+              background:"var(--bg1)",border:"1px solid var(--border)",borderRadius:4,zIndex:50,
+              maxHeight:240,overflowY:"auto",marginTop:2,boxShadow:"0 4px 12px rgba(0,0,0,0.1)"}}>
+          {tlResults.map(r=>(
+            <div key={r.type+r.id} onClick={()=>onSelectContact(r)} style={{padding:"6px 10px",cursor:"pointer",
+                  borderBottom:"1px solid var(--border)",fontSize:10}}
+                 onMouseEnter={e=>e.currentTarget.style.background="var(--bg2)"}
+                 onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+              <div><strong>{r.name}</strong> <span style={{fontSize:8,color:"var(--muted)"}}>· {r.type==="company"?"Bedrijf":"Persoon"}</span></div>
+              {r.primary_email&&<div style={{fontSize:8,color:"var(--muted)"}}>{r.primary_email}</div>}
+            </div>
+          ))}
+        </div>}
+      </div>
+
+      {tlLoadingDetails&&<div style={{fontSize:9,color:"var(--alpha)",marginTop:6}}>⏳ Details ophalen...</div>}
+
+      {/* Geselecteerd contact: adressen, emails, deals */}
+      {tlContact&&!tlLoadingDetails&&<>
+        <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:6,padding:8,marginTop:6}}>
+          <div style={{fontSize:11,fontWeight:600}}>{tlContact.name}</div>
+          {tlContact.emails?.length>0&&<div style={{fontSize:9,color:"var(--muted)"}}>
+            {tlContact.emails.map(e=>e.email).join(" · ")}
+          </div>}
+        </div>
+
+        {tlContact.addresses?.length>0&&<div style={{marginTop:8}}>
+          <div className="sl" style={{fontSize:9,marginBottom:4}}>Adres voor dit project</div>
+          {tlContact.addresses.length===1?<div style={{fontSize:9,color:"var(--muted)"}}>{tlContact.addresses[0].full}</div>:
+            tlContact.addresses.map((a,idx)=>(
+              <label key={idx} style={{display:"flex",alignItems:"flex-start",gap:6,padding:"4px 0",cursor:"pointer",fontSize:9}}>
+                <input type="radio" checked={tlSelectedAddressIdx===idx} onChange={()=>onSelectAddress(idx)} style={{marginTop:2}}/>
+                <span><strong>{a.type}</strong>: {a.full}</span>
+              </label>
+            ))
+          }
+        </div>}
+
+        {tlContact.addresses?.length===0&&<div style={{fontSize:9,color:"var(--amber)",marginTop:6}}>
+          ⚠ Deze klant heeft geen adres in TL. Voeg één toe in TL of vul handmatig in.
+        </div>}
+
+        {tlContact.deals?.length>0&&<div style={{marginTop:10}}>
+          <div className="sl" style={{fontSize:9,marginBottom:4}}>Koppel aan een Deal (optioneel)</div>
+          <div style={{maxHeight:180,overflowY:"auto"}}>
+            <label style={{display:"flex",alignItems:"flex-start",gap:6,padding:"4px 0",cursor:"pointer",fontSize:9}}>
+              <input type="radio" checked={tlSelectedDealId===null} onChange={()=>setTlSelectedDealId(null)} style={{marginTop:2}}/>
+              <span style={{color:"var(--muted)"}}>(geen deal koppelen)</span>
+            </label>
+            {tlContact.deals.map(d=>(
+              <label key={d.id} style={{display:"flex",alignItems:"flex-start",gap:6,padding:"4px 0",cursor:"pointer",fontSize:9,
+                     borderTop:"1px solid var(--border)"}}>
+                <input type="radio" checked={tlSelectedDealId===d.id} onChange={()=>setTlSelectedDealId(d.id)} style={{marginTop:2}}/>
+                <span>
+                  <strong>{d.title}</strong>
+                  {d.phase&&<span style={{color:"var(--muted)"}}> · {d.phase}</span>}
+                  {d.estimated_value&&<span style={{color:"var(--muted)"}}> · €{d.estimated_value.toLocaleString("nl-BE")}</span>}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>}
+
+        {tlContact.deals?.length===0&&<div style={{fontSize:9,color:"var(--muted)",marginTop:6}}>
+          Geen deals voor deze klant in TL.
+        </div>}
+      </>}
+    </div>
+  );
+}
+
 // ─── Project opslag & beheer paneel ──────────────────────────────────────────
 // Identificatie op klantnaam. Auto-save (debounced) gebeurt via App-state.
 // Biedt: Nieuw / Openen / Download JSON / Upload JSON + status-indicator.
@@ -1848,6 +1959,103 @@ export default function App(){
   // Klant & Teamleader
   const[customer,setCustomer]=useState({name:"",address:"",email:""});
   const[tlToken,setTlToken]=useState("");
+
+  // ─── Teamleader OAuth integratie ────────────────────────────────────────
+  // tlAuth: huidige login-status. null = nog niet gecheckt, false = uitgelogd,
+  // {user:{name,email}} = ingelogd.
+  const[tlAuth,setTlAuth]=useState(null);
+  const[tlAuthMsg,setTlAuthMsg]=useState(""); // bv. "denied", "error" na callback
+  // Zoekstate: live suggesties tijdens typen
+  const[tlQuery,setTlQuery]=useState("");
+  const[tlResults,setTlResults]=useState([]);
+  const[tlSearching,setTlSearching]=useState(false);
+  // Geselecteerd contact + details
+  const[tlContact,setTlContact]=useState(null); // {id, type, name, addresses, emails, phones, deals}
+  const[tlLoadingDetails,setTlLoadingDetails]=useState(false);
+  // Welk adres + welke deal de gebruiker heeft gekozen
+  const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
+  const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
+
+  // Bij eerste mount: check OAuth callback in URL + auth-status
+  useEffect(()=>{
+    const cb=TL.consumeAuthCallback();
+    if(cb==='success'){setTlAuthMsg("Login succesvol!");setTimeout(()=>setTlAuthMsg(""),3000);}
+    else if(cb==='denied'){setTlAuthMsg("Login geweigerd.");}
+    else if(cb==='error'){setTlAuthMsg("Login fout — probeer opnieuw.");}
+    TL.checkAuthStatus().then(s=>setTlAuth(s.logged_in?s:false));
+  },[]);
+
+  // Debounced search — created once via useRef zodat hij niet bij elke render
+  // opnieuw wordt aangemaakt (anders verliest debounce zijn timer-state).
+  const debouncedSearchRef=useRef(null);
+  if(!debouncedSearchRef.current){
+    debouncedSearchRef.current=TL.debounce(TL.searchContacts,400);
+  }
+
+  // Trigger search bij wijziging van tlQuery
+  useEffect(()=>{
+    if(!tlAuth?.logged_in||!tlQuery||tlQuery.trim().length<2){
+      setTlResults([]);setTlSearching(false);return;
+    }
+    setTlSearching(true);
+    debouncedSearchRef.current(tlQuery).then(res=>{
+      if(res===null) return; // gecanceld door nieuwere call
+      setTlSearching(false);
+      if(res?.notLoggedIn){setTlAuth(false);setTlResults([]);return;}
+      setTlResults(res?.results||[]);
+    });
+  },[tlQuery,tlAuth?.logged_in]);
+
+  // Wanneer een contact geselecteerd wordt: details ophalen
+  const handleSelectTlContact=useCallback(async(item)=>{
+    setTlLoadingDetails(true);
+    setTlResults([]); // verberg suggesties
+    setTlQuery(item.name);
+    const details=await TL.getContactDetails(item.type,item.id);
+    setTlLoadingDetails(false);
+    if(details?.error){
+      alert("Kon details niet ophalen: "+details.error);return;
+    }
+    setTlContact(details);
+    setTlSelectedAddressIdx(0);
+    setTlSelectedDealId(null);
+    // Populeer customer-state — naam altijd, primary email indien aanwezig
+    const primaryEmail=details.emails?.[0]?.email||"";
+    const primaryAddress=details.addresses?.[0];
+    setCustomer({
+      name:details.name||"",
+      address:primaryAddress?.full||"",
+      email:primaryEmail,
+    });
+    // Geocode primary address → coords + auto-laden van de kaart
+    if(primaryAddress){
+      const geo=await TL.geocodeAddress(primaryAddress);
+      if(geo){setCoords({lat:geo.lat,lng:geo.lng});setDisplayName(geo.displayName);}
+    }
+  },[]);
+
+  // Wanneer gebruiker een ander adres kiest uit de lijst
+  const handleSelectAddress=useCallback(async(idx)=>{
+    setTlSelectedAddressIdx(idx);
+    if(!tlContact?.addresses?.[idx]) return;
+    const addr=tlContact.addresses[idx];
+    setCustomer(c=>({...c,address:addr.full||""}));
+    const geo=await TL.geocodeAddress(addr);
+    if(geo){setCoords({lat:geo.lat,lng:geo.lng});setDisplayName(geo.displayName);}
+  },[tlContact]);
+
+  const handleTlLogin=useCallback(()=>{
+    TL.startTeamleaderLogin();
+  },[]);
+
+  const handleTlLogout=useCallback(()=>{
+    TL.clearUserId();
+    setTlAuth(false);
+    setTlContact(null);
+    setTlResults([]);
+    setTlQuery("");
+  },[]);
+
   const[pdfLoading,setPdfLoading]=useState(false);
 
   // Manuele prijzen uit offerte (overschrijven automatische berekening als ingevuld).
@@ -1936,9 +2144,14 @@ export default function App(){
     slope,
     manualPanelPrice,
     manualBatteryPrice,
+    // Teamleader koppelingen — voor latere terugschrijving naar TL
+    tlContactType:tlContact?.type||null,
+    tlContactId:tlContact?.id||null,
+    tlDealId:tlSelectedDealId,
   }),[customer,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
       selPanelId,selInvId,selBattId,battEnabled,customCount,panelOrient,panelRotOffset,
-      orientation,slope,manualPanelPrice,manualBatteryPrice]);
+      orientation,slope,manualPanelPrice,manualBatteryPrice,
+      tlContact,tlSelectedDealId]);
 
   // Auto-save: triggert telkens als iets in de snapshot verandert én er een
   // klantnaam is ingevuld. Debounced tot 1 sec na laatste wijziging.
@@ -1983,6 +2196,10 @@ export default function App(){
     if(d.slope!=null) setSlope(d.slope);
     if(d.manualPanelPrice!=null) setManualPanelPrice(d.manualPanelPrice);
     if(d.manualBatteryPrice!=null) setManualBatteryPrice(d.manualBatteryPrice);
+    // Teamleader: selected deal ID herstellen. Het volledige tlContact wordt
+    // niet hersteld — dat zou een nieuwe TL-call vragen. De gebruiker kan
+    // het opnieuw zoeken in TL als hij wijzigingen wil maken aan de klantdata.
+    if(d.tlDealId!==undefined) setTlSelectedDealId(d.tlDealId);
     // Na de batch state-updates: auto-save weer aanzetten.
     // React batcht synchroon; setTimeout zorgt dat alle useEffects gelopen zijn.
     setTimeout(()=>{
@@ -2012,6 +2229,11 @@ export default function App(){
     setResults(null);
     setAiText("");
     setPanelsDrawn(false);
+    // Reset TL state
+    setTlContact(null);
+    setTlQuery("");
+    setTlResults([]);
+    setTlSelectedDealId(null);
     setTimeout(()=>{suppressAutoSaveRef.current=false;setShowProjectMenu(false);},100);
   },[]);
 
@@ -2711,18 +2933,32 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
           </div>}
         </div>
 
-        {/* KLANT TAB */}
+        {/* KLANT TAB — nu eerste in flow: TL login → contact zoeken → adres+deal kiezen */}
         {activeTab==="klant"&&<div className="section">
           <ProjectPanel customer={customer} projectList={projectList} lastSavedAt={lastSavedAt}
             isLoadingProject={isLoadingProject} showProjectMenu={showProjectMenu}
             setShowProjectMenu={setShowProjectMenu}
             onNew={handleNewProject} onLoad={handleLoadProject} onDelete={handleDeleteProject}
             onDownload={handleDownloadProject} onUpload={handleUploadProject}/>
-          <CustomerPanel customer={customer} setCustomer={setCustomer} tlToken={tlToken} setTlToken={setTlToken}/>
-          <div className="info-box alpha-info">
-            <strong>ℹ️ Teamleader integratie</strong><br/>
-            Voer uw Teamleader Access Token in (te vinden in Teamleader → Marktplaats → API → Access Token).
-            Zoek op klantnaam om adres en e-mail automatisch in te vullen.
+          <TeamleaderPanel
+            tlAuth={tlAuth} tlAuthMsg={tlAuthMsg}
+            tlQuery={tlQuery} setTlQuery={setTlQuery}
+            tlResults={tlResults} tlSearching={tlSearching}
+            tlContact={tlContact} tlLoadingDetails={tlLoadingDetails}
+            tlSelectedAddressIdx={tlSelectedAddressIdx}
+            tlSelectedDealId={tlSelectedDealId} setTlSelectedDealId={setTlSelectedDealId}
+            onLogin={handleTlLogin} onLogout={handleTlLogout}
+            onSelectContact={handleSelectTlContact} onSelectAddress={handleSelectAddress}/>
+          {/* Manuele override / aanvulling — gebruiker kan altijd de waarden bewerken
+              ook al kwamen ze uit TL. Bv. tijdelijke afwijking in adres voor dit project. */}
+          <div className="customer-section">
+            <div className="sl">Klantgegevens (manueel bewerkbaar)</div>
+            <div className="inp-label" style={{fontSize:8}}>Naam</div>
+            <input className="inp" value={customer.name} onChange={e=>setCustomer({...customer,name:e.target.value})}/>
+            <div className="inp-label" style={{fontSize:8,marginTop:4}}>Adres</div>
+            <input className="inp" value={customer.address} onChange={e=>setCustomer({...customer,address:e.target.value})}/>
+            <div className="inp-label" style={{fontSize:8,marginTop:4}}>Email</div>
+            <input className="inp" type="email" value={customer.email} onChange={e=>setCustomer({...customer,email:e.target.value})}/>
           </div>
         </div>}
 
