@@ -1904,7 +1904,7 @@ export class ErrorBoundary extends Component {
 }
 
 export default function App(){
-  const[activeTab,setActiveTab]=useState("configuratie");
+  const[activeTab,setActiveTab]=useState("klant");
   const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
   const[coords,setCoords]=useState(null);const[displayName,setDisplayName]=useState("");
   const[slope,setSlope]=useState(35);const[orientation,setOrientation]=useState("Z");
@@ -2564,7 +2564,7 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
   const isLoading=grbStatus==="loading"||dhmStatus==="loading";
 
   const TABS=[
-    {k:"configuratie",l:"01 Configuratie"},{k:"klant",l:"02 Klant"},
+    {k:"klant",l:"01 Klant"},{k:"configuratie",l:"02 Configuratie"},
     {k:"panelen",l:"03 Panelen"},{k:"omvormers",l:"04 AlphaESS"},
     {k:"batterij",l:"05 Batterij"},{k:"technisch",l:"06 Technisch"},
     {k:"resultaten",l:"07 Resultaten"}
