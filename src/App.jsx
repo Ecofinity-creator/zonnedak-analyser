@@ -14,6 +14,7 @@ import {
   importProjectFromJSON,
   createAutoSaver,
 } from "./projectStorage.js";
+import { computeStringDesign } from "./stringDesign.js";
 
 // Re-export under local names so the rest of App.jsx (which still uses the
 // original call syntax) continues to work without modifications.
@@ -540,44 +541,66 @@ async function fetchPdfBytes(path){
 // Datasheet pad relatief aan de app base URL (in /public/datasheets/)
 const DS_BASE = import.meta.env.BASE_URL + "datasheets/";
 
+// ─── PANELEN met volledige elektrische specs (voor string-design) ───────────
+// Specs uit datasheets bij STC (1000W/m², 25°C, AM1.5).
+// tempCoeffVoc is %/°C — gebruikt om Voc bij koude te berekenen voor
+// max-string-lengte validatie.
 const DEFAULT_PANELS=[
-  // ① Qcells Q.TRON BLK S-G3R.12+ BFG 440W — datasheet 2024-05
-  // Formaat: 1762×1134×30mm · Gewicht: 20,9 kg · Eff: 22,0% · 25j prod / 30j prestatie
   {id:1,brand:"Qcells",      model:"Q.TRON BLK S-G3R.12+ 440W",   watt:440,area:1.998,eff:22.0,price:195,warranty:25,
+   voc:38.74,vmp:32.66,isc:14.42,imp:13.47,tempCoeffVoc:-0.24,tempCoeffPmax:-0.30,
    dims:"1762×1134×30mm",weight:"20.9 kg",datasheet:"qcells-440w.pdf"},
 
-  // ② Trina Solar Vertex S+ TSM-NEG18RC.27 500W — datasheet 2024
-  // Formaat: 1961×1134×30mm · Gewicht: 23,6 kg · Eff: 22,3% · 15j prod / 30j prestatie
   {id:2,brand:"Trina Solar", model:"Vertex S+ TSM-NEG18RC.27 500W",watt:500,area:2.224,eff:22.3,price:240,warranty:30,
+   voc:45.4,vmp:38.0,isc:13.92,imp:13.16,tempCoeffVoc:-0.25,tempCoeffPmax:-0.30,
    dims:"1961×1134×30mm",weight:"23.6 kg",datasheet:"trina-500w.pdf"},
 
-  {id:3,brand:"Jinko Solar",   model:"Tiger Neo N-Type 420W",   watt:420,area:1.722,eff:21.8,price:210,warranty:25,
+  {id:3,brand:"Jinko Solar", model:"Tiger Neo N-Type 420W",   watt:420,area:1.722,eff:21.8,price:210,warranty:25,
+   voc:37.39,vmp:31.41,isc:14.02,imp:13.38,tempCoeffVoc:-0.25,tempCoeffPmax:-0.29,
    dims:"1722×1134×30mm",weight:"21.3 kg",datasheet:null},
-  {id:4,brand:"LONGi Solar",   model:"Hi-MO 6 Explorer 415W",   watt:415,area:1.722,eff:21.3,price:195,warranty:25,
+
+  {id:4,brand:"LONGi Solar", model:"Hi-MO 6 Explorer 415W",   watt:415,area:1.722,eff:21.3,price:195,warranty:25,
+   voc:37.55,vmp:31.42,isc:13.95,imp:13.21,tempCoeffVoc:-0.27,tempCoeffPmax:-0.34,
    dims:"1722×1134×30mm",weight:"21.3 kg",datasheet:null},
-  {id:5,brand:"Canadian Solar",model:"HiHero 430W",              watt:430,area:1.879,eff:22.8,price:235,warranty:25,
+
+  {id:5,brand:"Canadian Solar",model:"HiHero 430W",           watt:430,area:1.879,eff:22.8,price:235,warranty:25,
+   voc:39.4,vmp:33.0,isc:13.92,imp:13.04,tempCoeffVoc:-0.26,tempCoeffPmax:-0.29,
    dims:"1756×1096×35mm",weight:"21.3 kg",datasheet:null},
 ];
 
+// ─── OMVORMERS met volledige elektrische specs (voor string-design) ──────────
+// Specs uit AlphaESS SMILE-G3 datasheet 2025.
+// mpptCount, maxDcVoltage, maxInputCurrentPerMppt, mpptVoltageMin/Max,
+// maxAcPower, maxDcPower zijn de string-design parameters.
 const DEFAULT_INVERTERS=[
-  // Specs uit SMILE G3 S3.6/S5 datasheet 2025
-  // S3.6: 3,68kW nom · max PV 7,36kW (200%) · 2 MPPT/1 · 580V max · 97% eff · IP65
   {id:1,brand:"AlphaESS",model:"SMILE-G3-S3.6",fase:"1-fase",kw:3.68,mppt:2,maxPv:7360, eff:97.0,price:1850,warranty:10,
+   mpptCount:2,maxDcVoltage:580,maxInputCurrentPerMppt:16,mpptVoltageMin:90,mpptVoltageMax:560,
+   maxAcPower:3680,maxDcPower:7360,
    dims:"610×212×366mm",weight:"19.5 kg",
    notes:"3,68kW · max 7,36kWp PV · 2 MPPT · UPS backup · IP65 · C10/11 · Jabba.",
    datasheet:"alphaess-smile-g3.pdf"},
-  // S5: 5kW nom · max PV 10kW (200%) · 2 MPPT/1 · 97% eff · IP65
+
   {id:2,brand:"AlphaESS",model:"SMILE-G3-S5",  fase:"1-fase",kw:5.0, mppt:2,maxPv:10000,eff:97.0,price:2400,warranty:10,
+   mpptCount:2,maxDcVoltage:600,maxInputCurrentPerMppt:16,mpptVoltageMin:90,mpptVoltageMax:560,
+   maxAcPower:5000,maxDcPower:10000,
    dims:"610×212×366mm",weight:"19.5 kg",
    notes:"5kW · max 10kWp PV · 2 MPPT · UPS backup · IP65 · C10/11 · Jabba. Populairste model.",
    datasheet:"alphaess-smile-g3.pdf"},
+
   {id:3,brand:"AlphaESS",model:"SMILE-G3-S8",  fase:"1-fase",kw:8.0, mppt:2,maxPv:16000,eff:97.5,price:3100,warranty:10,
+   mpptCount:2,maxDcVoltage:600,maxInputCurrentPerMppt:20,mpptVoltageMin:90,mpptVoltageMax:560,
+   maxAcPower:8000,maxDcPower:16000,
    dims:"610×212×366mm",weight:"22 kg",
    notes:"8kW · max 16kWp · display · EV-laders · IP65.",datasheet:"alphaess-smile-g3.pdf"},
+
   {id:4,brand:"AlphaESS",model:"SMILE-G3-T4/6/8/10",fase:"3-fase",kw:10.0,mppt:3,maxPv:20000,eff:97.5,price:4200,warranty:10,
+   mpptCount:3,maxDcVoltage:1000,maxInputCurrentPerMppt:16,mpptVoltageMin:160,mpptVoltageMax:850,
+   maxAcPower:10000,maxDcPower:20000,
    dims:"610×212×366mm",weight:"25 kg",
    notes:"Driefase hybride · 3 MPPT · 150% overbelasting · max 45,6 kWh.",datasheet:"alphaess-smile-g3.pdf"},
+
   {id:5,brand:"AlphaESS",model:"SMILE-G3-T15/20", fase:"3-fase",kw:20.0,mppt:3,maxPv:40000,eff:97.6,price:6500,warranty:10,
+   mpptCount:3,maxDcVoltage:1000,maxInputCurrentPerMppt:32,mpptVoltageMin:200,mpptVoltageMax:850,
+   maxAcPower:20000,maxDcPower:40000,
    dims:"610×212×366mm",weight:"30 kg",
    notes:"15-20kW driefase voor grote woningen of KMO.",datasheet:"alphaess-smile-g3.pdf"},
 ];
@@ -1435,6 +1458,47 @@ async function generatePDF(results,customer,displayName,slope,orientation){
     margin:{left:M,right:M},tableWidth:W-2*M});
   y=doc.lastAutoTable.finalY+10;hLine(y);y+=8;
 
+  // ─── Technische validatie · String-design ────────────────────────────────
+  if(results.stringDesign&&results.stringDesign.mppts.length>0){
+    y=secTitle("Technische validatie - String-design",y);
+    const sd=results.stringDesign;
+    const stringRows=sd.mppts.map((m,i)=>([
+      "MPPT "+(i+1),
+      m.stringCount+"x "+m.panelsPerString+" panelen",
+      Math.round(m.vocStc)+" V",
+      Math.round(m.vocCold)+" V",
+      Math.round(m.vmpHot)+" V",
+      m.iscTotal.toFixed(1)+" A",
+      (m.powerStc/1000).toFixed(2)+" kWp"
+    ]));
+    doc.autoTable({startY:y,
+      head:[["MPPT","Configuratie","Voc STC","Voc -15°C","Vmp 70°C","Stroom","Vermogen"]],
+      body:stringRows,
+      styles:{fontSize:8,cellPadding:2.5},
+      headStyles:{fillColor:BL,textColor:WHT,fontStyle:"bold"},
+      alternateRowStyles:{fillColor:[239,246,255]},
+      margin:{left:M,right:M},tableWidth:W-2*M});
+    y=doc.lastAutoTable.finalY+4;
+    sf(7,"italic");sc(MUT);
+    doc.text("Limieten omvormer: max DC "+results.inv.maxDcVoltage+"V, min MPPT "+results.inv.mpptVoltageMin+"V, max stroom "+results.inv.maxInputCurrentPerMppt+"A per MPPT",M,y);
+    y+=6;
+    if(sd.warnings.length>0){
+      sf(9,"bold");sc(BLK);doc.text("Aandachtspunten:",M,y);y+=5;
+      sd.warnings.forEach(w=>{
+        const col=w.severity==="critical"?[200,0,0]:w.severity==="warning"?[200,140,0]:[80,80,80];
+        sf(8,"bold");sc(col);
+        const prefix=w.severity==="critical"?"[KRITIEK] ":w.severity==="warning"?"[WAARSCHUWING] ":"[INFO] ";
+        doc.text(prefix+w.title,M,y);y+=4;
+        sf(7,"normal");sc(BLK);
+        const lines=doc.splitTextToSize(w.detail,W-2*M);
+        doc.text(lines,M+3,y);y+=lines.length*3.5+2;
+      });
+    }else{
+      sf(9,"bold");sc([0,140,0]);doc.text("OK - Configuratie binnen alle veiligheidsgrenzen.",M,y);y+=5;
+    }
+    y+=4;hLine(y);y+=8;
+  }
+
   // Maandwaarden
   y=secTitle("Maandwaarden — Energieopbrengst",y);
   const mVals=MONTHLY_FACTOR.map(f=>Math.round(results.annualKwh*f));
@@ -2208,7 +2272,8 @@ export default function App(){
     }
     setResults({irr,panelCount,actualArea:Math.round(actualArea),annualKwh,co2,coverage,
       investPanels,annualBase,paybackBase,battResult,panel:selPanel,inv:selInv,batt:battEnabled?selBatt:null,
-      detectedArea,grbOk:grbStatus==="ok",dhmOk:dhmStatus==="ok",orientation,slope});
+      detectedArea,grbOk:grbStatus==="ok",dhmOk:dhmStatus==="ok",orientation,slope,
+      stringDesign:stringDesign||null});
     if(leafRef.current&&window.L){
       const L=window.L,map=leafRef.current;
       if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
@@ -2222,7 +2287,37 @@ export default function App(){
       const battStr=battResult?`\nBatterij: ${selBatt.brand} ${selBatt.model} (${selBatt.kwh}kWh, €${selBatt.price}) · Extra: €${battResult.extraSav}/j · Terugverdien: ${battResult.payback}j`:"Geen batterij.";
       const resp=await fetch(AI_PROXY_URL,{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,
-          messages:[{role:"user",content:`Zonne-energie expert Vlaanderen. Beknopt professioneel advies in het Nederlands:\n\nLocatie: ${displayName}\nDak: ${grbStatus==="ok"?"GRB-contour":"Schatting"} · ${detectedArea||80} m²${dhmStr}\nPaneel: ${selPanel.brand} ${selPanel.model} (${selPanel.watt}W, ${selPanel.eff}%)\nAantal: ${panelCount} · ${Math.round(actualArea)} m² · ${((panelCount*selPanel.watt)/1000).toFixed(1)} kWp\nHelling: ${slope}° ${orientation} · ${irr} kWh/m²/j\n${invStr}\nOpbrengst: ${annualKwh} kWh/j · CO₂: ${co2} kg/j\nInvestering: €${investPanels.toLocaleString()} · Besparing: €${annualBase}/j · Terugverdien: ${paybackBase}j\n${battStr}\n\nMax 180 woorden:\n1. Kwaliteit dak & paneelkeuze\n2. AlphaESS G3 synergie\n3. Vlaamse premies (capaciteitstarief, BTW 6%, REG-premie)`}]})});
+          messages:[{role:"user",content:`Je bent een onafhankelijk PV-installatie expert voor woningen in Vlaanderen, België. Geef een beknopt en professioneel advies in het Nederlands voor onderstaande installatie. Belangrijk:
+
+CONTEXT VLAANDEREN 2026:
+- Salderen bestaat NIET meer in Vlaanderen sinds 2021 (digitale meter verplicht).
+- Eigen verbruik is essentieel: opbrengst die direct verbruikt wordt is de meest waardevolle (bespaart aankoopprijs ~€0,28/kWh inclusief BTW).
+- Injectie naar het net wordt vergoed aan de injectievergoeding (~€0,03–0,06/kWh, sterk variabel per leverancier).
+- Capaciteitstarief is van toepassing sinds 2023: piekverbruik (kW) bepaalt distributiekosten naast verbruik (kWh). Een batterij of slim laden kan dit drukken.
+- Prosumententarief is afgeschaft (was vergoeding voor digitale meter, niet meer relevant).
+- BTW 6% is enkel mogelijk bij installatie op een woning ouder dan 10 jaar; anders 21%.
+- Geen vaste premies meer voor PV (REG-premie afgeschaft 2024). Wel premie voor batterijen via Fluvius mogelijk afhankelijk van regio en periode.
+- Realistische terugverdientijd in 2026: 7–11 jaar voor PV-installatie zonder batterij, 9–13 jaar met batterij.
+
+INSTALLATIE GEGEVENS:
+Locatie: ${displayName}
+Dak: ${grbStatus==="ok"?"GRB-contour":"Schatting"} · ${detectedArea||80} m²${dhmStr}
+Paneel: ${selPanel.brand} ${selPanel.model} (${selPanel.watt}W, ${selPanel.eff}%)
+Aantal: ${panelCount} · ${Math.round(actualArea)} m² · ${((panelCount*selPanel.watt)/1000).toFixed(1)} kWp
+Helling: ${slope}° ${orientation} · ${irr} kWh/m²/j
+${invStr}
+Opbrengst: ${annualKwh} kWh/j · CO₂: ${co2} kg/j
+Investering: €${investPanels.toLocaleString()} · Besparing: €${annualBase}/j · Terugverdien: ${paybackBase}j
+${battStr}
+
+GEEF EEN ADVIES VAN MAX 200 WOORDEN MET:
+1. Beoordeling van paneelkeuze en daksituatie (oriëntatie, helling, opbrengst)
+2. Eigen verbruik en zelfconsumptie — concrete tips voor deze installatie
+3. Capaciteitstarief implicaties${battEnabled?" en hoe de batterij dit beïnvloedt":""}
+4. Realistische verwachting terugverdientijd in Vlaamse context
+5. Aandachtspunten zoals BTW-tarief (woningouder 10j), keuring conform AREI, conformiteitsverklaring Synergrid C10/11
+
+Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschafte regelingen (geen salderen, geen REG-premie, geen prosumententarief).`}]})});
       const d=await resp.json();setAiText(d.content?.find(b=>b.type==="text")?.text||"Analyse niet beschikbaar.");
     }catch(e){setAiText("AI-analyse tijdelijk niet beschikbaar. "+(e.message||""));}
     setAiLoading(false);
@@ -2240,12 +2335,17 @@ export default function App(){
   const filteredBatt=battFilter==="alle"?batteries:battFilter==="alpha"?batteries.filter(b=>b.isAlpha):batteries.filter(b=>!b.isAlpha);
   const zq=ZONE_Q[orientation]||ZONE_Q.Z;
   const dhmHits=new Set(detectedFaces?.map(f=>f.orientation)||[]);
+  // String design — alleen berekenen als panel + omvormer beide volledige specs hebben
+  const stringDesign = (selPanel?.voc && selInv?.maxDcVoltage)
+    ? computeStringDesign(selPanel, selInv, panelCount)
+    : null;
   const isLoading=grbStatus==="loading"||dhmStatus==="loading";
 
   const TABS=[
     {k:"configuratie",l:"01 Configuratie"},{k:"klant",l:"02 Klant"},
     {k:"panelen",l:"03 Panelen"},{k:"omvormers",l:"04 AlphaESS"},
-    {k:"batterij",l:"05 Batterij"},{k:"resultaten",l:"06 Resultaten"}
+    {k:"batterij",l:"05 Batterij"},{k:"technisch",l:"06 Technisch"},
+    {k:"resultaten",l:"07 Resultaten"}
   ];
 
   return(<><style>{STYLES}</style>
@@ -2651,6 +2751,74 @@ export default function App(){
           <div className="filter-row">{[["alle","Alle"],["alpha","AlphaESS G3"],["overig","Andere"]].map(([k,l])=><button key={k} className={`filter-btn ${battFilter===k?"active":""}`} onClick={()=>setBattFilter(k)}>{l}</button>)}</div>
           <div className="list">{filteredBatt.map(b=><BattCard key={b.id} b={b} selected={b.id===selBattId} onSelect={setSelBattId} onDelete={id=>setBatteries(bs=>bs.filter(x=>x.id!==id))} canDelete={DEFAULT_BATTERIES.findIndex(d=>d.id===b.id)===-1}/>)}</div>
           <NewBattForm onAdd={b=>setBatteries(bs=>[...bs,b])}/>
+        </div>}
+
+        {/* TECHNISCH TAB — string-design validatie */}
+        {activeTab==="technisch"&&<div className="section">
+          <div className="sl">Technische validatie · String-design</div>
+          {!selPanel?.voc&&<div className="info-box warn"><strong>⚠️ Onvolledige paneel-data</strong><br/>Het geselecteerde paneel heeft geen elektrische specs (Voc/Vmp/Isc). Voeg deze toe in de catalogus om string-validatie uit te voeren.</div>}
+          {!selInv&&<div className="info-box warn"><strong>⚠️ Geen omvormer geselecteerd</strong><br/>Kies eerst een omvormer in het AlphaESS-tabblad.</div>}
+          {!selInv?.maxDcVoltage&&selInv&&<div className="info-box warn"><strong>⚠️ Onvolledige omvormer-data</strong><br/>De geselecteerde omvormer heeft geen DC-specs in de catalogus.</div>}
+          {stringDesign&&<>
+            {/* Samenvatting */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:12,marginBottom:10}}>
+              <div className="sl" style={{marginBottom:8}}>Configuratie samenvatting</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:10}}>
+                <div>Paneel</div><div><strong>{selPanel.brand} {selPanel.model}</strong></div>
+                <div>Omvormer</div><div><strong>{selInv.brand} {selInv.model}</strong></div>
+                <div>Aantal panelen</div><div><strong>{panelCount}</strong> ({(panelCount*selPanel.watt/1000).toFixed(2)} kWp DC)</div>
+                <div>MPPTs gebruikt</div><div><strong>{stringDesign.summary.mpptsUsed}</strong> van {stringDesign.summary.mpptsAvailable}</div>
+                <div>Configuratie</div><div><strong>{stringDesign.summary.stringsPerMppt}× {stringDesign.summary.panelsPerString} panelen per MPPT</strong></div>
+              </div>
+            </div>
+
+            {/* String-tabel */}
+            {stringDesign.mppts.length>0&&<div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:12,marginBottom:10}}>
+              <div className="sl" style={{marginBottom:8}}>String-verdeling per MPPT</div>
+              <table style={{width:"100%",fontSize:9,borderCollapse:"collapse"}}>
+                <thead><tr style={{borderBottom:"1px solid var(--border)"}}>
+                  <th style={{textAlign:"left",padding:4}}>MPPT</th>
+                  <th style={{textAlign:"left",padding:4}}>Strings</th>
+                  <th style={{textAlign:"left",padding:4}}>Pan/string</th>
+                  <th style={{textAlign:"right",padding:4}}>Voc STC</th>
+                  <th style={{textAlign:"right",padding:4}}>Voc -15°C</th>
+                  <th style={{textAlign:"right",padding:4}}>Vmp 70°C</th>
+                  <th style={{textAlign:"right",padding:4}}>Stroom</th>
+                  <th style={{textAlign:"right",padding:4}}>Vermogen</th>
+                </tr></thead>
+                <tbody>{stringDesign.mppts.map((m,i)=>(
+                  <tr key={i} style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:4}}><strong>MPPT {i+1}</strong></td>
+                    <td style={{padding:4}}>{m.stringCount}× parallel</td>
+                    <td style={{padding:4}}>{m.panelsPerString}</td>
+                    <td style={{padding:4,textAlign:"right"}}>{m.vocStc.toFixed(0)} V</td>
+                    <td style={{padding:4,textAlign:"right",color:m.vocCold>selInv.maxDcVoltage?"var(--red)":"inherit",fontWeight:m.vocCold>selInv.maxDcVoltage*0.95?700:400}}>{m.vocCold.toFixed(0)} V</td>
+                    <td style={{padding:4,textAlign:"right",color:m.vmpHot<selInv.mpptVoltageMin?"var(--red)":"inherit"}}>{m.vmpHot.toFixed(0)} V</td>
+                    <td style={{padding:4,textAlign:"right"}}>{m.iscTotal.toFixed(1)} A</td>
+                    <td style={{padding:4,textAlign:"right"}}>{(m.powerStc/1000).toFixed(2)} kWp</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+              <div style={{fontSize:8,color:"var(--muted)",marginTop:6}}>
+                Voc -15°C = max spanning bij koude (limiet omvormer: {selInv.maxDcVoltage}V) · Vmp 70°C = min spanning bij hitte (min MPPT: {selInv.mpptVoltageMin}V) · Stroom = totaal Isc per MPPT (limiet: {selInv.maxInputCurrentPerMppt}A)
+              </div>
+            </div>}
+
+            {/* Waarschuwingen */}
+            {stringDesign.warnings.length>0&&<div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {stringDesign.warnings.map((w,i)=>(
+                <div key={i} className={`info-box ${w.severity==="critical"?"warn":w.severity==="warning"?"warn":"alpha-info"}`}
+                     style={{borderLeftWidth:4,borderLeftStyle:"solid",borderLeftColor:w.severity==="critical"?"var(--red)":w.severity==="warning"?"var(--amber)":"var(--blue)"}}>
+                  <strong>{w.severity==="critical"?"🚫":w.severity==="warning"?"⚠️":"ℹ️"} {w.title}</strong><br/>
+                  <span style={{fontSize:9}}>{w.detail}</span>
+                </div>
+              ))}
+            </div>}
+            {stringDesign.warnings.length===0&&<div className="info-box alpha-info">
+              <strong>✅ Configuratie OK</strong><br/>
+              <span style={{fontSize:9}}>Alle technische limieten worden gerespecteerd. Veilige werking bij temperaturen van −15°C tot +70°C celtemperatuur.</span>
+            </div>}
+          </>}
         </div>}
 
         {/* RESULTATEN TAB */}
