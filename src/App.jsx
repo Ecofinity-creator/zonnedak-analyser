@@ -1479,31 +1479,75 @@ async function generatePDF(results,customer,displayName,slope,orientation){
     sf(7,"normal");sc(MUT);doc.text(lbl,kx+(kw-3)/2,y+14,{align:"center"});
   });
   y+=24;
-  const finRows=[
+
+  // Algemene info-tabel (één kolom — geldt voor beide scenario's)
+  const generalRows=[
     ["Geselecteerd paneel",results.panelCount+" × "+results.panel.brand+" "+results.panel.model],
     ["Geselecteerde omvormer",results.inv?results.inv.brand+" "+results.inv.model:"Geen specifiek model"],
-    ["Totale investering (panelen + installatie + omvormer)",fmtPrice(results.investPanels)],
     ["Jaarverbruik klant",results.consumption.toLocaleString("nl-BE")+" kWh"],
     ["Jaaropbrengst PV",results.annualKwh.toLocaleString("nl-BE")+" kWh"],
     ["Dekkingsgraad PV / verbruik",results.coverage+" %"],
-    ["Zelfverbruik (~"+Math.round(results.selfRatioBase*100)+"%)",results.selfKwhBase.toLocaleString("nl-BE")+" kWh"],
+  ];
+  doc.autoTable({startY:y,body:generalRows,
+    styles:{fontSize:9,cellPadding:3},
+    columnStyles:{0:{fontStyle:"bold",cellWidth:80,textColor:MUT},1:{halign:"right"}},
+    theme:"plain",
+    margin:{left:M,right:M},tableWidth:W-2*M});
+  y=doc.lastAutoTable.finalY+8;
+
+  // Vergelijkingstabel — twee kolommen naast elkaar (zelfde indeling als scherm)
+  if(y>284-80){doc.addPage();y=20;}
+  sf(11,"bold");sc(TXT);doc.text("Terugverdientijd vergelijking",M,y);y+=6;
+
+  const hasBatt=!!results.battResult;
+  const colWithoutBatt=[
+    ["Investering",fmtPrice(results.investPanels)],
+    ["Zelfverbruik","~"+Math.round(results.selfRatioBase*100)+"% ("+results.selfKwhBase.toLocaleString("nl-BE")+" kWh)"],
     ["Injectie naar net",results.injectKwhBase.toLocaleString("nl-BE")+" kWh"],
-    ["Jaarlijkse besparing","€ "+results.annualBase.toLocaleString("nl-BE")],
+    ["Besparing/jaar","€ "+results.annualBase.toLocaleString("nl-BE")],
     ["Terugverdientijd",fmtPayback(results.paybackBase)],
   ];
-  if(results.battResult){
-    finRows.push(["Thuisbatterij "+(results.batt?.model||""),fmtPrice(results.battResult.battPrice)]);
-    finRows.push(["Zelfverbruik met batterij (~70%)",results.battResult.selfKwh.toLocaleString("nl-BE")+" kWh"]);
-    finRows.push(["Extra besparing met batterij","€ "+results.battResult.extraSav.toLocaleString("nl-BE")+"/jaar"]);
-    finRows.push(["Terugverdientijd incl. batterij",fmtPayback(results.battResult.payback)]);
+  const colWithBatt=hasBatt?[
+    ["Investering",fmtPrice(results.battResult.totInv)],
+    ["Zelfverbruik","~70% ("+results.battResult.selfKwh.toLocaleString("nl-BE")+" kWh)"],
+    ["Injectie naar net",results.battResult.injectKwh.toLocaleString("nl-BE")+" kWh"],
+    ["Extra besparing","€ "+results.battResult.extraSav.toLocaleString("nl-BE")+"/jaar"],
+    ["Totale besparing","€ "+results.battResult.totSav.toLocaleString("nl-BE")+"/jaar"],
+    ["Terugverdientijd",fmtPayback(results.battResult.payback)],
+  ]:null;
+
+  // Render twee tabellen naast elkaar
+  const colW=(W-2*M-4)/2; // 2 kolommen, 4mm gap ertussen
+  const colLeftX=M, colRightX=M+colW+4;
+  const startY=y;
+
+  // LINKERKOLOM — Alleen zonnepanelen
+  doc.autoTable({startY:y,
+    head:[["Alleen zonnepanelen",""]],
+    body:colWithoutBatt,
+    styles:{fontSize:8,cellPadding:2.5},
+    headStyles:{fillColor:OR,textColor:WHT,fontStyle:"bold",halign:"left"},
+    columnStyles:{0:{fontStyle:"bold",cellWidth:35,textColor:MUT},1:{halign:"right"}},
+    margin:{left:colLeftX,right:M},tableWidth:colW});
+  const leftEndY=doc.lastAutoTable.finalY;
+
+  // RECHTERKOLOM — Met batterij (of placeholder)
+  if(hasBatt){
+    doc.autoTable({startY:startY,
+      head:[["Met "+(results.batt?.brand||"")+" "+(results.batt?.model||""),""]],
+      body:colWithBatt,
+      styles:{fontSize:8,cellPadding:2.5},
+      headStyles:{fillColor:BL,textColor:WHT,fontStyle:"bold",halign:"left"},
+      columnStyles:{0:{fontStyle:"bold",cellWidth:35,textColor:MUT},1:{halign:"right"}},
+      margin:{left:colRightX,right:M},tableWidth:colW});
+    y=Math.max(leftEndY,doc.lastAutoTable.finalY)+8;
+  }else{
+    // Placeholder rechts: "geen batterij"
+    sf(8,"italic");sc(MUT);
+    doc.text("Geen batterij geactiveerd",colRightX+5,startY+15);
+    y=leftEndY+8;
   }
-  doc.autoTable({startY:y,head:[["Post","Bedrag"]],body:finRows,
-    styles:{fontSize:9,cellPadding:3},
-    headStyles:{fillColor:BL,textColor:WHT,fontStyle:"bold"},
-    alternateRowStyles:{fillColor:[239,246,255]},
-    columnStyles:{0:{fontStyle:"bold",cellWidth:130},1:{halign:"right"}},
-    margin:{left:M,right:M},tableWidth:W-2*M});
-  y=doc.lastAutoTable.finalY+10;hLine(y);y+=8;
+  hLine(y);y+=8;
 
   // ─── Technische validatie · String-design (SMA-stijl tabel) ────────────────
   if(results.stringDesign&&results.stringDesign.mppts.length>0){
@@ -2845,12 +2889,34 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
     // pannelloze kaart in het rapport.
     const previousTab=activeTab;
     setActiveTab("configuratie");
-    // Wacht tot React de render heeft toegepast + Leaflet zijn tiles + panelen
-    // heeft uitgetekend. invalidateSize is essentieel — Leaflet rendert op de
-    // gemeten viewport, en bij tab-switch was die onbekend.
-    await new Promise(r=>setTimeout(r,150));
-    if(leafRef.current?.invalidateSize) leafRef.current.invalidateSize();
-    await new Promise(r=>setTimeout(r,500));
+    // 1. Wacht 2 frames zodat React zeker heeft gerenderd (display:none → flex)
+    await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+    await new Promise(r=>setTimeout(r,300));
+    // 2. Leaflet moet zijn dimensies opnieuw meten — anders zijn tiles leeg
+    if(leafRef.current?.invalidateSize) leafRef.current.invalidateSize(true);
+    // 3. Forceer volledige re-render door minieme pan + setView
+    //    Dit triggert een nieuwe SVG-layer-render incl. paneel-polygons
+    if(leafRef.current){
+      const c=leafRef.current.getCenter();
+      const z=leafRef.current.getZoom();
+      leafRef.current.panBy([1,0],{animate:false});
+      leafRef.current.panBy([-1,0],{animate:false});
+      leafRef.current.setView(c,z,{animate:false});
+    }
+    // 4. Wacht op tile-load (Leaflet event) of timeout na 2s
+    await new Promise(resolve=>{
+      let done=false;
+      const finish=()=>{if(!done){done=true;resolve();}};
+      if(leafRef.current){
+        leafRef.current.once("load",finish);
+        // Trigger ook een idle-event als geen tiles meer laden
+        setTimeout(finish,1500);
+      }else{
+        setTimeout(finish,800);
+      }
+    });
+    // 5. Extra wachttijd voor SVG-render (browser-specifiek)
+    await new Promise(r=>setTimeout(r,400));
     try{
       await generatePDF(results,customer,displayName,slope,orientation);
     }
