@@ -14,6 +14,9 @@ import {
   importProjectFromJSON,
   createAutoSaver,
 } from "./projectStorage.js";
+import { computeStringDesign } from "./stringDesign.js";
+import * as TL from "./teamleaderClient.js";
+import { ECOFINITY_LOGO_BASE64, ECOFINITY_LOGO_WIDTH, ECOFINITY_LOGO_HEIGHT } from "./ecofinityLogo.js";
 
 // Re-export under local names so the rest of App.jsx (which still uses the
 // original call syntax) continues to work without modifications.
@@ -82,7 +85,9 @@ const ORTHO_WMS = "https://geoservices.informatievlaanderen.be/raadpleegdiensten
 const ORTHO_LYR = "OMWRGBMRVL";
 // WCS wordt via proxy gehaald omdat geo.api.vlaanderen.be geen CORS-headers stuurt
 const WCS_BASE = "https://geo.api.vlaanderen.be/DHMV/wcs";
-const WCS_PROXY = "https://api.allorigins.win/raw?url=";
+// Onze eigen Vercel proxy is betrouwbaarder dan allorigins.win
+const WCS_PROXY_VERCEL = "https://zonnedak-ai-proxy-west.vercel.app/api/wcs-proxy?url=";
+const WCS_PROXY_ALLORIGINS = "https://api.allorigins.win/raw?url=";
 
 // ─── Zonneirradiantie Vlaanderen ─────────────────────────────────────────────
 const SOLAR_TABLE = {
@@ -154,9 +159,12 @@ function parseTIFF(buf){
 async function fetchWCS(xmin,ymin,xmax,ymax,mw,mh,cov){
   const p=new URLSearchParams({SERVICE:"WCS",VERSION:"1.0.0",REQUEST:"GetCoverage",COVERAGE:cov,CRS:"EPSG:31370",RESPONSE_CRS:"EPSG:31370",BBOX:`${Math.round(xmin)},${Math.round(ymin)},${Math.round(xmax)},${Math.round(ymax)}`,WIDTH:mw,HEIGHT:mh,FORMAT:"GeoTIFF"});
   const directUrl=`${WCS_BASE}?${p}`;
-  const proxyUrl=`${WCS_PROXY}${encodeURIComponent(directUrl)}`;
+  // Probeer in volgorde: direct (CORS faalt vaak), eigen Vercel proxy (betrouwbaar),
+  // allorigins.win als laatste redmiddel (vaak down maar gratis fallback)
+  const vercelUrl=`${WCS_PROXY_VERCEL}${encodeURIComponent(directUrl)}`;
+  const allOriginsUrl=`${WCS_PROXY_ALLORIGINS}${encodeURIComponent(directUrl)}`;
   let lastErr="";
-  for(const url of[directUrl,proxyUrl]){
+  for(const url of[directUrl,vercelUrl,allOriginsUrl]){
     try{
       const r=await fetch(url,{cache:"no-store"});
       if(!r.ok){lastErr=`HTTP ${r.status}`;continue;}
@@ -540,56 +548,80 @@ async function fetchPdfBytes(path){
 // Datasheet pad relatief aan de app base URL (in /public/datasheets/)
 const DS_BASE = import.meta.env.BASE_URL + "datasheets/";
 
+// ─── PANELEN met volledige elektrische specs (voor string-design) ───────────
+// Specs uit datasheets bij STC (1000W/m², 25°C, AM1.5).
+// tempCoeffVoc is %/°C — gebruikt om Voc bij koude te berekenen voor
+// max-string-lengte validatie.
+// price is op 0 gezet — gebruiker geeft de werkelijke prijs in via offerte-velden
+// op de Resultaten tab. De catalogus gaat enkel over technische specs.
 const DEFAULT_PANELS=[
-  // ① Qcells Q.TRON BLK S-G3R.12+ BFG 440W — datasheet 2024-05
-  // Formaat: 1762×1134×30mm · Gewicht: 20,9 kg · Eff: 22,0% · 25j prod / 30j prestatie
-  {id:1,brand:"Qcells",      model:"Q.TRON BLK S-G3R.12+ 440W",   watt:440,area:1.998,eff:22.0,price:195,warranty:25,
+  {id:1,brand:"Qcells",      model:"Q.TRON BLK S-G3R.12+ 440W",   watt:440,area:1.998,eff:22.0,price:0,warranty:25,
+   voc:38.74,vmp:32.66,isc:14.42,imp:13.47,tempCoeffVoc:-0.24,tempCoeffPmax:-0.30,
    dims:"1762×1134×30mm",weight:"20.9 kg",datasheet:"qcells-440w.pdf"},
 
-  // ② Trina Solar Vertex S+ TSM-NEG18RC.27 500W — datasheet 2024
-  // Formaat: 1961×1134×30mm · Gewicht: 23,6 kg · Eff: 22,3% · 15j prod / 30j prestatie
-  {id:2,brand:"Trina Solar", model:"Vertex S+ TSM-NEG18RC.27 500W",watt:500,area:2.224,eff:22.3,price:240,warranty:30,
+  {id:2,brand:"Trina Solar", model:"Vertex S+ TSM-NEG18RC.27 500W",watt:500,area:2.224,eff:22.3,price:0,warranty:30,
+   voc:45.4,vmp:38.0,isc:13.92,imp:13.16,tempCoeffVoc:-0.25,tempCoeffPmax:-0.30,
    dims:"1961×1134×30mm",weight:"23.6 kg",datasheet:"trina-500w.pdf"},
 
-  {id:3,brand:"Jinko Solar",   model:"Tiger Neo N-Type 420W",   watt:420,area:1.722,eff:21.8,price:210,warranty:25,
+  {id:3,brand:"Jinko Solar", model:"Tiger Neo N-Type 420W",   watt:420,area:1.722,eff:21.8,price:0,warranty:25,
+   voc:37.39,vmp:31.41,isc:14.02,imp:13.38,tempCoeffVoc:-0.25,tempCoeffPmax:-0.29,
    dims:"1722×1134×30mm",weight:"21.3 kg",datasheet:null},
-  {id:4,brand:"LONGi Solar",   model:"Hi-MO 6 Explorer 415W",   watt:415,area:1.722,eff:21.3,price:195,warranty:25,
+
+  {id:4,brand:"LONGi Solar", model:"Hi-MO 6 Explorer 415W",   watt:415,area:1.722,eff:21.3,price:0,warranty:25,
+   voc:37.55,vmp:31.42,isc:13.95,imp:13.21,tempCoeffVoc:-0.27,tempCoeffPmax:-0.34,
    dims:"1722×1134×30mm",weight:"21.3 kg",datasheet:null},
-  {id:5,brand:"Canadian Solar",model:"HiHero 430W",              watt:430,area:1.879,eff:22.8,price:235,warranty:25,
+
+  {id:5,brand:"Canadian Solar",model:"HiHero 430W",           watt:430,area:1.879,eff:22.8,price:0,warranty:25,
+   voc:39.4,vmp:33.0,isc:13.92,imp:13.04,tempCoeffVoc:-0.26,tempCoeffPmax:-0.29,
    dims:"1756×1096×35mm",weight:"21.3 kg",datasheet:null},
 ];
 
+// ─── OMVORMERS met volledige elektrische specs (voor string-design) ──────────
+// Specs uit AlphaESS SMILE-G3 datasheet 2025.
+// mpptCount, maxDcVoltage, maxInputCurrentPerMppt, mpptVoltageMin/Max,
+// maxAcPower, maxDcPower zijn de string-design parameters.
 const DEFAULT_INVERTERS=[
-  // Specs uit SMILE G3 S3.6/S5 datasheet 2025
-  // S3.6: 3,68kW nom · max PV 7,36kW (200%) · 2 MPPT/1 · 580V max · 97% eff · IP65
-  {id:1,brand:"AlphaESS",model:"SMILE-G3-S3.6",fase:"1-fase",kw:3.68,mppt:2,maxPv:7360, eff:97.0,price:1850,warranty:10,
+  {id:1,brand:"AlphaESS",model:"SMILE-G3-S3.6",fase:"1-fase",kw:3.68,mppt:2,maxPv:7360, eff:97.0,price:0,warranty:10,
+   mpptCount:2,maxDcVoltage:580,maxInputCurrentPerMppt:16,mpptVoltageMin:90,mpptVoltageMax:560,
+   maxAcPower:3680,maxDcPower:7360,
    dims:"610×212×366mm",weight:"19.5 kg",
    notes:"3,68kW · max 7,36kWp PV · 2 MPPT · UPS backup · IP65 · C10/11 · Jabba.",
    datasheet:"alphaess-smile-g3.pdf"},
-  // S5: 5kW nom · max PV 10kW (200%) · 2 MPPT/1 · 97% eff · IP65
-  {id:2,brand:"AlphaESS",model:"SMILE-G3-S5",  fase:"1-fase",kw:5.0, mppt:2,maxPv:10000,eff:97.0,price:2400,warranty:10,
+
+  {id:2,brand:"AlphaESS",model:"SMILE-G3-S5",  fase:"1-fase",kw:5.0, mppt:2,maxPv:10000,eff:97.0,price:0,warranty:10,
+   mpptCount:2,maxDcVoltage:600,maxInputCurrentPerMppt:16,mpptVoltageMin:90,mpptVoltageMax:560,
+   maxAcPower:5000,maxDcPower:10000,
    dims:"610×212×366mm",weight:"19.5 kg",
    notes:"5kW · max 10kWp PV · 2 MPPT · UPS backup · IP65 · C10/11 · Jabba. Populairste model.",
    datasheet:"alphaess-smile-g3.pdf"},
-  {id:3,brand:"AlphaESS",model:"SMILE-G3-S8",  fase:"1-fase",kw:8.0, mppt:2,maxPv:16000,eff:97.5,price:3100,warranty:10,
+
+  {id:3,brand:"AlphaESS",model:"SMILE-G3-S8",  fase:"1-fase",kw:8.0, mppt:2,maxPv:16000,eff:97.5,price:0,warranty:10,
+   mpptCount:2,maxDcVoltage:600,maxInputCurrentPerMppt:20,mpptVoltageMin:90,mpptVoltageMax:560,
+   maxAcPower:8000,maxDcPower:16000,
    dims:"610×212×366mm",weight:"22 kg",
    notes:"8kW · max 16kWp · display · EV-laders · IP65.",datasheet:"alphaess-smile-g3.pdf"},
-  {id:4,brand:"AlphaESS",model:"SMILE-G3-T4/6/8/10",fase:"3-fase",kw:10.0,mppt:3,maxPv:20000,eff:97.5,price:4200,warranty:10,
+
+  {id:4,brand:"AlphaESS",model:"SMILE-G3-T4/6/8/10",fase:"3-fase",kw:10.0,mppt:3,maxPv:20000,eff:97.5,price:0,warranty:10,
+   mpptCount:3,maxDcVoltage:1000,maxInputCurrentPerMppt:16,mpptVoltageMin:160,mpptVoltageMax:850,
+   maxAcPower:10000,maxDcPower:20000,
    dims:"610×212×366mm",weight:"25 kg",
    notes:"Driefase hybride · 3 MPPT · 150% overbelasting · max 45,6 kWh.",datasheet:"alphaess-smile-g3.pdf"},
-  {id:5,brand:"AlphaESS",model:"SMILE-G3-T15/20", fase:"3-fase",kw:20.0,mppt:3,maxPv:40000,eff:97.6,price:6500,warranty:10,
+
+  {id:5,brand:"AlphaESS",model:"SMILE-G3-T15/20", fase:"3-fase",kw:20.0,mppt:3,maxPv:40000,eff:97.6,price:0,warranty:10,
+   mpptCount:3,maxDcVoltage:1000,maxInputCurrentPerMppt:32,mpptVoltageMin:200,mpptVoltageMax:850,
+   maxAcPower:20000,maxDcPower:40000,
    dims:"610×212×366mm",weight:"30 kg",
    notes:"15-20kW driefase voor grote woningen of KMO.",datasheet:"alphaess-smile-g3.pdf"},
 ];
 const DEFAULT_BATTERIES=[
-  {id:1,brand:"AlphaESS",model:"BAT-G3-3.8S",               kwh:3.8, price:1507,cycles:10000,warranty:10,dod:95,notes:"Serieel, indoor IP21. Tot 4× (15,2 kWh).",isAlpha:true},
-  {id:2,brand:"AlphaESS",model:"BAT-G3-9.3S",               kwh:9.3, price:3200,cycles:10000,warranty:10,dod:95,notes:"Hoogspanning IP65 outdoor. Verwarming. Tot 4× (37,2 kWh).",isAlpha:true},
-  {id:3,brand:"AlphaESS",model:"BAT-G3-10.1P",              kwh:10.1,price:3500,cycles:10000,warranty:10,dod:95,notes:"Parallel tot 6× (60,5 kWh). Outdoor IP65.",isAlpha:true},
-  {id:4,brand:"AlphaESS",model:"G3-S5 + 10.1 kWh (pakket)", kwh:10.1,price:6200,cycles:10000,warranty:10,dod:95,notes:"SMILE-G3-S5 + 1× BAT-G3-10.1P.",isAlpha:true},
-  {id:5,brand:"AlphaESS",model:"G3-S5 + 20.2 kWh (pakket)", kwh:20.2,price:9400,cycles:10000,warranty:10,dod:95,notes:"SMILE-G3-S5 + 2× BAT-G3-10.1P.",isAlpha:true},
-  {id:6,brand:"Tesla",   model:"Powerwall 3",                kwh:13.5,price:8500,cycles:4000, warranty:10,dod:100,notes:"Geïntegreerde omvormer. Volledig huis backup.",isAlpha:false},
-  {id:7,brand:"SolarEdge",model:"Home Battery 10kWh",        kwh:10.0,price:6800,cycles:6000, warranty:10,dod:100,notes:"Vereist SolarEdge omvormer.",isAlpha:false},
-  {id:8,brand:"BYD",     model:"Battery-Box HVS 10.2",       kwh:10.2,price:5200,cycles:8000, warranty:10,dod:100,notes:"Hoogspanning modulaire opbouw.",isAlpha:false},
+  {id:1,brand:"AlphaESS",model:"BAT-G3-3.8S",               kwh:3.8, price:0,cycles:10000,warranty:10,dod:95,notes:"Serieel, indoor IP21. Tot 4× (15,2 kWh).",isAlpha:true},
+  {id:2,brand:"AlphaESS",model:"BAT-G3-9.3S",               kwh:9.3, price:0,cycles:10000,warranty:10,dod:95,notes:"Hoogspanning IP65 outdoor. Verwarming. Tot 4× (37,2 kWh).",isAlpha:true},
+  {id:3,brand:"AlphaESS",model:"BAT-G3-10.1P",              kwh:10.1,price:0,cycles:10000,warranty:10,dod:95,notes:"Parallel tot 6× (60,5 kWh). Outdoor IP65.",isAlpha:true},
+  {id:4,brand:"AlphaESS",model:"G3-S5 + 10.1 kWh (pakket)", kwh:10.1,price:0,cycles:10000,warranty:10,dod:95,notes:"SMILE-G3-S5 + 1× BAT-G3-10.1P.",isAlpha:true},
+  {id:5,brand:"AlphaESS",model:"G3-S5 + 20.2 kWh (pakket)", kwh:20.2,price:0,cycles:10000,warranty:10,dod:95,notes:"SMILE-G3-S5 + 2× BAT-G3-10.1P.",isAlpha:true},
+  {id:6,brand:"Tesla",   model:"Powerwall 3",                kwh:13.5,price:0,cycles:4000, warranty:10,dod:100,notes:"Geïntegreerde omvormer. Volledig huis backup.",isAlpha:false},
+  {id:7,brand:"SolarEdge",model:"Home Battery 10kWh",        kwh:10.0,price:0,cycles:6000, warranty:10,dod:100,notes:"Vereist SolarEdge omvormer.",isAlpha:false},
+  {id:8,brand:"BYD",     model:"Battery-Box HVS 10.2",       kwh:10.2,price:0,cycles:8000, warranty:10,dod:100,notes:"Hoogspanning modulaire opbouw.",isAlpha:false},
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -614,30 +646,30 @@ body{background:#f1f5f9;}
 .app{min-height:100vh;background:var(--bg);font-family:'IBM Plex Mono',monospace;color:var(--text);}
 .header{padding:13px 20px;border-bottom:1px solid var(--border);background:var(--bg2);display:flex;align-items:center;gap:12px;box-shadow:var(--shadow);}
 .logo{width:32px;height:32px;background:var(--amber);border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
-.header-text h1{font-family:'Syne',sans-serif;font-size:15px;font-weight:800;color:var(--text);}
-.header-text p{font-size:8px;color:var(--muted);margin-top:1px;}
+.header-text h1{font-family:'Syne',sans-serif;font-size:18px;font-weight:800;color:var(--text);}
+.header-text p{font-size:10px;color:var(--muted);margin-top:1px;}
 .badge{margin-left:auto;padding:3px 8px;border:1px solid var(--border-dark);border-radius:4px;font-size:8px;color:var(--amber);letter-spacing:1px;text-transform:uppercase;white-space:nowrap;background:var(--amber-light);}
 .tabs{display:flex;background:var(--bg2);border-bottom:1px solid var(--border);overflow-x:auto;}
-.tab{padding:9px 14px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.5px;color:var(--muted);cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;transition:all .2s;white-space:nowrap;flex-shrink:0;}
+.tab{padding:10px 16px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.5px;color:var(--muted);cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;transition:all .2s;white-space:nowrap;flex-shrink:0;}
 .tab.active{color:var(--amber);border-bottom-color:var(--amber);}
 .tab:hover:not(.active){color:var(--text);}
 .main{display:grid;grid-template-columns:340px 1fr;height:calc(100vh - 93px);}
 .sidebar{background:var(--bg2);border-right:1px solid var(--border);padding:14px;display:flex;flex-direction:column;gap:13px;overflow-y:auto;box-shadow:var(--shadow);}
 .content-area{display:flex;flex-direction:column;overflow-y:auto;background:var(--bg);}
-.sl{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--amber);margin-bottom:7px;display:flex;align-items:center;gap:8px;font-weight:600;}
+.sl{font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--amber);margin-bottom:7px;display:flex;align-items:center;gap:8px;font-weight:600;}
 .sl::after{content:'';flex:1;height:1px;background:var(--border);}
-.inp{width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--border-dark);border-radius:6px;color:var(--text);font-family:'IBM Plex Mono',monospace;font-size:11px;outline:none;transition:all .2s;}
+.inp{width:100%;padding:9px 11px;background:var(--bg3);border:1px solid var(--border-dark);border-radius:6px;color:var(--text);font-family:'IBM Plex Mono',monospace;font-size:13px;outline:none;transition:all .2s;}
 .inp:focus{border-color:var(--amber);box-shadow:0 0 0 3px var(--amber-glow);}
 .inp::placeholder{color:var(--muted2);}
-.inp-label{font-size:10px;color:var(--muted);margin-bottom:3px;font-weight:500;}
+.inp-label{font-size:12px;color:var(--muted);margin-bottom:3px;font-weight:500;}
 .inp-2{display:grid;grid-template-columns:1fr 1fr;gap:7px;}
 .inp-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;}
 .sugg-wrap{position:relative;}
 /* FIX: sugg visible boven alles, muisdown ipv click */
 .sugg{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--bg2);border:1px solid var(--border-dark);border-radius:6px;z-index:9999;max-height:180px;overflow-y:auto;box-shadow:var(--shadow-md);}
-.sugg-item{padding:9px 11px;font-size:10px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .1s;line-height:1.4;}
+.sugg-item{padding:10px 12px;font-size:12px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .1s;line-height:1.4;}
 .sugg-item:hover,.sugg-item:active{background:var(--amber-light);color:var(--amber);}
-.btn{padding:8px 13px;background:var(--amber);border:none;border-radius:6px;color:#fff;font-family:'IBM Plex Mono',monospace;font-size:9px;font-weight:500;letter-spacing:.5px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:5px;box-shadow:var(--shadow);}
+.btn{padding:9px 14px;background:var(--amber);border:none;border-radius:6px;color:#fff;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:500;letter-spacing:.5px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:5px;box-shadow:var(--shadow);}
 .btn:hover{background:#c96e00;transform:translateY(-1px);box-shadow:var(--shadow-md);}
 .btn:disabled{opacity:.4;cursor:not-allowed;transform:none;box-shadow:none;}
 .btn.sec{background:var(--bg2);border:1px solid var(--border-dark);color:var(--text);}
@@ -652,12 +684,12 @@ body{background:#f1f5f9;}
 .btn.green{background:var(--green);color:#fff;}
 .btn.green:hover{background:#15803d;}
 .btn.full{width:100%;}
-.sl-item label{display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-bottom:4px;}
+.sl-item label{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:4px;}
 .sl-item label span{color:var(--amber);font-weight:500;}
 .sl-item input[type=range]{width:100%;appearance:none;height:4px;background:var(--bg4);border-radius:2px;outline:none;cursor:pointer;}
 .sl-item input[type=range]::-webkit-slider-thumb{appearance:none;width:14px;height:14px;background:var(--amber);border-radius:50%;cursor:pointer;box-shadow:var(--shadow);}
 .orient-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}
-.orient-btn{padding:6px 3px;background:var(--bg3);border:1px solid var(--border-dark);border-radius:5px;color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:8px;cursor:pointer;text-align:center;transition:all .15s;position:relative;}
+.orient-btn{padding:7px 3px;background:var(--bg3);border:1px solid var(--border-dark);border-radius:5px;color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:11px;cursor:pointer;text-align:center;transition:all .15s;position:relative;}
 .orient-btn.active{background:var(--amber-light);border-color:var(--amber);color:var(--amber);font-weight:600;}
 .orient-btn.dhm-hit{border-color:var(--alpha);color:var(--alpha);}
 .dhm-dot{position:absolute;top:2px;right:2px;width:5px;height:5px;background:var(--alpha);border-radius:50%;}
@@ -670,7 +702,7 @@ body{background:#f1f5f9;}
 .card.alpha-card.selected::before{color:var(--alpha);}
 .card.batt-card.selected{border-color:var(--blue);background:var(--blue-bg);}
 .card.batt-card.selected::before{color:var(--blue);}
-.card-name{font-family:'Syne',sans-serif;font-size:12px;font-weight:700;margin-bottom:2px;color:var(--text);}
+.card-name{font-family:'Syne',sans-serif;font-size:14px;font-weight:700;margin-bottom:2px;color:var(--text);}
 .card-brand{font-size:8px;color:var(--muted);margin-bottom:6px;}
 .card-notes{font-size:8px;color:var(--muted);margin-top:5px;line-height:1.5;border-top:1px solid var(--border);padding-top:5px;}
 .chips{display:flex;gap:4px;flex-wrap:wrap;}
@@ -681,7 +713,7 @@ body{background:#f1f5f9;}
 .chip.green-c{color:var(--green);background:var(--green-bg);}
 .alpha-badge{display:inline-flex;align-items:center;gap:4px;font-size:7px;color:var(--alpha);background:var(--alpha-bg);border:1px solid var(--alpha-border);border-radius:3px;padding:1px 6px;margin-bottom:4px;}
 .toggle-row{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;}
-.toggle-lbl{font-size:9px;color:var(--text);}
+.toggle-lbl{font-size:11px;color:var(--text);}
 .toggle{position:relative;width:36px;height:20px;flex-shrink:0;}
 .toggle input{opacity:0;width:0;height:0;}
 .tslider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--bg4);border-radius:10px;transition:.3s;border:1px solid var(--border-dark);}
@@ -698,7 +730,7 @@ body{background:#f1f5f9;}
 .pce-val{font-family:'Syne',sans-serif;font-size:22px;font-weight:800;color:var(--amber);min-width:44px;text-align:center;}
 .pce-sub{font-size:8px;color:var(--muted);text-align:center;}
 .divider{height:1px;background:var(--border);flex-shrink:0;}
-.info-box{font-size:10px;color:var(--muted);line-height:1.7;padding:8px 11px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;}
+.info-box{font-size:12px;color:var(--muted);line-height:1.7;padding:10px 13px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;}
 .info-box strong{color:var(--text);}
 .info-box.alpha-info{background:var(--alpha-bg);border-color:var(--alpha-border);}
 .info-box.alpha-info strong{color:var(--alpha);}
@@ -734,16 +766,16 @@ body{background:#f1f5f9;}
 .results-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px;}
 .compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;}
 .compare-col{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;box-shadow:var(--shadow);}
-.compare-col h4{font-family:'Syne',sans-serif;font-size:11px;font-weight:700;margin-bottom:8px;color:var(--text);}
-.crow{display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-bottom:4px;}
+.compare-col h4{font-family:'Syne',sans-serif;font-size:13px;font-weight:700;margin-bottom:8px;color:var(--text);}
+.crow{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:4px;}
 .crow span{color:var(--text);font-weight:500;}
-.ctotal{margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:baseline;font-size:9px;}
+.ctotal{margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:baseline;font-size:11px;}
 .cval{font-family:'Syne',sans-serif;font-size:19px;font-weight:800;color:var(--amber);}
 .compare-col.batt .cval{color:var(--blue);}
 .compare-col.alpha-col .cval{color:var(--alpha);}
 .pbar{height:6px;background:var(--bg4);border-radius:3px;overflow:hidden;margin-top:7px;}
 .pfill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--green),var(--amber));transition:width .8s;}
-.ai-box{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:11px;line-height:1.8;color:var(--text);white-space:pre-wrap;box-shadow:var(--shadow);}
+.ai-box{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:13px;line-height:1.8;color:var(--text);white-space:pre-wrap;box-shadow:var(--shadow);}
 .ai-box.loading{display:flex;align-items:center;gap:10px;color:var(--muted);}
 .spinner{width:12px;height:12px;border:2px solid var(--border);border-top-color:var(--amber);border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0;}
 .spinner.cyan{border-top-color:var(--alpha);}
@@ -776,7 +808,7 @@ body{background:#f1f5f9;}
 .empty-state .icon{font-size:36px;}
 .empty-state p{font-size:11px;max-width:280px;line-height:1.6;color:var(--muted);}
 .filter-row{display:flex;gap:5px;flex-wrap:wrap;}
-.filter-btn{padding:4px 10px;background:var(--bg2);border:1px solid var(--border-dark);border-radius:12px;font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--muted);cursor:pointer;transition:all .15s;}
+.filter-btn{padding:5px 11px;background:var(--bg2);border:1px solid var(--border-dark);border-radius:12px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);cursor:pointer;transition:all .15s;}
 .filter-btn.active{border-color:var(--alpha);color:var(--alpha);background:var(--alpha-bg);}
 .filter-btn.af.active{border-color:var(--amber);color:var(--amber);background:var(--amber-light);}
 .inv-card{background:var(--bg2);border:1px solid var(--alpha-border);border-radius:8px;padding:10px;cursor:pointer;transition:all .2s;position:relative;box-shadow:var(--shadow);}
@@ -1331,23 +1363,52 @@ async function generatePDF(results,customer,displayName,slope,orientation){
   };
 
   // ════ PAGINA 1 — Voorblad + Systeemoverzicht ════
-  doc.setFillColor(...OR);doc.rect(0,0,W,40,"F");
-  doc.setFillColor(...ORD);doc.rect(0,36,W,4,"F");
-  sf(22,"bold");sc(WHT);doc.text("EcoFinity BV",M,20);
-  sf(10,"normal");doc.text("Riedeplein 15 · 9660 Brakel · +32 55 495865 · info@ecofinity.eu",M,29);
-  sf(9,"normal");doc.text(new Date().toLocaleDateString("nl-BE"),W-M,14,{align:"right"});
+  // Header layout (briefhoofd-stijl): logo links, klantgegevens rechts.
+  //
+  //   ┌──────────────────────────────────────────────────────┐
+  //   │  [LOGO ECOFINITY]            Klant: Jan Janssens     │
+  //   │                              Adres: Hofstraat 12     │
+  //   │                              9000 Gent               │
+  //   │                              jan@example.com         │
+  //   └──────────────────────────────────────────────────────┘
 
-  // Projectblok
-  doc.setFillColor(...BG);doc.rect(0,44,W,34,"F");
-  sf(11,"bold");sc(TXT);doc.text("Project:",M,55);
-  sf(14,"bold");sc(OR);doc.text(customer.name||"—",M+23,55);
-  sf(9,"normal");sc(MUT);
-  doc.text("Locatie: "+displayName.split(",").slice(0,3).join(","),M,64);
-  doc.text("Datum: "+new Date().toLocaleDateString("nl-BE"),M,71);
-  if(customer.email){sf(9,"normal");sc(MUT);doc.text(customer.email,W-M,64,{align:"right"});}
-  if(customer.address){sf(9,"normal");sc(MUT);doc.text(customer.address,W-M,71,{align:"right"});}
+  // Logo links (50mm breed, hoogte op aspect ratio)
+  const LOGO_W = 50;
+  const LOGO_H = LOGO_W * (ECOFINITY_LOGO_HEIGHT / ECOFINITY_LOGO_WIDTH);
+  try {
+    doc.addImage(ECOFINITY_LOGO_BASE64, "JPEG", M, 12, LOGO_W, LOGO_H);
+  } catch(e) {
+    // Fallback bij logo-fout: tekst
+    sf(16,"bold");sc(OR);doc.text("ECOFINITY",M,22);
+    sf(8,"normal");sc(MUT);doc.text("Energy & Building Solutions",M,28);
+  }
 
-  let y=87;
+  // Klantgegevens rechts
+  const rightX = W - M;
+  let yh = 18;
+  sf(11,"bold");sc(TXT);doc.text((customer.name||"—"),rightX,yh,{align:"right"}); yh+=6;
+  if(customer.address){
+    sf(9,"normal");sc(MUT);
+    // Splits het adres in regels indien lang (TL geeft soms "straat, postcode gemeente, land")
+    const addrLines=customer.address.split(/,\s*/).filter(Boolean);
+    addrLines.forEach(line=>{doc.text(line,rightX,yh,{align:"right"});yh+=5;});
+  }
+  if(customer.email){sf(9,"normal");sc(MUT);doc.text(customer.email,rightX,yh,{align:"right"});yh+=5;}
+
+  // Datum onder klantblok
+  sf(8,"italic");sc(MUT);
+  doc.text("Rapport: "+new Date().toLocaleDateString("nl-BE"),rightX,yh+2,{align:"right"});
+
+  // Oranje scheidingslijn onder de header
+  const headerBottomY = Math.max(12 + LOGO_H + 4, yh + 6);
+  doc.setDrawColor(...OR);doc.setLineWidth(0.8);
+  doc.line(M, headerBottomY, W-M, headerBottomY);
+
+  // Projectsectie eronder met locatie
+  let y = headerBottomY + 8;
+  sf(11,"bold");sc(TXT);doc.text("Locatie:",M,y);
+  sf(11,"normal");sc(OR);doc.text(displayName.split(",").slice(0,3).join(","),M+25,y);
+  y += 10;
 
   // Systeemoverzicht
   y=secTitle("Systeemoverzicht",y);
@@ -1399,12 +1460,15 @@ async function generatePDF(results,customer,displayName,slope,orientation){
 
   // Financiële KPI-blokken
   y=secTitle("Financiële analyse",y);
+  // Helper voor prijzen die nullable zijn
+  const fmtPrice=(p)=>p!==null&&p!==undefined?"€ "+p.toLocaleString("nl-BE"):"— niet ingevuld —";
+  const fmtPayback=(p)=>p!==null&&p!==undefined?p+" jaar":"—";
   const kpis=[
-    ["Totale investering","€ "+results.investPanels.toLocaleString("nl-BE"),OR],
+    ["Totale investering",fmtPrice(results.investPanels),OR],
     ["Jaarlijkse besparing","€ "+results.annualBase.toLocaleString("nl-BE"),GR],
-    ["Terugverdientijd",results.paybackBase+" jaar",BL],
+    ["Terugverdientijd",fmtPayback(results.paybackBase),BL],
   ];
-  if(results.battResult) kpis.push(["Incl. batterij",results.battResult.payback+" jaar",[120,40,180]]);
+  if(results.battResult) kpis.push(["Incl. batterij",fmtPayback(results.battResult.payback),[120,40,180]]);
   const kw=(W-2*M)/kpis.length;
   kpis.forEach(([lbl,val,col],i)=>{
     const kx=M+i*kw;
@@ -1415,27 +1479,162 @@ async function generatePDF(results,customer,displayName,slope,orientation){
     sf(7,"normal");sc(MUT);doc.text(lbl,kx+(kw-3)/2,y+14,{align:"center"});
   });
   y+=24;
-  const finRows=[
-    ["Zonnepanelen ("+results.panelCount+" × "+results.panel.model+")","€ "+(results.panelCount*results.panel.price).toLocaleString("nl-BE")],
-    ["Installatie & omvormer","€ "+(results.inv?results.inv.price:1200).toLocaleString("nl-BE")],
-    ["Totale investering","€ "+results.investPanels.toLocaleString("nl-BE")],
-    ["Jaarlijkse besparing (€0,28/kWh)","€ "+results.annualBase.toLocaleString("nl-BE")],
-    ["Terugverdientijd",results.paybackBase+" jaar"],
-  ];
-  if(results.battResult){
-    finRows.push(["Thuisbatterij "+(results.batt?.model||""),"€ "+(results.battResult.battPrice??results.batt?.price).toLocaleString("nl-BE")]);
-    finRows.push(["Extra besparing met batterij","€ "+results.battResult.extraSav.toLocaleString("nl-BE")+"/jaar"]);
-    finRows.push(["Terugverdientijd incl. batterij",results.battResult.payback+" jaar"]);
-  }
-  doc.autoTable({startY:y,head:[["Post","Bedrag"]],body:finRows,
-    styles:{fontSize:9,cellPadding:3},
-    headStyles:{fillColor:BL,textColor:WHT,fontStyle:"bold"},
-    alternateRowStyles:{fillColor:[239,246,255]},
-    columnStyles:{0:{fontStyle:"bold",cellWidth:130},1:{halign:"right"}},
-    margin:{left:M,right:M},tableWidth:W-2*M});
-  y=doc.lastAutoTable.finalY+10;hLine(y);y+=8;
 
-  // Maandwaarden
+  // Algemene info-tabel (één kolom — geldt voor beide scenario's)
+  const generalRows=[
+    ["Geselecteerd paneel",results.panelCount+" × "+results.panel.brand+" "+results.panel.model],
+    ["Geselecteerde omvormer",results.inv?results.inv.brand+" "+results.inv.model:"Geen specifiek model"],
+    ["Jaarverbruik klant",results.consumption.toLocaleString("nl-BE")+" kWh"],
+    ["Jaaropbrengst PV",results.annualKwh.toLocaleString("nl-BE")+" kWh"],
+    ["Dekkingsgraad PV / verbruik",results.coverage+" %"],
+  ];
+  doc.autoTable({startY:y,body:generalRows,
+    styles:{fontSize:9,cellPadding:3},
+    columnStyles:{0:{fontStyle:"bold",cellWidth:80,textColor:MUT},1:{halign:"right"}},
+    theme:"plain",
+    margin:{left:M,right:M},tableWidth:W-2*M});
+  y=doc.lastAutoTable.finalY+8;
+
+  // Vergelijkingstabel — twee kolommen naast elkaar (zelfde indeling als scherm)
+  if(y>284-80){doc.addPage();y=20;}
+  sf(11,"bold");sc(TXT);doc.text("Terugverdientijd vergelijking",M,y);y+=6;
+
+  const hasBatt=!!results.battResult;
+  const colWithoutBatt=[
+    ["Investering",fmtPrice(results.investPanels)],
+    ["Zelfverbruik","~"+Math.round(results.selfRatioBase*100)+"% ("+results.selfKwhBase.toLocaleString("nl-BE")+" kWh)"],
+    ["Injectie naar net",results.injectKwhBase.toLocaleString("nl-BE")+" kWh"],
+    ["Besparing/jaar","€ "+results.annualBase.toLocaleString("nl-BE")],
+    ["Terugverdientijd",fmtPayback(results.paybackBase)],
+  ];
+  const colWithBatt=hasBatt?[
+    ["Investering",fmtPrice(results.battResult.totInv)],
+    ["Zelfverbruik","~70% ("+results.battResult.selfKwh.toLocaleString("nl-BE")+" kWh)"],
+    ["Injectie naar net",results.battResult.injectKwh.toLocaleString("nl-BE")+" kWh"],
+    ["Extra besparing","€ "+results.battResult.extraSav.toLocaleString("nl-BE")+"/jaar"],
+    ["Totale besparing","€ "+results.battResult.totSav.toLocaleString("nl-BE")+"/jaar"],
+    ["Terugverdientijd",fmtPayback(results.battResult.payback)],
+  ]:null;
+
+  // Render twee tabellen naast elkaar
+  const colW=(W-2*M-4)/2; // 2 kolommen, 4mm gap ertussen
+  const colLeftX=M, colRightX=M+colW+4;
+  const startY=y;
+
+  // LINKERKOLOM — Alleen zonnepanelen
+  doc.autoTable({startY:y,
+    head:[["Alleen zonnepanelen",""]],
+    body:colWithoutBatt,
+    styles:{fontSize:8,cellPadding:2.5},
+    headStyles:{fillColor:OR,textColor:WHT,fontStyle:"bold",halign:"left"},
+    columnStyles:{0:{fontStyle:"bold",cellWidth:35,textColor:MUT},1:{halign:"right"}},
+    margin:{left:colLeftX,right:M},tableWidth:colW});
+  const leftEndY=doc.lastAutoTable.finalY;
+
+  // RECHTERKOLOM — Met batterij (of placeholder)
+  if(hasBatt){
+    doc.autoTable({startY:startY,
+      head:[["Met "+(results.batt?.brand||"")+" "+(results.batt?.model||""),""]],
+      body:colWithBatt,
+      styles:{fontSize:8,cellPadding:2.5},
+      headStyles:{fillColor:BL,textColor:WHT,fontStyle:"bold",halign:"left"},
+      columnStyles:{0:{fontStyle:"bold",cellWidth:35,textColor:MUT},1:{halign:"right"}},
+      margin:{left:colRightX,right:M},tableWidth:colW});
+    y=Math.max(leftEndY,doc.lastAutoTable.finalY)+8;
+  }else{
+    // Placeholder rechts: "geen batterij"
+    sf(8,"italic");sc(MUT);
+    doc.text("Geen batterij geactiveerd",colRightX+5,startY+15);
+    y=leftEndY+8;
+  }
+  hLine(y);y+=8;
+
+  // ─── Technische validatie · String-design (SMA-stijl tabel) ────────────────
+  if(results.stringDesign&&results.stringDesign.mppts.length>0){
+    if(y>284-40){doc.addPage();y=20;}
+    y=secTitle("Configuratie van de omvormer",y);
+    const sd=results.stringDesign;
+
+    // Header met temperatuurinstellingen
+    sf(8,"normal");sc(TXT);
+    doc.text(`Omgevingstemperatuur: min ${sd.config.tempMin}°C · config ${sd.config.tempConfig}°C · max ${sd.config.tempMax}°C`,M,y);
+    y+=6;
+
+    // Omvormer-overzicht tabel
+    if(y>284-40){doc.addPage();y=20;}
+    sf(9,"bold");sc(TXT);doc.text(`1× ${results.inv.brand} ${results.inv.model}`,M,y);y+=5;
+    const invRows=[
+      ["Piekvermogen",(sd.totalPower/1000).toFixed(2)+" kWp"],
+      ["Aantal PV-panelen",results.panelCount+""],
+      ["Max. AC-vermogen",(sd.config.inverterMaxAc/1000).toFixed(2)+" kW"],
+      ["Max. DC-vermogen",(sd.config.inverterMaxDcPower/1000).toFixed(2)+" kW"],
+      ["Netspanning",results.inv.fase==="3-fase"?"400V (driefase)":"230V (eenfase)"],
+    ];
+    if(sd.config.sizingFactor!==null){
+      invRows.push(["Dimensioneringsfactor",sd.config.sizingFactor.toFixed(1)+" %"]);
+    }
+    doc.autoTable({startY:y,body:invRows,
+      styles:{fontSize:8,cellPadding:2.2},
+      columnStyles:{0:{cellWidth:75,textColor:MUT},1:{halign:"right",fontStyle:"bold"}},
+      theme:"plain",
+      margin:{left:M,right:M},tableWidth:W-2*M});
+    y=doc.lastAutoTable.finalY+5;
+
+    // Detailtabel per MPPT — SMA-stijl
+    if(y>284-50){doc.addPage();y=20;}
+    sf(9,"bold");sc(TXT);doc.text("Detailwaarden per MPPT-ingang",M,y);y+=5;
+    const head=["",...sd.mppts.map((m,i)=>"Ingang "+String.fromCharCode(65+i))];
+    // Helper: build cell with check-symbol
+    const cell=(check,val)=>check===null?val:(check?"+ ":"- ")+val;
+    const rows=[
+      ["Aantal strings",...sd.mppts.map(m=>m.stringCount+"")],
+      ["PV-panelen",...sd.mppts.map(m=>m.totalPanels+"")],
+      ["Piekvermogen",...sd.mppts.map(m=>(m.powerStc/1000).toFixed(2)+" kWp")],
+      ["Min. DC-spanning WR",...sd.mppts.map(()=>sd.config.inverterMpptMin+" V")],
+      ["Typ. PV-spanning ("+sd.config.tempConfig+"°C)",...sd.mppts.map(m=>cell(m.checks.vmpConfigOk,m.vmpConfig.toFixed(0)+" V"))],
+      ["Min. PV-spanning ("+sd.config.tempMax+"°C)",...sd.mppts.map(m=>cell(m.checks.vmpHotOk,m.vmpHot.toFixed(0)+" V"))],
+      ["Max. DC-spanning omvormer",...sd.mppts.map(()=>sd.config.inverterMaxDc+" V")],
+      ["Max. PV-spanning ("+sd.config.tempMin+"°C)",...sd.mppts.map(m=>cell(m.checks.vocColdOk,m.vocCold.toFixed(0)+" V"))],
+      ["Max. ingangsstroom MPPT",...sd.mppts.map(()=>sd.config.inverterMaxCurrent+" A")],
+      ["Max. PV-generatorstroom (Imp)",...sd.mppts.map(m=>cell(m.checks.impOk,m.impTotal.toFixed(1)+" A"))],
+      ["Max. kortsluitstroom MPPT",...sd.mppts.map(()=>sd.config.inverterMaxCurrent+" A")],
+      ["Max. kortsluitstroom PV (Isc)",...sd.mppts.map(m=>cell(m.checks.iscOk,m.iscTotal.toFixed(1)+" A"))],
+    ];
+    doc.autoTable({startY:y,head:[head],body:rows,
+      styles:{fontSize:7.5,cellPadding:2},
+      headStyles:{fillColor:BL,textColor:WHT,fontStyle:"bold",halign:"right"},
+      columnStyles:{0:{cellWidth:62,textColor:MUT,fontStyle:"normal",halign:"left"}},
+      bodyStyles:{halign:"right",fontStyle:"bold"},
+      alternateRowStyles:{fillColor:[239,246,255]},
+      margin:{left:M,right:M},tableWidth:W-2*M});
+    y=doc.lastAutoTable.finalY+4;
+
+    // Legend voor + / -
+    sf(7,"italic");sc(MUT);
+    doc.text("+ = waarde valt binnen de veiligheidslimieten · - = waarde overschrijdt limiet",M,y);
+    y+=6;
+
+    if(sd.warnings.length>0){
+      if(y>284-30){doc.addPage();y=20;}
+      sf(9,"bold");sc(TXT);doc.text("Aandachtspunten:",M,y);y+=5;
+      sd.warnings.forEach(w=>{
+        const col=w.severity==="critical"?[200,0,0]:w.severity==="warning"?[200,140,0]:[80,80,80];
+        sf(8,"bold");sc(col);
+        const prefix=w.severity==="critical"?"[KRITIEK] ":w.severity==="warning"?"[WAARSCHUWING] ":"[INFO] ";
+        doc.text(prefix+w.title,M,y);y+=4;
+        sf(7,"normal");sc(TXT);
+        const lines=doc.splitTextToSize(w.detail,W-2*M);
+        doc.text(lines,M+3,y);y+=lines.length*3.5+2;
+      });
+    }else{
+      sf(9,"bold");sc([0,140,0]);doc.text("OK - Configuratie binnen alle veiligheidsgrenzen.",M,y);y+=5;
+    }
+    y+=4;hLine(y);y+=8;
+  }
+
+  // Maandwaarden — forceer nieuwe pagina als titel + tabel niet meer past
+  // (titel ~6mm + tabel ~22mm + buffer ~10mm = 38mm benodigde ruimte; pagina = 297mm; footer start op 284)
+  if(y>284-40){doc.addPage();y=20;}
   y=secTitle("Maandwaarden — Energieopbrengst",y);
   const mVals=MONTHLY_FACTOR.map(f=>Math.round(results.annualKwh*f));
   doc.autoTable({startY:y,
@@ -1468,27 +1667,33 @@ async function generatePDF(results,customer,displayName,slope,orientation){
   }
 
   // ── Luchtfoto met panelen ──
+  // Bij oproep van generatePDF heeft handlePDF al naar de Configuratie tab
+  // geschakeld + invalidateSize uitgevoerd, zodat Leaflet volledig is
+  // gerenderd voor we hier de screenshot maken.
   try{
     const mapEl=document.getElementById("leaflet-map");
     if(mapEl&&window.html2canvas){
       doc.addPage();
       // Mini-header
       doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
-      sf(9,"bold");sc(WHT);doc.text("EcoFinity BV",M,9);
-      sf(9,"normal");doc.text("Project: "+(customer.name||"—"),M+32,9);
-      sf(8,"normal");doc.text("Luchtfoto",W-M,9,{align:"right"});
+      sf(11,"bold");sc(WHT);doc.text("EcoFinity BV",M,9);
+      sf(11,"normal");doc.text("Project: "+(customer.name||"—"),M+38,9);
+      sf(10,"normal");doc.text("Luchtfoto",W-M,9,{align:"right"});
       y=22;
       y=secTitle("Paneelplaatsing op het dak",y);
-      // Capture kaart
+      // Capture kaart — useCORS is essentieel voor de tiles van Esri.
+      // foreignObjectRendering=false omdat dat met SVG-laag (panel-overlay)
+      // soms blanco geeft in Firefox.
       const canvas=await window.html2canvas(mapEl,{
         useCORS:true,allowTaint:true,scale:1.5,
-        logging:false,backgroundColor:"#f1f5f9"
+        logging:false,backgroundColor:"#f1f5f9",
+        foreignObjectRendering:false
       });
       const imgData=canvas.toDataURL("image/jpeg",0.85);
       const imgW=W-2*M,imgH=Math.min(140,imgW*(canvas.height/canvas.width));
       doc.addImage(imgData,"JPEG",M,y,imgW,imgH);
       y+=imgH+5;
-      sf(8,"normal");sc(MUT);
+      sf(9,"normal");sc(MUT);
       doc.text("Luchtfoto: Esri World Imagery · Paneelplaatsing is een schatting.",M,y);
       y+=8;
     }
@@ -1503,7 +1708,7 @@ async function generatePDF(results,customer,displayName,slope,orientation){
     sf(7,"normal");sc(MUT);
     doc.text("Pagina "+i+" / "+pgC,W-M,292,{align:"right"});
     doc.text("EcoFinity BV · www.ecofinity.eu · info@ecofinity.eu · +32 55 495865",M,292);
-    doc.text("Berekeningen zijn schattingen. Raadpleeg een erkend installateur voor definitieve offerte.",M,288,{maxWidth:W-2*M-20});
+    doc.text("Berekeningen zijn schattingen gebaseerd op een gemiddelde zonne-instraling in uw woonplaats.",M,288,{maxWidth:W-2*M-20});
   }
 
     // ── Datasheets samenvoegen via pdf-lib ──
@@ -1542,7 +1747,7 @@ async function generatePDF(results,customer,displayName,slope,orientation){
 }function PanelCard({p,selected,onSelect,onDelete,canDelete}){return(
   <div className={`card ${selected?"selected":""}`} onClick={()=>onSelect(p.id)}>
     <div className="card-name">{p.model}</div><div className="card-brand">{p.brand}</div>
-    <div className="chips"><span className="chip gold">{p.watt}W</span><span className="chip">{p.eff}% eff</span><span className="chip">{p.area} m²</span><span className="chip">€{p.price}/st</span><span className="chip">{p.warranty}j</span></div>
+    <div className="chips"><span className="chip gold">{p.watt}W</span><span className="chip">{p.eff}% eff</span><span className="chip">{p.area} m²</span><span className="chip">{p.warranty}j</span></div>
     {p.dims&&<div style={{fontSize:7,color:"var(--muted)",marginTop:4}}>{p.dims} · {p.weight}</div>}
     {canDelete&&<button className="btn danger sm" style={{marginTop:5,width:"fit-content"}} onClick={e=>{e.stopPropagation();onDelete(p.id);}}>✕</button>}
   </div>
@@ -1551,7 +1756,7 @@ function InverterCard({inv,selected,onSelect}){return(
   <div className={`inv-card ${selected?"selected":""}`} onClick={()=>onSelect(inv.id)}>
     <div className="alpha-badge">⚡ AlphaESS G3</div>
     <div className="card-name">{inv.model}</div><div className="card-brand">{inv.brand} · {inv.fase}</div>
-    <div className="chips"><span className="chip alpha-c">{inv.kw}kW</span><span className="chip">{inv.mppt} MPPT</span><span className="chip">max {inv.maxPv/1000}kWp</span><span className="chip">{inv.eff}% eff</span><span className="chip">€{inv.price.toLocaleString()}</span><span className="chip">{inv.warranty}j</span></div>
+    <div className="chips"><span className="chip alpha-c">{inv.kw}kW</span><span className="chip">{inv.mppt} MPPT</span><span className="chip">max {inv.maxPv/1000}kWp</span><span className="chip">{inv.eff}% eff</span><span className="chip">{inv.warranty}j</span></div>
     <div className="card-notes">{inv.notes}</div>
   </div>
 );}
@@ -1559,34 +1764,213 @@ function BattCard({b,selected,onSelect,onDelete,canDelete}){return(
   <div className={`card batt-card ${b.isAlpha?"alpha-card":""} ${selected?"selected":""}`} onClick={()=>onSelect(b.id)}>
     {b.isAlpha&&<div className="alpha-badge">🔋 AlphaESS G3</div>}
     <div className="card-name">{b.model}</div><div className="card-brand">{b.brand}</div>
-    <div className="chips"><span className={`chip ${b.isAlpha?"alpha-c":"blue-c"}`}>{b.kwh} kWh</span><span className="chip">€{b.price.toLocaleString()}</span><span className="chip">{b.cycles.toLocaleString()} cycli</span>{b.dod&&<span className="chip">{b.dod}% DoD</span>}<span className="chip">{b.warranty}j</span></div>
+    <div className="chips"><span className={`chip ${b.isAlpha?"alpha-c":"blue-c"}`}>{b.kwh} kWh</span><span className="chip">{b.cycles.toLocaleString()} cycli</span>{b.dod&&<span className="chip">{b.dod}% DoD</span>}<span className="chip">{b.warranty}j</span></div>
     {b.notes&&<div className="card-notes">{b.notes}</div>}
     {canDelete&&<button className="btn danger sm" style={{marginTop:5,width:"fit-content"}} onClick={e=>{e.stopPropagation();onDelete(b.id);}}>✕</button>}
   </div>
 );}
+
+// ─── TechRow ─────────────────────────────────────────────────────────────────
+// Eén rij in de SMA-stijl detailtabel op de Technische tab.
+// `val(m)` → string voor weergave per MPPT.
+// `check(m)` → optioneel, geeft true (groen vinkje) of false (rood kruis).
+function TechRow({label,mppts,val,check}){
+  return(
+    <tr style={{borderBottom:"1px solid var(--border)"}}>
+      <td style={{padding:"5px 4px",color:"var(--muted)"}}>{label}</td>
+      {mppts.map((m,i)=>(
+        <td key={i} style={{padding:"5px 4px",textAlign:"right"}}>
+          {check?(check(m)
+            ?<span style={{color:"var(--green)",marginRight:4}}>✓</span>
+            :<span style={{color:"var(--red)",marginRight:4}}>✗</span>
+          ):null}
+          <strong>{val(m)}</strong>
+        </td>
+      ))}
+    </tr>
+  );
+}
 function NewPanelForm({onAdd}){
-  const e0={brand:"",model:"",watt:"",area:"",eff:"",price:"",warranty:"25",dims:"",weight:""};
+  const e0={brand:"",model:"",watt:"",area:"",eff:"",warranty:"25",dims:"",weight:""};
   const[f,setF]=useState(e0);const s=(k,v)=>setF(p=>({...p,[k]:v}));
-  const ok=f.brand&&f.model&&+f.watt>0&&+f.area>0&&+f.eff>0&&+f.price>0;
+  const ok=f.brand&&f.model&&+f.watt>0&&+f.area>0&&+f.eff>0;
   return(<div className="new-form"><h4>➕ Nieuw paneel toevoegen</h4>
     <div className="inp-2"><div><div className="inp-label">Merk</div><input className="inp" placeholder="Jinko" value={f.brand} onChange={e=>s("brand",e.target.value)}/></div><div><div className="inp-label">Model</div><input className="inp" placeholder="Tiger 420W" value={f.model} onChange={e=>s("model",e.target.value)}/></div></div>
     <div className="inp-3"><div><div className="inp-label">Watt</div><input className="inp" type="number" placeholder="420" value={f.watt} onChange={e=>s("watt",e.target.value)}/></div><div><div className="inp-label">m²</div><input className="inp" type="number" placeholder="1.72" value={f.area} onChange={e=>s("area",e.target.value)}/></div><div><div className="inp-label">Eff %</div><input className="inp" type="number" placeholder="21.5" value={f.eff} onChange={e=>s("eff",e.target.value)}/></div></div>
-    <div className="inp-2"><div><div className="inp-label">€/st</div><input className="inp" type="number" placeholder="210" value={f.price} onChange={e=>s("price",e.target.value)}/></div><div><div className="inp-label">Garantie (j)</div><input className="inp" type="number" placeholder="25" value={f.warranty} onChange={e=>s("warranty",e.target.value)}/></div></div>
+    <div className="inp-2"><div><div className="inp-label">Garantie (j)</div><input className="inp" type="number" placeholder="25" value={f.warranty} onChange={e=>s("warranty",e.target.value)}/></div><div></div></div>
     <div className="inp-2"><div><div className="inp-label">Afmetingen</div><input className="inp" placeholder="1756×1096×35mm" value={f.dims} onChange={e=>s("dims",e.target.value)}/></div><div><div className="inp-label">Gewicht</div><input className="inp" placeholder="21.3 kg" value={f.weight} onChange={e=>s("weight",e.target.value)}/></div></div>
-    <button className="btn full" disabled={!ok} onClick={()=>{onAdd({...f,id:Date.now(),watt:+f.watt,area:+f.area,eff:+f.eff,price:+f.price,warranty:+f.warranty});setF(e0);}}>Paneel toevoegen</button>
+    <button className="btn full" disabled={!ok} onClick={()=>{onAdd({...f,id:Date.now(),watt:+f.watt,area:+f.area,eff:+f.eff,price:0,warranty:+f.warranty});setF(e0);}}>Paneel toevoegen</button>
   </div>);}
 function NewBattForm({onAdd}){
-  const e0={brand:"",model:"",kwh:"",price:"",cycles:"",warranty:"10"};
+  const e0={brand:"",model:"",kwh:"",cycles:"",warranty:"10"};
   const[f,setF]=useState(e0);const s=(k,v)=>setF(p=>({...p,[k]:v}));
-  const ok=f.brand&&f.model&&+f.kwh>0&&+f.price>0&&+f.cycles>0;
+  const ok=f.brand&&f.model&&+f.kwh>0&&+f.cycles>0;
   return(<div className="new-form"><h4>➕ Nieuwe batterij toevoegen</h4>
     <div className="inp-2"><div><div className="inp-label">Merk</div><input className="inp" placeholder="Tesla" value={f.brand} onChange={e=>s("brand",e.target.value)}/></div><div><div className="inp-label">Model</div><input className="inp" placeholder="Powerwall 3" value={f.model} onChange={e=>s("model",e.target.value)}/></div></div>
-    <div className="inp-3"><div><div className="inp-label">kWh</div><input className="inp" type="number" placeholder="10" value={f.kwh} onChange={e=>s("kwh",e.target.value)}/></div><div><div className="inp-label">Prijs €</div><input className="inp" type="number" placeholder="5500" value={f.price} onChange={e=>s("price",e.target.value)}/></div><div><div className="inp-label">Cycli</div><input className="inp" type="number" placeholder="6000" value={f.cycles} onChange={e=>s("cycles",e.target.value)}/></div></div>
-    <div style={{maxWidth:130}}><div className="inp-label">Garantie (j)</div><input className="inp" type="number" placeholder="10" value={f.warranty} onChange={e=>s("warranty",e.target.value)}/></div>
-    <button className="btn blue full" disabled={!ok} onClick={()=>{onAdd({...f,id:Date.now(),kwh:+f.kwh,price:+f.price,cycles:+f.cycles,warranty:+f.warranty,isAlpha:false});setF(e0);}}>Batterij toevoegen</button>
+    <div className="inp-3"><div><div className="inp-label">kWh</div><input className="inp" type="number" placeholder="10" value={f.kwh} onChange={e=>s("kwh",e.target.value)}/></div><div><div className="inp-label">Cycli</div><input className="inp" type="number" placeholder="6000" value={f.cycles} onChange={e=>s("cycles",e.target.value)}/></div><div><div className="inp-label">Garantie (j)</div><input className="inp" type="number" placeholder="10" value={f.warranty} onChange={e=>s("warranty",e.target.value)}/></div></div>
+    <button className="btn blue full" disabled={!ok} onClick={()=>{onAdd({...f,id:Date.now(),kwh:+f.kwh,price:0,cycles:+f.cycles,warranty:+f.warranty,isAlpha:false});setF(e0);}}>Batterij toevoegen</button>
   </div>);}
 
 // ─── Customer / Teamleader component ─────────────────────────────────────────
+// ─── Teamleader integratie paneel ────────────────────────────────────────────
+// Toont login-knop bij niet-ingelogd, anders zoek-veld + suggesties +
+// adres/email/deals selectie na keuze van een contact.
+function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearching,
+  tlContact,tlLoadingDetails,tlSelectedAddressIdx,tlSelectedDealId,setTlSelectedDealId,
+  onLogin,onLogout,onSelectContact,onSelectAddress,
+  showNewDealForm,newDealTitle,setNewDealTitle,newDealValue,setNewDealValue,
+  dealOptions,newDealPipelineId,setNewDealPipelineId,creatingDeal,
+  onOpenNewDeal,onCancelNewDeal,onCreateDeal}){
+  // Niet ingelogd: login knop
+  if(tlAuth===null) return <div className="customer-section"><div style={{fontSize:9,color:"var(--muted)"}}>Teamleader status laden...</div></div>;
+  if(tlAuth===false||!tlAuth.logged_in){
+    return(
+      <div className="customer-section">
+        <div className="sl">Teamleader</div>
+        {tlAuthMsg&&<div style={{fontSize:9,color:tlAuthMsg.includes("succesvol")?"var(--green)":"var(--red)"}}>{tlAuthMsg}</div>}
+        <div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>
+          Niet ingelogd. Log in om klanten op te zoeken.
+        </div>
+        <button className="btn full" onClick={onLogin}>🔗 Inloggen via Teamleader</button>
+      </div>
+    );
+  }
+  // Ingelogd
+  return(
+    <div className="customer-section">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div className="sl">Teamleader</div>
+        <button onClick={onLogout} style={{background:"none",border:"none",color:"var(--muted)",fontSize:9,cursor:"pointer"}}
+                title="Uitloggen">⏻ Uitloggen</button>
+      </div>
+      <div style={{fontSize:9,color:"var(--muted)"}}>
+        Ingelogd als <strong>{tlAuth.user?.name||tlAuth.user?.email||"?"}</strong>
+      </div>
+      {tlAuthMsg&&<div style={{fontSize:9,color:"var(--green)"}}>{tlAuthMsg}</div>}
+
+      {/* Zoekveld met live suggesties */}
+      <div style={{position:"relative"}}>
+        <div className="inp-label" style={{fontSize:9,fontWeight:600}}>1️⃣ Klant zoeken in Teamleader</div>
+        <input className="inp" type="text" placeholder="Typ minstens 2 letters..."
+               value={tlQuery} onChange={e=>setTlQuery(e.target.value)} autoComplete="off"/>
+        {tlSearching&&<div style={{fontSize:8,color:"var(--muted)",marginTop:2}}>Zoeken...</div>}
+        {tlResults.length>0&&!tlContact&&<div style={{position:"absolute",top:"100%",left:0,right:0,
+              background:"var(--bg1)",border:"1px solid var(--border)",borderRadius:4,zIndex:50,
+              maxHeight:240,overflowY:"auto",marginTop:2,boxShadow:"0 4px 12px rgba(0,0,0,0.1)"}}>
+          {tlResults.map(r=>(
+            <div key={r.type+r.id} onClick={()=>onSelectContact(r)} style={{padding:"6px 10px",cursor:"pointer",
+                  borderBottom:"1px solid var(--border)",fontSize:10}}
+                 onMouseEnter={e=>e.currentTarget.style.background="var(--bg2)"}
+                 onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+              <div><strong>{r.name}</strong> <span style={{fontSize:8,color:"var(--muted)"}}>· {r.type==="company"?"Bedrijf":"Persoon"}</span></div>
+              {r.primary_email&&<div style={{fontSize:8,color:"var(--muted)"}}>{r.primary_email}</div>}
+            </div>
+          ))}
+        </div>}
+      </div>
+
+      {tlLoadingDetails&&<div style={{fontSize:9,color:"var(--alpha)",marginTop:6}}>⏳ Details ophalen...</div>}
+
+      {/* Geselecteerd contact: adressen, emails, deals */}
+      {tlContact&&!tlLoadingDetails&&<>
+        <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:6,padding:8,marginTop:6}}>
+          <div style={{fontSize:11,fontWeight:600}}>{tlContact.name}</div>
+          {tlContact.emails?.length>0&&<div style={{fontSize:9,color:"var(--muted)"}}>
+            {tlContact.emails.map(e=>e.email).join(" · ")}
+          </div>}
+        </div>
+
+        {tlContact.addresses?.length>0&&<div style={{marginTop:8}}>
+          <div className="sl" style={{fontSize:9,marginBottom:4}}>Adres voor dit project</div>
+          {tlContact.addresses.length===1?<div style={{fontSize:9,color:"var(--muted)"}}>{tlContact.addresses[0].full}</div>:
+            tlContact.addresses.map((a,idx)=>(
+              <label key={idx} style={{display:"flex",alignItems:"flex-start",gap:6,padding:"4px 0",cursor:"pointer",fontSize:9}}>
+                <input type="radio" checked={tlSelectedAddressIdx===idx} onChange={()=>onSelectAddress(idx)} style={{marginTop:2}}/>
+                <span><strong>{a.type}</strong>: {a.full}</span>
+              </label>
+            ))
+          }
+        </div>}
+
+        {tlContact.addresses?.length===0&&<div style={{fontSize:9,color:"var(--amber)",marginTop:6}}>
+          ⚠ Deze klant heeft geen adres in TL. Voeg één toe in TL of vul handmatig in.
+        </div>}
+
+        {tlContact.deals?.length>0&&<div style={{marginTop:10}}>
+          <div className="sl" style={{fontSize:9,marginBottom:4}}>Koppel aan een Deal (optioneel)</div>
+          <div style={{maxHeight:180,overflowY:"auto"}}>
+            <label style={{display:"flex",alignItems:"flex-start",gap:6,padding:"4px 0",cursor:"pointer",fontSize:9}}>
+              <input type="radio" checked={tlSelectedDealId===null} onChange={()=>setTlSelectedDealId(null)} style={{marginTop:2}}/>
+              <span style={{color:"var(--muted)"}}>(geen deal koppelen)</span>
+            </label>
+            {tlContact.deals.map(d=>(
+              <label key={d.id} style={{display:"flex",alignItems:"flex-start",gap:6,padding:"4px 0",cursor:"pointer",fontSize:9,
+                     borderTop:"1px solid var(--border)"}}>
+                <input type="radio" checked={tlSelectedDealId===d.id} onChange={()=>setTlSelectedDealId(d.id)} style={{marginTop:2}}/>
+                <span>
+                  <strong>{d.title}</strong>
+                  {d.phase&&<span style={{color:"var(--muted)"}}> · {d.phase}</span>}
+                  {d.estimated_value&&<span style={{color:"var(--muted)"}}> · €{d.estimated_value.toLocaleString("nl-BE")}</span>}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>}
+
+        {tlContact.deals?.length===0&&<div style={{fontSize:9,color:"var(--muted)",marginTop:6}}>
+          Geen deals voor deze klant in TL.
+        </div>}
+
+        {/* Knop om nieuwe deal aan te maken — altijd zichtbaar (ook met bestaande deals) */}
+        {!showNewDealForm&&<button className="btn sec" onClick={onOpenNewDeal}
+                                    style={{marginTop:8,fontSize:9,width:"100%"}}>
+          + Nieuwe deal aanmaken in Teamleader
+        </button>}
+
+        {/* Inline form voor nieuwe deal */}
+        {showNewDealForm&&<div style={{marginTop:8,background:"var(--bg2)",border:"1px solid var(--border)",
+                                        borderRadius:6,padding:10}}>
+          <div className="sl" style={{fontSize:9,marginBottom:6}}>Nieuwe deal aanmaken</div>
+
+          <div className="inp-label" style={{fontSize:8}}>Titel</div>
+          <input className="inp" value={newDealTitle} onChange={e=>setNewDealTitle(e.target.value)}
+                 placeholder="bv. Zonnepanelen Janssens 2026-04-26" maxLength={200}/>
+
+          <div className="inp-label" style={{fontSize:8,marginTop:6}}>Pipeline</div>
+          {!dealOptions?<div style={{fontSize:9,color:"var(--muted)"}}>Pipelines laden...</div>:
+            dealOptions.pipelines?.length===0?<div style={{fontSize:9,color:"var(--red)"}}>
+              Geen pipelines gevonden in TL.
+            </div>:
+            <select className="inp" value={newDealPipelineId||""}
+                    onChange={e=>setNewDealPipelineId(e.target.value)}>
+              {dealOptions.pipelines.map(p=>(
+                <option key={p.id} value={p.id}>
+                  {p.name}{p.isDefault?" (standaard)":""}
+                  {p.firstPhaseName?` — start in fase: ${p.firstPhaseName}`:""}
+                </option>
+              ))}
+            </select>
+          }
+
+          <div className="inp-label" style={{fontSize:8,marginTop:6}}>Geschatte waarde (€) — optioneel</div>
+          <input className="inp" type="number" min="0" step="100"
+                 placeholder="Leeg laten als nog onbekend"
+                 value={newDealValue} onChange={e=>setNewDealValue(e.target.value)}/>
+
+          <div style={{display:"flex",gap:6,marginTop:10}}>
+            <button className="btn sec" onClick={onCancelNewDeal} disabled={creatingDeal}
+                    style={{flex:1,fontSize:9}}>Annuleren</button>
+            <button className="btn full" onClick={onCreateDeal} disabled={creatingDeal||!newDealTitle.trim()||!newDealPipelineId}
+                    style={{flex:2,fontSize:9}}>
+              {creatingDeal?"Aanmaken...":"✓ Aanmaken in Teamleader"}
+            </button>
+          </div>
+        </div>}
+      </>}
+    </div>
+  );
+}
+
 // ─── Project opslag & beheer paneel ──────────────────────────────────────────
 // Identificatie op klantnaam. Auto-save (debounced) gebeurt via App-state.
 // Biedt: Nieuw / Openen / Download JSON / Upload JSON + status-indicator.
@@ -1729,7 +2113,7 @@ export class ErrorBoundary extends Component {
 }
 
 export default function App(){
-  const[activeTab,setActiveTab]=useState("configuratie");
+  const[activeTab,setActiveTab]=useState("klant");
   const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
   const[coords,setCoords]=useState(null);const[displayName,setDisplayName]=useState("");
   const[slope,setSlope]=useState(35);const[orientation,setOrientation]=useState("Z");
@@ -1784,12 +2168,192 @@ export default function App(){
   // Klant & Teamleader
   const[customer,setCustomer]=useState({name:"",address:"",email:""});
   const[tlToken,setTlToken]=useState("");
+
+  // ─── Teamleader OAuth integratie ────────────────────────────────────────
+  // tlAuth: huidige login-status. null = nog niet gecheckt, false = uitgelogd,
+  // {user:{name,email}} = ingelogd.
+  const[tlAuth,setTlAuth]=useState(null);
+  const[tlAuthMsg,setTlAuthMsg]=useState(""); // bv. "denied", "error" na callback
+  // Zoekstate: live suggesties tijdens typen
+  const[tlQuery,setTlQuery]=useState("");
+  const[tlResults,setTlResults]=useState([]);
+  const[tlSearching,setTlSearching]=useState(false);
+  // Geselecteerd contact + details
+  const[tlContact,setTlContact]=useState(null); // {id, type, name, addresses, emails, phones, deals}
+  const[tlLoadingDetails,setTlLoadingDetails]=useState(false);
+  // Welk adres + welke deal de gebruiker heeft gekozen
+  const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
+  const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
+  // Nieuwe deal form
+  const[showNewDealForm,setShowNewDealForm]=useState(false);
+  const[newDealTitle,setNewDealTitle]=useState("");
+  const[newDealValue,setNewDealValue]=useState(""); // optioneel — leeg = niet meegeven
+  const[dealOptions,setDealOptions]=useState(null); // {pipelines, currentUserId} of null
+  const[newDealPipelineId,setNewDealPipelineId]=useState(null);
+  const[creatingDeal,setCreatingDeal]=useState(false);
+
+  // Bij eerste mount: check OAuth callback in URL + auth-status
+  useEffect(()=>{
+    const cb=TL.consumeAuthCallback();
+    if(cb==='success'){setTlAuthMsg("Login succesvol!");setTimeout(()=>setTlAuthMsg(""),3000);}
+    else if(cb==='denied'){setTlAuthMsg("Login geweigerd.");}
+    else if(cb==='error'){setTlAuthMsg("Login fout — probeer opnieuw.");}
+    TL.checkAuthStatus().then(s=>setTlAuth(s.logged_in?s:false));
+  },[]);
+
+  // Debounced search — created once via useRef zodat hij niet bij elke render
+  // opnieuw wordt aangemaakt (anders verliest debounce zijn timer-state).
+  const debouncedSearchRef=useRef(null);
+  if(!debouncedSearchRef.current){
+    debouncedSearchRef.current=TL.debounce(TL.searchContacts,400);
+  }
+
+  // Trigger search bij wijziging van tlQuery
+  useEffect(()=>{
+    if(!tlAuth?.logged_in||!tlQuery||tlQuery.trim().length<2){
+      setTlResults([]);setTlSearching(false);return;
+    }
+    setTlSearching(true);
+    debouncedSearchRef.current(tlQuery).then(res=>{
+      if(res===null) return; // gecanceld door nieuwere call
+      setTlSearching(false);
+      if(res?.notLoggedIn){setTlAuth(false);setTlResults([]);return;}
+      setTlResults(res?.results||[]);
+    });
+  },[tlQuery,tlAuth?.logged_in]);
+
+  // Wanneer een contact geselecteerd wordt: details ophalen
+  const handleSelectTlContact=useCallback(async(item)=>{
+    setTlLoadingDetails(true);
+    setTlResults([]); // verberg suggesties
+    setTlQuery(item.name);
+    const details=await TL.getContactDetails(item.type,item.id);
+    setTlLoadingDetails(false);
+    if(details?.error){
+      alert("Kon details niet ophalen: "+details.error);return;
+    }
+    setTlContact(details);
+    setTlSelectedAddressIdx(0);
+    setTlSelectedDealId(null);
+    // Populeer customer-state — naam altijd, primary email indien aanwezig
+    const primaryEmail=details.emails?.[0]?.email||"";
+    const primaryAddress=details.addresses?.[0];
+    setCustomer({
+      name:details.name||"",
+      address:primaryAddress?.full||"",
+      email:primaryEmail,
+    });
+    // Geocode primary address → coords + auto-laden van de kaart.
+    // We hergebruiken de bestaande selectAddr() flow zodat GRB+DHM ook
+    // correct laden. Daarvoor bouwen we een Nominatim-achtige struct.
+    if(primaryAddress){
+      const geo=await TL.geocodeAddress(primaryAddress);
+      if(geo){
+        await selectAddr({
+          lat: String(geo.lat),
+          lon: String(geo.lng),
+          display_name: geo.displayName,
+        });
+      }else{
+        alert("Adres niet gevonden in OpenStreetMap. Voer het adres handmatig in op het Configuratie-tabblad.");
+      }
+    }
+  },[mapReady]);
+
+  // Wanneer gebruiker een ander adres kiest uit de lijst
+  const handleSelectAddress=useCallback(async(idx)=>{
+    setTlSelectedAddressIdx(idx);
+    if(!tlContact?.addresses?.[idx]) return;
+    const addr=tlContact.addresses[idx];
+    setCustomer(c=>({...c,address:addr.full||""}));
+    const geo=await TL.geocodeAddress(addr);
+    if(geo){
+      // Hergebruik de bestaande selectAddr flow (incl. GRB+DHM laden)
+      await selectAddr({
+        lat: String(geo.lat),
+        lon: String(geo.lng),
+        display_name: geo.displayName,
+      });
+    }else{
+      alert("Adres niet gevonden in OpenStreetMap. Voer handmatig in.");
+    }
+  },[tlContact]);
+
+  const handleTlLogin=useCallback(()=>{
+    TL.startTeamleaderLogin();
+  },[]);
+
+  const handleTlLogout=useCallback(()=>{
+    TL.clearUserId();
+    setTlAuth(false);
+    setTlContact(null);
+    setTlResults([]);
+    setTlQuery("");
+  },[]);
+
+  // Open het "nieuwe deal" formulier — laad opties on-demand (slechts 1× per sessie)
+  const handleOpenNewDeal=useCallback(async()=>{
+    setShowNewDealForm(true);
+    // Default titel is bewust kort — gebruiker mag aanpassen indien gewenst
+    setNewDealTitle("Zonnepanelen");
+    setNewDealValue("");
+    // Laad pipelines indien nog niet geladen
+    if(!dealOptions){
+      const opts=await TL.getDealOptions();
+      if(opts?.error){alert("Kon pipelines niet laden: "+opts.error);setShowNewDealForm(false);return;}
+      setDealOptions(opts);
+      // Default: eerste pipeline (= default pipeline want we sorteren erop)
+      if(opts.pipelines?.length>0){setNewDealPipelineId(opts.pipelines[0].id);}
+    }
+  },[tlContact,customer.name,dealOptions]);
+
+  const handleCancelNewDeal=useCallback(()=>{
+    setShowNewDealForm(false);
+    setNewDealTitle("");
+    setNewDealValue("");
+  },[]);
+
+  // Submit het nieuwe-deal formulier → API call → toevoegen aan tlContact.deals + selecteren
+  const handleCreateDeal=useCallback(async()=>{
+    if(!tlContact){alert("Geen klant geselecteerd");return;}
+    if(!newDealTitle.trim()){alert("Vul een titel in");return;}
+    if(!newDealPipelineId){alert("Kies een pipeline");return;}
+    const pipeline=dealOptions?.pipelines?.find(p=>p.id===newDealPipelineId);
+    if(!pipeline?.firstPhaseId){
+      alert("Deze pipeline heeft geen phases. Configureer eerst phases in Teamleader.");return;
+    }
+    setCreatingDeal(true);
+    const valueNum=parseFloat(newDealValue);
+    const result=await TL.createDeal({
+      title:newDealTitle.trim(),
+      contactType:tlContact.type,
+      contactId:tlContact.id,
+      phaseId:pipeline.firstPhaseId,
+      responsibleUserId:dealOptions.currentUserId||undefined,
+      estimatedValueEur:isFinite(valueNum)&&valueNum>0?valueNum:undefined,
+    });
+    setCreatingDeal(false);
+    if(result.error){alert("Deal aanmaken mislukt: "+result.error);return;}
+    // Voeg de nieuwe deal toe aan tlContact.deals én selecteer hem
+    setTlContact(prev=>prev?{
+      ...prev,
+      deals:[result.deal,...(prev.deals||[])],
+    }:prev);
+    setTlSelectedDealId(result.deal.id);
+    setShowNewDealForm(false);
+    setNewDealTitle("");
+    setNewDealValue("");
+  },[tlContact,newDealTitle,newDealPipelineId,newDealValue,dealOptions]);
+
   const[pdfLoading,setPdfLoading]=useState(false);
 
   // Manuele prijzen uit offerte (overschrijven automatische berekening als ingevuld).
   // Leeg string = automatisch; een getal (positief) = manueel.
   const[manualPanelPrice,setManualPanelPrice]=useState("");
   const[manualBatteryPrice,setManualBatteryPrice]=useState("");
+  // Jaarlijks elektriciteitsverbruik van de klant (kWh). Default 3500 (Vlaams gemiddelde
+  // gezin van 4). Wordt gebruikt voor zelfconsumptiegraad + dekkingsgraad-berekening.
+  const[annualConsumption,setAnnualConsumption]=useState(3500);
 
   // Auto-save systeem: debounced saver die elk veranderd project opslaat.
   const autoSaverRef=useRef(null);
@@ -1852,28 +2416,35 @@ export default function App(){
 
   // Bouw de project-data snapshot op basis van de huidige app-state.
   // Alles wat hier in zit wordt opgeslagen/hersteld bij project laden.
+  // We slaan de IDs op (selPanelId, selInvId, selBattId), niet de hele
+  // objecten — zo blijven projecten consistent met latere catalogus-updates.
   const buildProjectSnapshot=useCallback(()=>({
     customer,
-    address,
     coords,
     displayName,
     buildingCoords,
     detectedFaces,
     selFaceIdx,
-    selPanel,
-    selInv,
-    selBatt,
+    selPanelId,
+    selInvId,
+    selBattId,
     battEnabled,
-    panelCount,
+    customCount,
     panelOrient,
     panelRotOffset,
     orientation,
     slope,
     manualPanelPrice,
     manualBatteryPrice,
-  }),[customer,address,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
-      selPanel,selInv,selBatt,battEnabled,panelCount,panelOrient,panelRotOffset,
-      orientation,slope,manualPanelPrice,manualBatteryPrice]);
+    annualConsumption,
+    // Teamleader koppelingen — voor latere terugschrijving naar TL
+    tlContactType:tlContact?.type||null,
+    tlContactId:tlContact?.id||null,
+    tlDealId:tlSelectedDealId,
+  }),[customer,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
+      selPanelId,selInvId,selBattId,battEnabled,customCount,panelOrient,panelRotOffset,
+      orientation,slope,manualPanelPrice,manualBatteryPrice,annualConsumption,
+      tlContact,tlSelectedDealId]);
 
   // Auto-save: triggert telkens als iets in de snapshot verandert én er een
   // klantnaam is ingevuld. Debounced tot 1 sec na laatste wijziging.
@@ -1902,23 +2473,27 @@ export default function App(){
     const d=p.data||{};
     // Volgorde: eerst customer, dan rest (zodat auto-save niet tussendoor triggert)
     if(d.customer) setCustomer(d.customer);
-    if(d.address!=null) setAddress(d.address);
     if(d.coords) setCoords(d.coords);
     if(d.displayName!=null) setDisplayName(d.displayName);
     if(d.buildingCoords) setBuildingCoords(d.buildingCoords);
     if(d.detectedFaces) setDetectedFaces(d.detectedFaces);
     if(d.selFaceIdx!=null) setSelFaceIdx(d.selFaceIdx);
-    if(d.selPanel) setSelPanel(d.selPanel);
-    if(d.selInv!==undefined) setSelInv(d.selInv);
-    if(d.selBatt) setSelBatt(d.selBatt);
+    if(d.selPanelId!=null) setSelPanelId(d.selPanelId);
+    if(d.selInvId!==undefined) setSelInvId(d.selInvId);
+    if(d.selBattId!=null) setSelBattId(d.selBattId);
     if(d.battEnabled!=null) setBattEnabled(d.battEnabled);
-    if(d.panelCount!=null) setPanelCount(d.panelCount);
+    if(d.customCount!=null) setCustomCount(d.customCount);
     if(d.panelOrient) setPanelOrient(d.panelOrient);
     if(d.panelRotOffset!=null) setPanelRotOffset(d.panelRotOffset);
     if(d.orientation) setOrientation(d.orientation);
     if(d.slope!=null) setSlope(d.slope);
     if(d.manualPanelPrice!=null) setManualPanelPrice(d.manualPanelPrice);
     if(d.manualBatteryPrice!=null) setManualBatteryPrice(d.manualBatteryPrice);
+    if(d.annualConsumption!=null) setAnnualConsumption(d.annualConsumption);
+    // Teamleader: selected deal ID herstellen. Het volledige tlContact wordt
+    // niet hersteld — dat zou een nieuwe TL-call vragen. De gebruiker kan
+    // het opnieuw zoeken in TL als hij wijzigingen wil maken aan de klantdata.
+    if(d.tlDealId!==undefined) setTlSelectedDealId(d.tlDealId);
     // Na de batch state-updates: auto-save weer aanzetten.
     // React batcht synchroon; setTimeout zorgt dat alle useEffects gelopen zijn.
     setTimeout(()=>{
@@ -1935,20 +2510,28 @@ export default function App(){
     autoSaverRef.current?.flush();
     suppressAutoSaveRef.current=true;
     setCustomer({name:"",address:"",email:""});
-    setAddress("");
     setCoords(null);
     setDisplayName("");
     setBuildingCoords(null);
     setDetectedFaces(null);
     setSelFaceIdx(0);
     setBattEnabled(false);
-    setPanelCount(10);
+    setCustomCount(10);
     setPanelRotOffset(0);
     setManualPanelPrice("");
     setManualBatteryPrice("");
+    setAnnualConsumption(3500);
     setResults(null);
     setAiText("");
     setPanelsDrawn(false);
+    // Reset TL state
+    setTlContact(null);
+    setTlQuery("");
+    setTlResults([]);
+    setTlSelectedDealId(null);
+    setShowNewDealForm(false);
+    setNewDealTitle("");
+    setNewDealValue("");
     setTimeout(()=>{suppressAutoSaveRef.current=false;setShowProjectMenu(false);},100);
   },[]);
 
@@ -2191,25 +2774,62 @@ export default function App(){
     if(!coords||!selPanel||!buildingCoords) return;
     const irr=getSolarIrr(orientation,slope);
     const actualArea=panelCount*selPanel.area,annualKwh=Math.round(actualArea*irr*(selPanel.eff/100));
-    const co2=Math.round(annualKwh*.202),coverage=Math.round((annualKwh/3500)*100);
-    // Installatieprijs panelen: manueel ingevoerd (offerte) of automatisch.
-    // Manueel wint: als gebruiker een getal > 0 invoert, gebruik dat i.p.v. de berekening.
+    const co2=Math.round(annualKwh*.202);
+    // Dekkingsgraad t.o.v. werkelijk verbruik (was: hardcoded 3500 kWh aanname)
+    const consumption=Math.max(annualConsumption||3500,1);
+    const coverage=Math.round((annualKwh/consumption)*100);
+    // Installatieprijs uit offerte — VERPLICHT.
+    // Catalogus heeft geen prijzen meer (price:0 voor alle items).
+    // Gebruiker MOET de offerte-prijs zelf invullen op de Resultaten tab.
     const mpp=parseFloat(manualPanelPrice);
-    const autoPanelPrice=Math.round(panelCount*selPanel.price+(selInv?selInv.price:1200));
-    const investPanels=(isFinite(mpp)&&mpp>0)?Math.round(mpp):autoPanelPrice;
-    const annualBase=Math.round(annualKwh*.28),paybackBase=Math.round(investPanels/annualBase);
+    // 0 = niet ingevuld → null zodat we duidelijk kunnen aangeven "wachten op prijs"
+    const investPanels=(isFinite(mpp)&&mpp>0)?Math.round(mpp):null;
+
+    // ─── REALISTISCHE BESPARING in Vlaanderen 2026 ────────────────────────
+    // Salderen bestaat niet meer. Opwek splitst in:
+    //   - Zelfverbruik (eigen huis verbruikt direct) → bespaart aankoopprijs €0.28/kWh
+    //   - Injectie (overschot naar net) → vergoed aan ~€0.05/kWh
+    //
+    // Zelfconsumptiegraad zonder batterij: ~30% van opwek (typisch Vlaams huishouden)
+    // Met batterij: ~70%
+    const PRIJS_AANKOOP=0.28;
+    const PRIJS_INJECTIE=0.05;
+    const selfRatioBase=0.30;
+    const selfRatioBatt=0.70;
+
+    const selfKwhBase=Math.min(annualKwh*selfRatioBase,consumption);
+    const injectKwhBase=Math.max(annualKwh-selfKwhBase,0);
+    const annualBase=Math.round(selfKwhBase*PRIJS_AANKOOP+injectKwhBase*PRIJS_INJECTIE);
+    // Terugverdientijd alleen berekenen als er een prijs is
+    const paybackBase=investPanels!==null?Math.round(investPanels/Math.max(annualBase,1)):null;
+
     let battResult=null;
     if(battEnabled&&selBatt){
-      const extra=Math.min(annualKwh*.70,annualKwh)-annualKwh*.30;
-      // Installatieprijs batterij: manueel ingevoerd of automatisch (= selBatt.price)
       const mbp=parseFloat(manualBatteryPrice);
-      const battPrice=(isFinite(mbp)&&mbp>0)?Math.round(mbp):selBatt.price;
-      const extraSav=Math.round(extra*.28),totSav=annualBase+extraSav,totInv=investPanels+battPrice;
-      battResult={extraSav,totSav,totInv,payback:Math.round(totInv/totSav),battPrice};
+      // manualBatteryPrice = TOTAAL met batterij (panelen + omvormer + batterij + installatie),
+      // niet enkel de batterij-prijs. Dit is hoe offertes typisch werken.
+      const totInvBatt=(isFinite(mbp)&&mbp>0)?Math.round(mbp):null;
+      const selfKwhBatt=Math.min(annualKwh*selfRatioBatt,consumption);
+      const injectKwhBatt=Math.max(annualKwh-selfKwhBatt,0);
+      const totSav=Math.round(selfKwhBatt*PRIJS_AANKOOP+injectKwhBatt*PRIJS_INJECTIE);
+      const extraSav=totSav-annualBase;
+      const payback=(totInvBatt!==null)?Math.round(totInvBatt/Math.max(totSav,1)):null;
+      // Afgeleide batterij-meerprijs (alleen voor info-display)
+      const battOnlyPrice=(totInvBatt!==null&&investPanels!==null)?totInvBatt-investPanels:null;
+      battResult={extraSav,totSav,totInv:totInvBatt,payback,battPrice:battOnlyPrice,
+        selfRatio:selfRatioBatt,selfKwh:Math.round(selfKwhBatt),injectKwh:Math.round(injectKwhBatt)};
     }
     setResults({irr,panelCount,actualArea:Math.round(actualArea),annualKwh,co2,coverage,
       investPanels,annualBase,paybackBase,battResult,panel:selPanel,inv:selInv,batt:battEnabled?selBatt:null,
-      detectedArea,grbOk:grbStatus==="ok",dhmOk:dhmStatus==="ok",orientation,slope});
+      detectedArea,grbOk:grbStatus==="ok",dhmOk:dhmStatus==="ok",orientation,slope,
+      stringDesign:stringDesign||null,
+      // Nieuwe velden voor verbruik-informatie
+      consumption:Math.round(consumption),
+      selfKwhBase:Math.round(selfKwhBase),
+      injectKwhBase:Math.round(injectKwhBase),
+      selfRatioBase,
+      priceBuy:PRIJS_AANKOOP,
+      priceInject:PRIJS_INJECTIE});
     if(leafRef.current&&window.L){
       const L=window.L,map=leafRef.current;
       if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
@@ -2223,7 +2843,38 @@ export default function App(){
       const battStr=battResult?`\nBatterij: ${selBatt.brand} ${selBatt.model} (${selBatt.kwh}kWh, €${selBatt.price}) · Extra: €${battResult.extraSav}/j · Terugverdien: ${battResult.payback}j`:"Geen batterij.";
       const resp=await fetch(AI_PROXY_URL,{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,
-          messages:[{role:"user",content:`Zonne-energie expert Vlaanderen. Beknopt professioneel advies in het Nederlands:\n\nLocatie: ${displayName}\nDak: ${grbStatus==="ok"?"GRB-contour":"Schatting"} · ${detectedArea||80} m²${dhmStr}\nPaneel: ${selPanel.brand} ${selPanel.model} (${selPanel.watt}W, ${selPanel.eff}%)\nAantal: ${panelCount} · ${Math.round(actualArea)} m² · ${((panelCount*selPanel.watt)/1000).toFixed(1)} kWp\nHelling: ${slope}° ${orientation} · ${irr} kWh/m²/j\n${invStr}\nOpbrengst: ${annualKwh} kWh/j · CO₂: ${co2} kg/j\nInvestering: €${investPanels.toLocaleString()} · Besparing: €${annualBase}/j · Terugverdien: ${paybackBase}j\n${battStr}\n\nMax 180 woorden:\n1. Kwaliteit dak & paneelkeuze\n2. AlphaESS G3 synergie\n3. Vlaamse premies (capaciteitstarief, BTW 6%, REG-premie)`}]})});
+          messages:[{role:"user",content:`Je bent een onafhankelijk PV-installatie expert voor woningen in Vlaanderen, België. Geef een beknopt en professioneel advies in het Nederlands voor onderstaande installatie. Belangrijk:
+
+CONTEXT VLAANDEREN 2026:
+- Salderen bestaat NIET meer in Vlaanderen sinds 2021 (digitale meter verplicht).
+- Eigen verbruik is essentieel: opbrengst die direct verbruikt wordt is de meest waardevolle (bespaart aankoopprijs ~€0,28/kWh inclusief BTW).
+- Injectie naar het net wordt vergoed aan de injectievergoeding (~€0,03–0,06/kWh, sterk variabel per leverancier).
+- Capaciteitstarief is van toepassing sinds 2023: piekverbruik (kW) bepaalt distributiekosten naast verbruik (kWh). Een batterij of slim laden kan dit drukken.
+- Prosumententarief is afgeschaft (was vergoeding voor digitale meter, niet meer relevant).
+- BTW 6% is enkel mogelijk bij installatie op een woning ouder dan 10 jaar; anders 21%.
+- Geen vaste premies meer voor PV (REG-premie afgeschaft 2024). Wel premie voor batterijen via Fluvius mogelijk afhankelijk van regio en periode.
+- Realistische terugverdientijd in 2026: 7–11 jaar voor PV-installatie zonder batterij, 9–13 jaar met batterij.
+
+INSTALLATIE GEGEVENS:
+Locatie: ${displayName}
+Dak: ${grbStatus==="ok"?"GRB-contour":"Schatting"} · ${detectedArea||80} m²${dhmStr}
+Paneel: ${selPanel.brand} ${selPanel.model} (${selPanel.watt}W, ${selPanel.eff}%)
+Aantal: ${panelCount} · ${Math.round(actualArea)} m² · ${((panelCount*selPanel.watt)/1000).toFixed(1)} kWp
+Helling: ${slope}° ${orientation} · ${irr} kWh/m²/j
+${invStr}
+Opbrengst: ${annualKwh} kWh/j · CO₂: ${co2} kg/j
+Klant jaarverbruik: ${consumption} kWh · dekkingsgraad ${coverage}% · zelfverbruik ${Math.round(selfRatioBase*100)}% (${Math.round(selfKwhBase)} kWh) · injectie ${Math.round(injectKwhBase)} kWh
+Investering: ${investPanels!==null?"€"+investPanels.toLocaleString():"nog niet ingevuld"} · Besparing: €${annualBase}/j · Terugverdien: ${paybackBase!==null?paybackBase+"j":"niet bepaalbaar"}
+${battStr}
+
+GEEF EEN ADVIES VAN MAX 200 WOORDEN MET:
+1. Beoordeling van paneelkeuze en daksituatie (oriëntatie, helling, opbrengst)
+2. Eigen verbruik en zelfconsumptie — concrete tips voor deze installatie
+3. Capaciteitstarief implicaties${battEnabled?" en hoe de batterij dit beïnvloedt":""}
+4. Realistische verwachting terugverdientijd in Vlaamse context
+5. Aandachtspunten zoals BTW-tarief (woningouder 10j), keuring conform AREI, conformiteitsverklaring Synergrid C10/11
+
+Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschafte regelingen (geen salderen, geen REG-premie, geen prosumententarief).`}]})});
       const d=await resp.json();setAiText(d.content?.find(b=>b.type==="text")?.text||"Analyse niet beschikbaar.");
     }catch(e){setAiText("AI-analyse tijdelijk niet beschikbaar. "+(e.message||""));}
     setAiLoading(false);
@@ -2232,21 +2883,64 @@ export default function App(){
   const handlePDF=async()=>{
     if(!results) return;
     setPdfLoading(true);
-    try{await generatePDF(results,customer,displayName,slope,orientation);}
+    // Bewaar huidige tab en schakel tijdelijk naar Configuratie zodat de
+    // Leaflet kaart + panelen-laag volledig gerenderd zijn op het moment
+    // dat html2canvas screenshot maakt. Anders krijgen we een lege of
+    // pannelloze kaart in het rapport.
+    const previousTab=activeTab;
+    setActiveTab("configuratie");
+    // 1. Wacht 2 frames zodat React zeker heeft gerenderd (display:none → flex)
+    await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+    await new Promise(r=>setTimeout(r,300));
+    // 2. Leaflet moet zijn dimensies opnieuw meten — anders zijn tiles leeg
+    if(leafRef.current?.invalidateSize) leafRef.current.invalidateSize(true);
+    // 3. Forceer volledige re-render door minieme pan + setView
+    //    Dit triggert een nieuwe SVG-layer-render incl. paneel-polygons
+    if(leafRef.current){
+      const c=leafRef.current.getCenter();
+      const z=leafRef.current.getZoom();
+      leafRef.current.panBy([1,0],{animate:false});
+      leafRef.current.panBy([-1,0],{animate:false});
+      leafRef.current.setView(c,z,{animate:false});
+    }
+    // 4. Wacht op tile-load (Leaflet event) of timeout na 2s
+    await new Promise(resolve=>{
+      let done=false;
+      const finish=()=>{if(!done){done=true;resolve();}};
+      if(leafRef.current){
+        leafRef.current.once("load",finish);
+        // Trigger ook een idle-event als geen tiles meer laden
+        setTimeout(finish,1500);
+      }else{
+        setTimeout(finish,800);
+      }
+    });
+    // 5. Extra wachttijd voor SVG-render (browser-specifiek)
+    await new Promise(r=>setTimeout(r,400));
+    try{
+      await generatePDF(results,customer,displayName,slope,orientation);
+    }
     catch(e){alert(`PDF fout: ${e.message}`);}
     setPdfLoading(false);
+    // Terug naar de tab waar de gebruiker stond
+    setActiveTab(previousTab);
   };
 
   const filteredInv=invFilter==="alle"?inverters:inverters.filter(i=>i.fase===invFilter);
   const filteredBatt=battFilter==="alle"?batteries:battFilter==="alpha"?batteries.filter(b=>b.isAlpha):batteries.filter(b=>!b.isAlpha);
   const zq=ZONE_Q[orientation]||ZONE_Q.Z;
   const dhmHits=new Set(detectedFaces?.map(f=>f.orientation)||[]);
+  // String design — alleen berekenen als panel + omvormer beide volledige specs hebben
+  const stringDesign = (selPanel?.voc && selInv?.maxDcVoltage)
+    ? computeStringDesign(selPanel, selInv, panelCount)
+    : null;
   const isLoading=grbStatus==="loading"||dhmStatus==="loading";
 
   const TABS=[
-    {k:"configuratie",l:"01 Configuratie"},{k:"klant",l:"02 Klant"},
+    {k:"klant",l:"01 Klant"},{k:"configuratie",l:"02 Configuratie"},
     {k:"panelen",l:"03 Panelen"},{k:"omvormers",l:"04 AlphaESS"},
-    {k:"batterij",l:"05 Batterij"},{k:"resultaten",l:"06 Resultaten"}
+    {k:"batterij",l:"05 Batterij"},{k:"technisch",l:"06 Technisch"},
+    {k:"resultaten",l:"07 Resultaten"}
   ];
 
   return(<><style>{STYLES}</style>
@@ -2405,7 +3099,7 @@ export default function App(){
           <div className="sl">Geselecteerd paneel</div>
           <div className="card selected" style={{cursor:"default"}}>
             <div className="card-name">{selPanel?.model}</div><div className="card-brand">{selPanel?.brand}</div>
-            <div className="chips"><span className="chip gold">{selPanel?.watt}W</span><span className="chip">{selPanel?.eff}% eff</span><span className="chip">€{selPanel?.price}/st</span></div>
+            <div className="chips"><span className="chip gold">{selPanel?.watt}W</span><span className="chip">{selPanel?.eff}% eff</span></div>
           </div>
           <button className="btn sec full" style={{marginTop:6}} onClick={()=>setActiveTab("panelen")}>Paneel wijzigen →</button>
         </div>
@@ -2416,8 +3110,8 @@ export default function App(){
           {selInv?<div className="inv-card selected" style={{cursor:"default"}}>
             <div className="alpha-badge">⚡ G3</div>
             <div className="card-name">{selInv.model}</div>
-            <div className="chips"><span className="chip alpha-c">{selInv.kw}kW</span><span className="chip">€{selInv.price.toLocaleString()}</span></div>
-          </div>:<div className="info-box" style={{fontSize:8}}>Geen omvormer · forfait €1.200</div>}
+            <div className="chips"><span className="chip alpha-c">{selInv.kw}kW</span><span className="chip">{selInv.mppt} MPPT</span></div>
+          </div>:<div className="info-box" style={{fontSize:11}}>Geen omvormer geselecteerd</div>}
           <button className="btn alpha full" style={{marginTop:6}} onClick={()=>setActiveTab("omvormers")}>{selInv?"Omvormer wijzigen →":"AlphaESS kiezen →"}</button>
         </div>
 
@@ -2530,26 +3224,6 @@ export default function App(){
         }}>
           {panelMoveMode?"✅ Klaar · klik paneel=select · dubbelklik=rij · sleep=verplaats":"↔️ Verplaats panelen"}
         </button>}
-        {/* Manuele prijzen uit offerte (overschrijven de automatische schatting) */}
-        <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:10,marginBottom:6}}>
-          <div className="sl" style={{marginBottom:6}}>Prijzen uit offerte (optioneel)</div>
-          <div style={{display:"flex",gap:6}}>
-            <div style={{flex:1}}>
-              <div className="inp-label" style={{fontSize:8}}>Panelen + installatie (€)</div>
-              <input className="inp" type="number" min="0" step="50" placeholder="auto"
-                value={manualPanelPrice} onChange={e=>setManualPanelPrice(e.target.value)}/>
-            </div>
-            <div style={{flex:1}}>
-              <div className="inp-label" style={{fontSize:8}}>Batterij (€)</div>
-              <input className="inp" type="number" min="0" step="50" placeholder="auto"
-                value={manualBatteryPrice} onChange={e=>setManualBatteryPrice(e.target.value)}
-                disabled={!battEnabled}/>
-            </div>
-          </div>
-          <div style={{fontSize:8,color:"var(--muted)",marginTop:4}}>
-            Leeg = automatische schatting. Vul in met offerte-prijzen voor correct rapport.
-          </div>
-        </div>
         <button className="btn full" onClick={calculate} disabled={!coords||aiLoading||!buildingCoords||isLoading}>
           {aiLoading?<><div className="spinner"/>Analyseren...</>:dhmStatus==="loading"?<><div className="spinner cyan"/>LiDAR verwerken...</>:grbStatus==="loading"?<><div className="spinner"/>Laden...</>:"☀️ Bereken resultaten"}
         </button>
@@ -2612,18 +3286,55 @@ export default function App(){
           </div>}
         </div>
 
-        {/* KLANT TAB */}
+        {/* KLANT TAB — nu eerste in flow: TL login → contact zoeken → adres+deal kiezen */}
         {activeTab==="klant"&&<div className="section">
           <ProjectPanel customer={customer} projectList={projectList} lastSavedAt={lastSavedAt}
             isLoadingProject={isLoadingProject} showProjectMenu={showProjectMenu}
             setShowProjectMenu={setShowProjectMenu}
             onNew={handleNewProject} onLoad={handleLoadProject} onDelete={handleDeleteProject}
             onDownload={handleDownloadProject} onUpload={handleUploadProject}/>
-          <CustomerPanel customer={customer} setCustomer={setCustomer} tlToken={tlToken} setTlToken={setTlToken}/>
-          <div className="info-box alpha-info">
-            <strong>ℹ️ Teamleader integratie</strong><br/>
-            Voer uw Teamleader Access Token in (te vinden in Teamleader → Marktplaats → API → Access Token).
-            Zoek op klantnaam om adres en e-mail automatisch in te vullen.
+          <TeamleaderPanel
+            tlAuth={tlAuth} tlAuthMsg={tlAuthMsg}
+            tlQuery={tlQuery} setTlQuery={setTlQuery}
+            tlResults={tlResults} tlSearching={tlSearching}
+            tlContact={tlContact} tlLoadingDetails={tlLoadingDetails}
+            tlSelectedAddressIdx={tlSelectedAddressIdx}
+            tlSelectedDealId={tlSelectedDealId} setTlSelectedDealId={setTlSelectedDealId}
+            onLogin={handleTlLogin} onLogout={handleTlLogout}
+            onSelectContact={handleSelectTlContact} onSelectAddress={handleSelectAddress}
+            showNewDealForm={showNewDealForm}
+            newDealTitle={newDealTitle} setNewDealTitle={setNewDealTitle}
+            newDealValue={newDealValue} setNewDealValue={setNewDealValue}
+            dealOptions={dealOptions}
+            newDealPipelineId={newDealPipelineId} setNewDealPipelineId={setNewDealPipelineId}
+            creatingDeal={creatingDeal}
+            onOpenNewDeal={handleOpenNewDeal} onCancelNewDeal={handleCancelNewDeal}
+            onCreateDeal={handleCreateDeal}/>
+          {/* Manuele override / aanvulling — gebruiker kan altijd de waarden bewerken
+              ook al kwamen ze uit TL. Bv. tijdelijke afwijking in adres voor dit project. */}
+          <div className="customer-section">
+            <div className="sl">2️⃣ Klantgegevens</div>
+            <div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>
+              Velden worden automatisch gevuld na keuze in Teamleader.<br/>
+              <strong>Niet gevonden in TL?</strong> Vul hier handmatig in.
+            </div>
+            <div className="inp-label" style={{fontSize:9,fontWeight:600}}>Naam <span style={{color:"var(--red)"}}>*</span></div>
+            <input className="inp" value={customer.name} onChange={e=>setCustomer({...customer,name:e.target.value})}
+                   placeholder="bv. Jan Janssens"/>
+            <div className="inp-label" style={{fontSize:8,marginTop:6}}>Adres</div>
+            <input className="inp" value={customer.address} onChange={e=>setCustomer({...customer,address:e.target.value})}
+                   placeholder="Straat huisnr, postcode gemeente"/>
+            <div className="inp-label" style={{fontSize:8,marginTop:6}}>Email</div>
+            <input className="inp" type="email" value={customer.email} onChange={e=>setCustomer({...customer,email:e.target.value})}
+                   placeholder="naam@voorbeeld.be"/>
+            <div className="inp-label" style={{fontSize:8,marginTop:6}}>Jaarlijks elektriciteitsverbruik (kWh)</div>
+            <input className="inp" type="number" min="500" max="50000" step="100"
+                   value={annualConsumption}
+                   onChange={e=>setAnnualConsumption(parseInt(e.target.value)||3500)}
+                   placeholder="bv. 3500"/>
+            <div style={{fontSize:8,color:"var(--muted)",marginTop:2}}>
+              Te vinden op de eindafrekening van de leverancier (kWh/jaar). Vlaams gemiddelde gezin: 3500 kWh.
+            </div>
           </div>
         </div>}
 
@@ -2652,6 +3363,126 @@ export default function App(){
           <div className="filter-row">{[["alle","Alle"],["alpha","AlphaESS G3"],["overig","Andere"]].map(([k,l])=><button key={k} className={`filter-btn ${battFilter===k?"active":""}`} onClick={()=>setBattFilter(k)}>{l}</button>)}</div>
           <div className="list">{filteredBatt.map(b=><BattCard key={b.id} b={b} selected={b.id===selBattId} onSelect={setSelBattId} onDelete={id=>setBatteries(bs=>bs.filter(x=>x.id!==id))} canDelete={DEFAULT_BATTERIES.findIndex(d=>d.id===b.id)===-1}/>)}</div>
           <NewBattForm onAdd={b=>setBatteries(bs=>[...bs,b])}/>
+        </div>}
+
+        {/* TECHNISCH TAB — string-design validatie */}
+        {activeTab==="technisch"&&<div className="section">
+          <div className="sl">Configuratie van de omvormer</div>
+          {!selPanel?.voc&&<div className="info-box warn"><strong>⚠️ Onvolledige paneel-data</strong><br/>Het geselecteerde paneel heeft geen elektrische specs (Voc/Vmp/Isc).</div>}
+          {!selInv&&<div className="info-box warn"><strong>⚠️ Geen omvormer geselecteerd</strong><br/>Kies eerst een omvormer in het AlphaESS-tabblad.</div>}
+          {!selInv?.maxDcVoltage&&selInv&&<div className="info-box warn"><strong>⚠️ Onvolledige omvormer-data</strong><br/>De geselecteerde omvormer heeft geen DC-specs.</div>}
+          {stringDesign&&<>
+            {/* Header met project-info + omgevingstemperatuur */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10,display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+              <div>
+                <div style={{fontSize:11,marginBottom:6}}><strong>Project:</strong> {customer.name||"—"}</div>
+                <div style={{fontSize:11,marginBottom:6}}><strong>Locatie:</strong> {(customer.address||displayName||"—").split(",").slice(0,2).join(",")}</div>
+                <div style={{fontSize:11}}><strong>Datum:</strong> {new Date().toLocaleDateString("nl-BE")}</div>
+              </div>
+              <div>
+                <div style={{fontSize:11,fontWeight:600,marginBottom:4}}>Omgevingstemperatuur</div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Minimale temperatuur: <strong style={{color:"var(--text)"}}>{stringDesign.config.tempMin} °C</strong></div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Configuratietemperatuur: <strong style={{color:"var(--text)"}}>{stringDesign.config.tempConfig} °C</strong></div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Maximale temperatuur: <strong style={{color:"var(--text)"}}>{stringDesign.config.tempMax} °C</strong></div>
+              </div>
+            </div>
+
+            {/* Omvormer-overzicht */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10}}>
+              <div className="sl" style={{marginBottom:8}}>1× {selInv.brand} {selInv.model}</div>
+              <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+                <tbody>
+                  <tr style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Piekvermogen (kWp DC)</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{(stringDesign.totalPower/1000).toFixed(2)} kWp</td>
+                  </tr>
+                  <tr style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Totaal aantal PV-panelen</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{panelCount}</td>
+                  </tr>
+                  <tr style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Aantal PV-omvormers</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>1</td>
+                  </tr>
+                  <tr style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Max. DC-vermogen omvormer</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{(stringDesign.config.inverterMaxDcPower/1000).toFixed(2)} kW</td>
+                  </tr>
+                  <tr style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Maximaal werkelijk AC-vermogen</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{(stringDesign.config.inverterMaxAc/1000).toFixed(2)} kW</td>
+                  </tr>
+                  <tr style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Netspanning</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{selInv.fase==="3-fase"?"400V (driefase)":"230V (eenfase)"}</td>
+                  </tr>
+                  {stringDesign.config.sizingFactor!==null&&<tr>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Dimensioneringsfactor</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600,color:stringDesign.config.sizingFactor>150?"var(--red)":stringDesign.config.sizingFactor<70?"var(--amber)":"var(--green)"}}>
+                      {stringDesign.config.sizingFactor.toFixed(1)} %
+                    </td>
+                  </tr>}
+                </tbody>
+              </table>
+            </div>
+
+            {/* PV-configuratiegegevens — overzicht per ingang/MPPT */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10}}>
+              <div className="sl" style={{marginBottom:8}}>PV-configuratiegegevens</div>
+              {stringDesign.mppts.map((m,i)=>(
+                <div key={i} style={{fontSize:11,marginBottom:6,paddingBottom:6,borderBottom:i<stringDesign.mppts.length-1?"1px solid var(--border)":"none"}}>
+                  <strong>Ingang {String.fromCharCode(65+i)}: MPPT {i+1}</strong>
+                  <span style={{color:"var(--muted)"}}> · {m.totalPanels} × {selPanel.brand} {selPanel.model}</span>
+                  <span style={{color:"var(--muted)"}}> · Azimut: {orientation}</span>
+                  <span style={{color:"var(--muted)"}}> · Helling: {slope}°</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Detailtabel per ingang — SMA-stijl met groene vinkjes */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10,overflowX:"auto"}}>
+              <div className="sl" style={{marginBottom:8}}>Detailwaarden per MPPT-ingang</div>
+              <table style={{width:"100%",fontSize:11,borderCollapse:"collapse",minWidth:500}}>
+                <thead>
+                  <tr style={{borderBottom:"2px solid var(--border)"}}>
+                    <th style={{textAlign:"left",padding:"6px 4px",color:"var(--muted)",fontWeight:500}}></th>
+                    {stringDesign.mppts.map((m,i)=>(
+                      <th key={i} style={{textAlign:"right",padding:"6px 4px",fontWeight:600}}>Ingang {String.fromCharCode(65+i)}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  <TechRow label="Aantal strings" mppts={stringDesign.mppts} val={m=>m.stringCount}/>
+                  <TechRow label="PV-panelen" mppts={stringDesign.mppts} val={m=>m.totalPanels}/>
+                  <TechRow label="Piekvermogen (ingang)" mppts={stringDesign.mppts} val={m=>(m.powerStc/1000).toFixed(2)+" kWp"}/>
+                  <TechRow label={`Min. DC-spanning WR (Netspanning ${selInv.fase==="3-fase"?"400V":"230V"})`} mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMpptMin+" V"}/>
+                  <TechRow label="Typische PV-spanning (config)" mppts={stringDesign.mppts} val={m=>m.vmpConfig.toFixed(0)+" V"} check={m=>m.checks.vmpConfigOk}/>
+                  <TechRow label={`Min. PV-spanning (${stringDesign.config.tempMax}°C)`} mppts={stringDesign.mppts} val={m=>m.vmpHot.toFixed(0)+" V"} check={m=>m.checks.vmpHotOk}/>
+                  <TechRow label="Max. DC-spanning Omvormer" mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMaxDc+" V"}/>
+                  <TechRow label={`Max. PV-spanning (${stringDesign.config.tempMin}°C)`} mppts={stringDesign.mppts} val={m=>m.vocCold.toFixed(0)+" V"} check={m=>m.checks.vocColdOk}/>
+                  <TechRow label="Max. ingangsstroom per MPPT" mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMaxCurrent+" A"}/>
+                  <TechRow label="Max. PV-generatorstroom (Imp)" mppts={stringDesign.mppts} val={m=>m.impTotal.toFixed(1)+" A"} check={m=>m.checks.impOk}/>
+                  <TechRow label="Max. kortsluitstroom per MPPT" mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMaxCurrent+" A"}/>
+                  <TechRow label="Max. kortsluitstroom PV (Isc)" mppts={stringDesign.mppts} val={m=>m.iscTotal.toFixed(1)+" A"} check={m=>m.checks.iscOk}/>
+                </tbody>
+              </table>
+            </div>
+
+            {/* Waarschuwingen */}
+            {stringDesign.warnings.length>0&&<div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {stringDesign.warnings.map((w,i)=>(
+                <div key={i} className={`info-box ${w.severity==="critical"?"warn":w.severity==="warning"?"warn":"alpha-info"}`}
+                     style={{borderLeftWidth:4,borderLeftStyle:"solid",borderLeftColor:w.severity==="critical"?"var(--red)":w.severity==="warning"?"var(--amber)":"var(--blue)"}}>
+                  <strong>{w.severity==="critical"?"🚫":w.severity==="warning"?"⚠️":"ℹ️"} {w.title}</strong><br/>
+                  <span style={{fontSize:11}}>{w.detail}</span>
+                </div>
+              ))}
+            </div>}
+            {stringDesign.warnings.length===0&&<div className="info-box alpha-info">
+              <strong>✅ Configuratie OK</strong><br/>
+              <span style={{fontSize:11}}>Alle technische limieten worden gerespecteerd. Veilige werking tussen {stringDesign.config.tempMin}°C en {stringDesign.config.tempMax}°C.</span>
+            </div>}
+          </>}
         </div>}
 
         {/* RESULTATEN TAB */}
@@ -2685,35 +3516,72 @@ export default function App(){
             {/* Maandelijkse grafiek */}
             <MonthlyChart annualKwh={results.annualKwh}/>
 
+            {/* INSTALLATIEKOSTEN — manueel invoerbaar uit offerte */}
+            <div style={{background:results.investPanels===null?"var(--amber-light)":"var(--bg2)",
+                          border:`2px solid ${results.investPanels===null?"var(--amber)":"var(--border)"}`,
+                          borderRadius:8,padding:14,boxShadow:"var(--shadow)"}}>
+              <div className="sl" style={{marginBottom:8}}>
+                {results.investPanels===null?"⚠️ ":""}💰 Totaalprijzen uit offerte
+                {results.investPanels===null&&<span style={{color:"var(--red)",fontWeight:600,marginLeft:8}}>(verplicht)</span>}
+              </div>
+              <div style={{fontSize:11,color:"var(--muted)",marginBottom:10}}>
+                Vul hier de werkelijke totaalprijzen uit jouw offerte in.{results.investPanels===null?" Zonder prijs kan de terugverdientijd niet worden berekend.":""}
+                <br/>Wijzigingen werken meteen door — klik dan opnieuw op "Bereken resultaten".
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <div>
+                  <div className="inp-label" style={{fontSize:11,fontWeight:600}}>🔆 Totaalprijs ZONDER batterij (€) <span style={{color:"var(--red)"}}>*</span></div>
+                  <input className="inp" type="number" min="0" step="50"
+                    placeholder="bv. 8000"
+                    value={manualPanelPrice} onChange={e=>setManualPanelPrice(e.target.value)}/>
+                  <div style={{fontSize:9,color:"var(--muted)",marginTop:3}}>Panelen + installatie + omvormer</div>
+                </div>
+                <div>
+                  <div className="inp-label" style={{fontSize:11,fontWeight:600}}>🔋 Totaalprijs MET batterij (€) {battEnabled&&<span style={{color:"var(--red)"}}>*</span>}</div>
+                  <input className="inp" type="number" min="0" step="50"
+                    placeholder={battEnabled?"bv. 14000":"Activeer batterij in tabblad 05"}
+                    value={manualBatteryPrice} onChange={e=>setManualBatteryPrice(e.target.value)}
+                    disabled={!battEnabled}/>
+                  <div style={{fontSize:9,color:"var(--muted)",marginTop:3}}>Volledig pakket incl. batterij</div>
+                </div>
+              </div>
+            </div>
+
             {/* Terugverdientijd */}
-            <div><div className="sl" style={{marginBottom:8}}>Terugverdientijd</div>
+            <div><div className="sl" style={{marginBottom:8}}>Terugverdientijd vergelijking</div>
               <div className="compare-grid">
                 <div className="compare-col">
                   <h4>🔆 Alleen zonnepanelen</h4>
-                  <div className="crow">Panelen ({results.panelCount}×)<span>€{(results.panelCount*results.panel.price).toLocaleString()}</span></div>
-                  {results.inv?<div className="crow">{results.inv.model}<span>€{results.inv.price.toLocaleString()}</span></div>:<div className="crow">Installatie forfait<span>€1.200</span></div>}
-                  <div className="crow">Zelfverbruik<span>~30%</span></div>
+                  <div className="crow">Aantal panelen<span>{results.panelCount}× {results.panel.watt}W</span></div>
+                  <div className="crow">Omvormer<span>{results.inv?results.inv.model:"—"}</span></div>
+                  <div className="crow">Jaarverbruik klant<span>{results.consumption.toLocaleString()} kWh</span></div>
+                  <div className="crow">Opbrengst PV<span>{results.annualKwh.toLocaleString()} kWh</span></div>
+                  <div className="crow">Zelfverbruik<span>~{Math.round(results.selfRatioBase*100)}% ({results.selfKwhBase.toLocaleString()} kWh)</span></div>
+                  <div className="crow">Injectie naar net<span>{results.injectKwhBase.toLocaleString()} kWh</span></div>
                   <div className="crow">Besparing/jaar<span>€{results.annualBase}</span></div>
-                  <div className="ctotal"><span>Investering</span><span style={{fontSize:12}}>€{results.investPanels.toLocaleString()}</span></div>
-                  <div className="ctotal"><span>Terugverdientijd</span><div className="cval">{results.paybackBase} jaar</div></div>
-                  <div className="pbar"><div className="pfill" style={{width:`${Math.min(100,(results.paybackBase/25)*100)}%`}}/></div>
+                  <div className="ctotal"><span>Investering</span><span style={{fontSize:13}}>{results.investPanels!==null?"€"+results.investPanels.toLocaleString():<span style={{color:"var(--red)",fontStyle:"italic"}}>vul prijs in ↑</span>}</span></div>
+                  <div className="ctotal"><span>Terugverdientijd</span><div className="cval">{results.paybackBase!==null?results.paybackBase+" jaar":<span style={{color:"var(--muted)",fontStyle:"italic",fontSize:11}}>—</span>}</div></div>
+                  {results.paybackBase!==null&&<div className="pbar"><div className="pfill" style={{width:`${Math.min(100,(results.paybackBase/25)*100)}%`}}/></div>}
                 </div>
                 {results.battResult?(
                   <div className={`compare-col batt ${results.batt?.isAlpha?"alpha-col":""}`}>
                     <h4>{results.batt?.isAlpha?"⚡🔋":"🔋"} Met {results.batt?.brand} {results.batt?.model}</h4>
-                    <div className="crow">Panelen + omvormer<span>€{results.investPanels.toLocaleString()}</span></div>
-                    <div className="crow">Batterij ({results.batt?.kwh} kWh)<span>€{(results.battResult.battPrice??results.batt?.price).toLocaleString()}</span></div>
-                    <div className="crow">Zelfverbruik<span>~70%</span></div>
+                    <div className="crow">PV-installatie<span>{results.investPanels!==null?"€"+results.investPanels.toLocaleString():"—"}</span></div>
+                    <div className="crow">Batterij ({results.batt?.kwh} kWh)<span>{results.battResult.battPrice!==null?"€"+results.battResult.battPrice.toLocaleString():<span style={{color:"var(--red)",fontStyle:"italic"}}>vul prijs in ↑</span>}</span></div>
+                    <div className="crow">Jaarverbruik klant<span>{results.consumption.toLocaleString()} kWh</span></div>
+                    <div className="crow">Opbrengst PV<span>{results.annualKwh.toLocaleString()} kWh</span></div>
+                    <div className="crow">Zelfverbruik<span>~70% ({results.battResult.selfKwh.toLocaleString()} kWh)</span></div>
+                    <div className="crow">Injectie naar net<span>{results.battResult.injectKwh.toLocaleString()} kWh</span></div>
                     <div className="crow">Extra besparing<span style={{color:"var(--green)"}}>+€{results.battResult.extraSav}/j</span></div>
                     <div className="crow">Totale besparing<span>€{results.battResult.totSav}/j</span></div>
-                    <div className="ctotal"><span>Investering</span><span style={{fontSize:12}}>€{results.battResult.totInv.toLocaleString()}</span></div>
-                    <div className="ctotal"><span>Terugverdientijd</span><div className="cval">{results.battResult.payback} jaar</div></div>
-                    <div className="pbar"><div className="pfill" style={{width:`${Math.min(100,(results.battResult.payback/25)*100)}%`,background:"linear-gradient(90deg,var(--blue),var(--alpha))"}}/></div>
+                    <div className="ctotal"><span>Investering</span><span style={{fontSize:13}}>{results.battResult.totInv!==null?"€"+results.battResult.totInv.toLocaleString():<span style={{color:"var(--red)",fontStyle:"italic"}}>vul prijzen in ↑</span>}</span></div>
+                    <div className="ctotal"><span>Terugverdientijd</span><div className="cval">{results.battResult.payback!==null?results.battResult.payback+" jaar":<span style={{color:"var(--muted)",fontStyle:"italic",fontSize:11}}>—</span>}</div></div>
+                    {results.battResult.payback!==null&&<div className="pbar"><div className="pfill" style={{width:`${Math.min(100,(results.battResult.payback/25)*100)}%`,background:"linear-gradient(90deg,var(--blue),var(--alpha))"}}/></div>}
                   </div>
                 ):(
                   <div className="compare-col" style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:8,opacity:.6}}>
                     <div style={{fontSize:28}}>🔋</div>
-                    <div style={{fontSize:9,textAlign:"center",color:"var(--muted)"}}>Activeer batterij in de Batterij tab</div>
+                    <div style={{fontSize:11,textAlign:"center",color:"var(--muted)"}}>Activeer batterij in de Batterij tab voor vergelijking</div>
                     <button className="btn blue sm" onClick={()=>setActiveTab("batterij")}>Batterij instellen</button>
                   </div>
                 )}
