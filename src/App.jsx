@@ -2932,7 +2932,7 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
   // Voorkomt timing-issues met SVG-paneel-overlay die soms niet
   // verschijnt op een live capture vanuit een andere tab.
   const handleSnapshot=useCallback(async()=>{
-    if(!leafRef.current||!window.html2canvas){
+    if(!leafRef.current){
       alert("Kaart nog niet geladen. Probeer opnieuw.");return;
     }
     if(!panelsDrawn){
@@ -2941,7 +2941,13 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
     }
     setSnapshotLoading(true);
     try{
+      // html2canvas is lazy-loaded — wordt pas ingelezen wanneer nodig.
+      // Bij de eerste klik op deze knop moet hij eerst opgehaald worden.
+      if(!window.html2canvas){
+        await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
+      }
       const mapEl=document.getElementById("leaflet-map");
+      if(!mapEl){throw new Error("Kaart-element niet gevonden");}
       // Forceer Leaflet om alle lagen te herrenderen
       leafRef.current.invalidateSize(true);
       await new Promise(r=>setTimeout(r,300));
@@ -2953,7 +2959,7 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
       const dataUrl=canvas.toDataURL("image/jpeg",0.85);
       setMapSnapshot({dataUrl,width:canvas.width,height:canvas.height,timestamp:Date.now()});
     }catch(e){
-      alert("Foto maken mislukt: "+e.message);
+      alert("Foto maken mislukt: "+(e.message||"onbekende fout"));
     }
     setSnapshotLoading(false);
   },[panelsDrawn]);
