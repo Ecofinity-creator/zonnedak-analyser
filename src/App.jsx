@@ -552,24 +552,26 @@ const DS_BASE = import.meta.env.BASE_URL + "datasheets/";
 // Specs uit datasheets bij STC (1000W/m², 25°C, AM1.5).
 // tempCoeffVoc is %/°C — gebruikt om Voc bij koude te berekenen voor
 // max-string-lengte validatie.
+// price is op 0 gezet — gebruiker geeft de werkelijke prijs in via offerte-velden
+// op de Resultaten tab. De catalogus gaat enkel over technische specs.
 const DEFAULT_PANELS=[
-  {id:1,brand:"Qcells",      model:"Q.TRON BLK S-G3R.12+ 440W",   watt:440,area:1.998,eff:22.0,price:195,warranty:25,
+  {id:1,brand:"Qcells",      model:"Q.TRON BLK S-G3R.12+ 440W",   watt:440,area:1.998,eff:22.0,price:0,warranty:25,
    voc:38.74,vmp:32.66,isc:14.42,imp:13.47,tempCoeffVoc:-0.24,tempCoeffPmax:-0.30,
    dims:"1762×1134×30mm",weight:"20.9 kg",datasheet:"qcells-440w.pdf"},
 
-  {id:2,brand:"Trina Solar", model:"Vertex S+ TSM-NEG18RC.27 500W",watt:500,area:2.224,eff:22.3,price:240,warranty:30,
+  {id:2,brand:"Trina Solar", model:"Vertex S+ TSM-NEG18RC.27 500W",watt:500,area:2.224,eff:22.3,price:0,warranty:30,
    voc:45.4,vmp:38.0,isc:13.92,imp:13.16,tempCoeffVoc:-0.25,tempCoeffPmax:-0.30,
    dims:"1961×1134×30mm",weight:"23.6 kg",datasheet:"trina-500w.pdf"},
 
-  {id:3,brand:"Jinko Solar", model:"Tiger Neo N-Type 420W",   watt:420,area:1.722,eff:21.8,price:210,warranty:25,
+  {id:3,brand:"Jinko Solar", model:"Tiger Neo N-Type 420W",   watt:420,area:1.722,eff:21.8,price:0,warranty:25,
    voc:37.39,vmp:31.41,isc:14.02,imp:13.38,tempCoeffVoc:-0.25,tempCoeffPmax:-0.29,
    dims:"1722×1134×30mm",weight:"21.3 kg",datasheet:null},
 
-  {id:4,brand:"LONGi Solar", model:"Hi-MO 6 Explorer 415W",   watt:415,area:1.722,eff:21.3,price:195,warranty:25,
+  {id:4,brand:"LONGi Solar", model:"Hi-MO 6 Explorer 415W",   watt:415,area:1.722,eff:21.3,price:0,warranty:25,
    voc:37.55,vmp:31.42,isc:13.95,imp:13.21,tempCoeffVoc:-0.27,tempCoeffPmax:-0.34,
    dims:"1722×1134×30mm",weight:"21.3 kg",datasheet:null},
 
-  {id:5,brand:"Canadian Solar",model:"HiHero 430W",           watt:430,area:1.879,eff:22.8,price:235,warranty:25,
+  {id:5,brand:"Canadian Solar",model:"HiHero 430W",           watt:430,area:1.879,eff:22.8,price:0,warranty:25,
    voc:39.4,vmp:33.0,isc:13.92,imp:13.04,tempCoeffVoc:-0.26,tempCoeffPmax:-0.29,
    dims:"1756×1096×35mm",weight:"21.3 kg",datasheet:null},
 ];
@@ -579,47 +581,47 @@ const DEFAULT_PANELS=[
 // mpptCount, maxDcVoltage, maxInputCurrentPerMppt, mpptVoltageMin/Max,
 // maxAcPower, maxDcPower zijn de string-design parameters.
 const DEFAULT_INVERTERS=[
-  {id:1,brand:"AlphaESS",model:"SMILE-G3-S3.6",fase:"1-fase",kw:3.68,mppt:2,maxPv:7360, eff:97.0,price:1850,warranty:10,
+  {id:1,brand:"AlphaESS",model:"SMILE-G3-S3.6",fase:"1-fase",kw:3.68,mppt:2,maxPv:7360, eff:97.0,price:0,warranty:10,
    mpptCount:2,maxDcVoltage:580,maxInputCurrentPerMppt:16,mpptVoltageMin:90,mpptVoltageMax:560,
    maxAcPower:3680,maxDcPower:7360,
    dims:"610×212×366mm",weight:"19.5 kg",
    notes:"3,68kW · max 7,36kWp PV · 2 MPPT · UPS backup · IP65 · C10/11 · Jabba.",
    datasheet:"alphaess-smile-g3.pdf"},
 
-  {id:2,brand:"AlphaESS",model:"SMILE-G3-S5",  fase:"1-fase",kw:5.0, mppt:2,maxPv:10000,eff:97.0,price:2400,warranty:10,
+  {id:2,brand:"AlphaESS",model:"SMILE-G3-S5",  fase:"1-fase",kw:5.0, mppt:2,maxPv:10000,eff:97.0,price:0,warranty:10,
    mpptCount:2,maxDcVoltage:600,maxInputCurrentPerMppt:16,mpptVoltageMin:90,mpptVoltageMax:560,
    maxAcPower:5000,maxDcPower:10000,
    dims:"610×212×366mm",weight:"19.5 kg",
    notes:"5kW · max 10kWp PV · 2 MPPT · UPS backup · IP65 · C10/11 · Jabba. Populairste model.",
    datasheet:"alphaess-smile-g3.pdf"},
 
-  {id:3,brand:"AlphaESS",model:"SMILE-G3-S8",  fase:"1-fase",kw:8.0, mppt:2,maxPv:16000,eff:97.5,price:3100,warranty:10,
+  {id:3,brand:"AlphaESS",model:"SMILE-G3-S8",  fase:"1-fase",kw:8.0, mppt:2,maxPv:16000,eff:97.5,price:0,warranty:10,
    mpptCount:2,maxDcVoltage:600,maxInputCurrentPerMppt:20,mpptVoltageMin:90,mpptVoltageMax:560,
    maxAcPower:8000,maxDcPower:16000,
    dims:"610×212×366mm",weight:"22 kg",
    notes:"8kW · max 16kWp · display · EV-laders · IP65.",datasheet:"alphaess-smile-g3.pdf"},
 
-  {id:4,brand:"AlphaESS",model:"SMILE-G3-T4/6/8/10",fase:"3-fase",kw:10.0,mppt:3,maxPv:20000,eff:97.5,price:4200,warranty:10,
+  {id:4,brand:"AlphaESS",model:"SMILE-G3-T4/6/8/10",fase:"3-fase",kw:10.0,mppt:3,maxPv:20000,eff:97.5,price:0,warranty:10,
    mpptCount:3,maxDcVoltage:1000,maxInputCurrentPerMppt:16,mpptVoltageMin:160,mpptVoltageMax:850,
    maxAcPower:10000,maxDcPower:20000,
    dims:"610×212×366mm",weight:"25 kg",
    notes:"Driefase hybride · 3 MPPT · 150% overbelasting · max 45,6 kWh.",datasheet:"alphaess-smile-g3.pdf"},
 
-  {id:5,brand:"AlphaESS",model:"SMILE-G3-T15/20", fase:"3-fase",kw:20.0,mppt:3,maxPv:40000,eff:97.6,price:6500,warranty:10,
+  {id:5,brand:"AlphaESS",model:"SMILE-G3-T15/20", fase:"3-fase",kw:20.0,mppt:3,maxPv:40000,eff:97.6,price:0,warranty:10,
    mpptCount:3,maxDcVoltage:1000,maxInputCurrentPerMppt:32,mpptVoltageMin:200,mpptVoltageMax:850,
    maxAcPower:20000,maxDcPower:40000,
    dims:"610×212×366mm",weight:"30 kg",
    notes:"15-20kW driefase voor grote woningen of KMO.",datasheet:"alphaess-smile-g3.pdf"},
 ];
 const DEFAULT_BATTERIES=[
-  {id:1,brand:"AlphaESS",model:"BAT-G3-3.8S",               kwh:3.8, price:1507,cycles:10000,warranty:10,dod:95,notes:"Serieel, indoor IP21. Tot 4× (15,2 kWh).",isAlpha:true},
-  {id:2,brand:"AlphaESS",model:"BAT-G3-9.3S",               kwh:9.3, price:3200,cycles:10000,warranty:10,dod:95,notes:"Hoogspanning IP65 outdoor. Verwarming. Tot 4× (37,2 kWh).",isAlpha:true},
-  {id:3,brand:"AlphaESS",model:"BAT-G3-10.1P",              kwh:10.1,price:3500,cycles:10000,warranty:10,dod:95,notes:"Parallel tot 6× (60,5 kWh). Outdoor IP65.",isAlpha:true},
-  {id:4,brand:"AlphaESS",model:"G3-S5 + 10.1 kWh (pakket)", kwh:10.1,price:6200,cycles:10000,warranty:10,dod:95,notes:"SMILE-G3-S5 + 1× BAT-G3-10.1P.",isAlpha:true},
-  {id:5,brand:"AlphaESS",model:"G3-S5 + 20.2 kWh (pakket)", kwh:20.2,price:9400,cycles:10000,warranty:10,dod:95,notes:"SMILE-G3-S5 + 2× BAT-G3-10.1P.",isAlpha:true},
-  {id:6,brand:"Tesla",   model:"Powerwall 3",                kwh:13.5,price:8500,cycles:4000, warranty:10,dod:100,notes:"Geïntegreerde omvormer. Volledig huis backup.",isAlpha:false},
-  {id:7,brand:"SolarEdge",model:"Home Battery 10kWh",        kwh:10.0,price:6800,cycles:6000, warranty:10,dod:100,notes:"Vereist SolarEdge omvormer.",isAlpha:false},
-  {id:8,brand:"BYD",     model:"Battery-Box HVS 10.2",       kwh:10.2,price:5200,cycles:8000, warranty:10,dod:100,notes:"Hoogspanning modulaire opbouw.",isAlpha:false},
+  {id:1,brand:"AlphaESS",model:"BAT-G3-3.8S",               kwh:3.8, price:0,cycles:10000,warranty:10,dod:95,notes:"Serieel, indoor IP21. Tot 4× (15,2 kWh).",isAlpha:true},
+  {id:2,brand:"AlphaESS",model:"BAT-G3-9.3S",               kwh:9.3, price:0,cycles:10000,warranty:10,dod:95,notes:"Hoogspanning IP65 outdoor. Verwarming. Tot 4× (37,2 kWh).",isAlpha:true},
+  {id:3,brand:"AlphaESS",model:"BAT-G3-10.1P",              kwh:10.1,price:0,cycles:10000,warranty:10,dod:95,notes:"Parallel tot 6× (60,5 kWh). Outdoor IP65.",isAlpha:true},
+  {id:4,brand:"AlphaESS",model:"G3-S5 + 10.1 kWh (pakket)", kwh:10.1,price:0,cycles:10000,warranty:10,dod:95,notes:"SMILE-G3-S5 + 1× BAT-G3-10.1P.",isAlpha:true},
+  {id:5,brand:"AlphaESS",model:"G3-S5 + 20.2 kWh (pakket)", kwh:20.2,price:0,cycles:10000,warranty:10,dod:95,notes:"SMILE-G3-S5 + 2× BAT-G3-10.1P.",isAlpha:true},
+  {id:6,brand:"Tesla",   model:"Powerwall 3",                kwh:13.5,price:0,cycles:4000, warranty:10,dod:100,notes:"Geïntegreerde omvormer. Volledig huis backup.",isAlpha:false},
+  {id:7,brand:"SolarEdge",model:"Home Battery 10kWh",        kwh:10.0,price:0,cycles:6000, warranty:10,dod:100,notes:"Vereist SolarEdge omvormer.",isAlpha:false},
+  {id:8,brand:"BYD",     model:"Battery-Box HVS 10.2",       kwh:10.2,price:0,cycles:8000, warranty:10,dod:100,notes:"Hoogspanning modulaire opbouw.",isAlpha:false},
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1458,12 +1460,15 @@ async function generatePDF(results,customer,displayName,slope,orientation){
 
   // Financiële KPI-blokken
   y=secTitle("Financiële analyse",y);
+  // Helper voor prijzen die nullable zijn
+  const fmtPrice=(p)=>p!==null&&p!==undefined?"€ "+p.toLocaleString("nl-BE"):"— niet ingevuld —";
+  const fmtPayback=(p)=>p!==null&&p!==undefined?p+" jaar":"—";
   const kpis=[
-    ["Totale investering","€ "+results.investPanels.toLocaleString("nl-BE"),OR],
+    ["Totale investering",fmtPrice(results.investPanels),OR],
     ["Jaarlijkse besparing","€ "+results.annualBase.toLocaleString("nl-BE"),GR],
-    ["Terugverdientijd",results.paybackBase+" jaar",BL],
+    ["Terugverdientijd",fmtPayback(results.paybackBase),BL],
   ];
-  if(results.battResult) kpis.push(["Incl. batterij",results.battResult.payback+" jaar",[120,40,180]]);
+  if(results.battResult) kpis.push(["Incl. batterij",fmtPayback(results.battResult.payback),[120,40,180]]);
   const kw=(W-2*M)/kpis.length;
   kpis.forEach(([lbl,val,col],i)=>{
     const kx=M+i*kw;
@@ -1475,22 +1480,22 @@ async function generatePDF(results,customer,displayName,slope,orientation){
   });
   y+=24;
   const finRows=[
-    ["Zonnepanelen ("+results.panelCount+" × "+results.panel.model+")","€ "+(results.panelCount*results.panel.price).toLocaleString("nl-BE")],
-    ["Installatie & omvormer","€ "+(results.inv?results.inv.price:1200).toLocaleString("nl-BE")],
-    ["Totale investering","€ "+results.investPanels.toLocaleString("nl-BE")],
+    ["Geselecteerd paneel",results.panelCount+" × "+results.panel.brand+" "+results.panel.model],
+    ["Geselecteerde omvormer",results.inv?results.inv.brand+" "+results.inv.model:"Geen specifiek model"],
+    ["Totale investering (panelen + installatie + omvormer)",fmtPrice(results.investPanels)],
     ["Jaarverbruik klant",results.consumption.toLocaleString("nl-BE")+" kWh"],
     ["Jaaropbrengst PV",results.annualKwh.toLocaleString("nl-BE")+" kWh"],
     ["Dekkingsgraad PV / verbruik",results.coverage+" %"],
     ["Zelfverbruik (~"+Math.round(results.selfRatioBase*100)+"%)",results.selfKwhBase.toLocaleString("nl-BE")+" kWh"],
     ["Injectie naar net",results.injectKwhBase.toLocaleString("nl-BE")+" kWh"],
     ["Jaarlijkse besparing","€ "+results.annualBase.toLocaleString("nl-BE")],
-    ["Terugverdientijd",results.paybackBase+" jaar"],
+    ["Terugverdientijd",fmtPayback(results.paybackBase)],
   ];
   if(results.battResult){
-    finRows.push(["Thuisbatterij "+(results.batt?.model||""),"€ "+(results.battResult.battPrice??results.batt?.price).toLocaleString("nl-BE")]);
+    finRows.push(["Thuisbatterij "+(results.batt?.model||""),fmtPrice(results.battResult.battPrice)]);
     finRows.push(["Zelfverbruik met batterij (~70%)",results.battResult.selfKwh.toLocaleString("nl-BE")+" kWh"]);
     finRows.push(["Extra besparing met batterij","€ "+results.battResult.extraSav.toLocaleString("nl-BE")+"/jaar"]);
-    finRows.push(["Terugverdientijd incl. batterij",results.battResult.payback+" jaar"]);
+    finRows.push(["Terugverdientijd incl. batterij",fmtPayback(results.battResult.payback)]);
   }
   doc.autoTable({startY:y,head:[["Post","Bedrag"]],body:finRows,
     styles:{fontSize:9,cellPadding:3},
@@ -1500,32 +1505,73 @@ async function generatePDF(results,customer,displayName,slope,orientation){
     margin:{left:M,right:M},tableWidth:W-2*M});
   y=doc.lastAutoTable.finalY+10;hLine(y);y+=8;
 
-  // ─── Technische validatie · String-design ────────────────────────────────
+  // ─── Technische validatie · String-design (SMA-stijl tabel) ────────────────
   if(results.stringDesign&&results.stringDesign.mppts.length>0){
     if(y>284-40){doc.addPage();y=20;}
-    y=secTitle("Technische validatie - String-design",y);
+    y=secTitle("Configuratie van de omvormer",y);
     const sd=results.stringDesign;
-    const stringRows=sd.mppts.map((m,i)=>([
-      "MPPT "+(i+1),
-      m.stringCount+"x "+m.panelsPerString+" panelen",
-      Math.round(m.vocStc)+" V",
-      Math.round(m.vocCold)+" V",
-      Math.round(m.vmpHot)+" V",
-      m.iscTotal.toFixed(1)+" A",
-      (m.powerStc/1000).toFixed(2)+" kWp"
-    ]));
-    doc.autoTable({startY:y,
-      head:[["MPPT","Configuratie","Voc STC","Voc -15°C","Vmp 70°C","Stroom","Vermogen"]],
-      body:stringRows,
-      styles:{fontSize:8,cellPadding:2.5},
-      headStyles:{fillColor:BL,textColor:WHT,fontStyle:"bold"},
+
+    // Header met temperatuurinstellingen
+    sf(8,"normal");sc(TXT);
+    doc.text(`Omgevingstemperatuur: min ${sd.config.tempMin}°C · config ${sd.config.tempConfig}°C · max ${sd.config.tempMax}°C`,M,y);
+    y+=6;
+
+    // Omvormer-overzicht tabel
+    if(y>284-40){doc.addPage();y=20;}
+    sf(9,"bold");sc(TXT);doc.text(`1× ${results.inv.brand} ${results.inv.model}`,M,y);y+=5;
+    const invRows=[
+      ["Piekvermogen",(sd.totalPower/1000).toFixed(2)+" kWp"],
+      ["Aantal PV-panelen",results.panelCount+""],
+      ["Max. AC-vermogen",(sd.config.inverterMaxAc/1000).toFixed(2)+" kW"],
+      ["Max. DC-vermogen",(sd.config.inverterMaxDcPower/1000).toFixed(2)+" kW"],
+      ["Netspanning",results.inv.fase==="3-fase"?"400V (driefase)":"230V (eenfase)"],
+    ];
+    if(sd.config.sizingFactor!==null){
+      invRows.push(["Dimensioneringsfactor",sd.config.sizingFactor.toFixed(1)+" %"]);
+    }
+    doc.autoTable({startY:y,body:invRows,
+      styles:{fontSize:8,cellPadding:2.2},
+      columnStyles:{0:{cellWidth:75,textColor:MUT},1:{halign:"right",fontStyle:"bold"}},
+      theme:"plain",
+      margin:{left:M,right:M},tableWidth:W-2*M});
+    y=doc.lastAutoTable.finalY+5;
+
+    // Detailtabel per MPPT — SMA-stijl
+    if(y>284-50){doc.addPage();y=20;}
+    sf(9,"bold");sc(TXT);doc.text("Detailwaarden per MPPT-ingang",M,y);y+=5;
+    const head=["",...sd.mppts.map((m,i)=>"Ingang "+String.fromCharCode(65+i))];
+    // Helper: build cell with check-symbol
+    const cell=(check,val)=>check===null?val:(check?"+ ":"- ")+val;
+    const rows=[
+      ["Aantal strings",...sd.mppts.map(m=>m.stringCount+"")],
+      ["PV-panelen",...sd.mppts.map(m=>m.totalPanels+"")],
+      ["Piekvermogen",...sd.mppts.map(m=>(m.powerStc/1000).toFixed(2)+" kWp")],
+      ["Min. DC-spanning WR",...sd.mppts.map(()=>sd.config.inverterMpptMin+" V")],
+      ["Typ. PV-spanning ("+sd.config.tempConfig+"°C)",...sd.mppts.map(m=>cell(m.checks.vmpConfigOk,m.vmpConfig.toFixed(0)+" V"))],
+      ["Min. PV-spanning ("+sd.config.tempMax+"°C)",...sd.mppts.map(m=>cell(m.checks.vmpHotOk,m.vmpHot.toFixed(0)+" V"))],
+      ["Max. DC-spanning omvormer",...sd.mppts.map(()=>sd.config.inverterMaxDc+" V")],
+      ["Max. PV-spanning ("+sd.config.tempMin+"°C)",...sd.mppts.map(m=>cell(m.checks.vocColdOk,m.vocCold.toFixed(0)+" V"))],
+      ["Max. ingangsstroom MPPT",...sd.mppts.map(()=>sd.config.inverterMaxCurrent+" A")],
+      ["Max. PV-generatorstroom (Imp)",...sd.mppts.map(m=>cell(m.checks.impOk,m.impTotal.toFixed(1)+" A"))],
+      ["Max. kortsluitstroom MPPT",...sd.mppts.map(()=>sd.config.inverterMaxCurrent+" A")],
+      ["Max. kortsluitstroom PV (Isc)",...sd.mppts.map(m=>cell(m.checks.iscOk,m.iscTotal.toFixed(1)+" A"))],
+    ];
+    doc.autoTable({startY:y,head:[head],body:rows,
+      styles:{fontSize:7.5,cellPadding:2},
+      headStyles:{fillColor:BL,textColor:WHT,fontStyle:"bold",halign:"right"},
+      columnStyles:{0:{cellWidth:62,textColor:MUT,fontStyle:"normal",halign:"left"}},
+      bodyStyles:{halign:"right",fontStyle:"bold"},
       alternateRowStyles:{fillColor:[239,246,255]},
       margin:{left:M,right:M},tableWidth:W-2*M});
     y=doc.lastAutoTable.finalY+4;
+
+    // Legend voor + / -
     sf(7,"italic");sc(MUT);
-    doc.text("Limieten omvormer: max DC "+results.inv.maxDcVoltage+"V, min MPPT "+results.inv.mpptVoltageMin+"V, max stroom "+results.inv.maxInputCurrentPerMppt+"A per MPPT",M,y);
+    doc.text("+ = waarde valt binnen de veiligheidslimieten · - = waarde overschrijdt limiet",M,y);
     y+=6;
+
     if(sd.warnings.length>0){
+      if(y>284-30){doc.addPage();y=20;}
       sf(9,"bold");sc(TXT);doc.text("Aandachtspunten:",M,y);y+=5;
       sd.warnings.forEach(w=>{
         const col=w.severity==="critical"?[200,0,0]:w.severity==="warning"?[200,140,0]:[80,80,80];
@@ -1577,61 +1623,35 @@ async function generatePDF(results,customer,displayName,slope,orientation){
   }
 
   // ── Luchtfoto met panelen ──
+  // Bij oproep van generatePDF heeft handlePDF al naar de Configuratie tab
+  // geschakeld + invalidateSize uitgevoerd, zodat Leaflet volledig is
+  // gerenderd voor we hier de screenshot maken.
   try{
     const mapEl=document.getElementById("leaflet-map");
-    const mapArea=mapEl?.closest(".map-area");
     if(mapEl&&window.html2canvas){
-      // De map-area heeft display:none als de gebruiker NIET op Configuratie staat.
-      // Forceer zichtbaarheid tijdens de capture en herstel daarna.
-      const oldDisplay=mapArea?.style.display;
-      const oldPosition=mapArea?.style.position;
-      const oldOpacity=mapArea?.style.opacity;
-      if(mapArea&&oldDisplay==="none"){
-        // Off-screen positionering zodat de gebruiker geen flits ziet
-        mapArea.style.display="flex";
-        mapArea.style.position="absolute";
-        mapArea.style.left="-99999px";
-        mapArea.style.top="0";
-        mapArea.style.width="800px";
-        mapArea.style.height="500px";
-        mapArea.style.opacity="1";
-        // Leaflet detecteert size-changes via een interne loop;
-        // we wachten tot tegen renderen klaar is.
-        await new Promise(r=>setTimeout(r,800));
-        // Trigger window resize zodat Leaflet zijn tiles herrekent
-        window.dispatchEvent(new Event("resize"));
-        await new Promise(r=>setTimeout(r,400));
-      }
       doc.addPage();
       // Mini-header
       doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
-      sf(9,"bold");sc(WHT);doc.text("EcoFinity BV",M,9);
-      sf(9,"normal");doc.text("Project: "+(customer.name||"—"),M+32,9);
-      sf(8,"normal");doc.text("Luchtfoto",W-M,9,{align:"right"});
+      sf(11,"bold");sc(WHT);doc.text("EcoFinity BV",M,9);
+      sf(11,"normal");doc.text("Project: "+(customer.name||"—"),M+38,9);
+      sf(10,"normal");doc.text("Luchtfoto",W-M,9,{align:"right"});
       y=22;
       y=secTitle("Paneelplaatsing op het dak",y);
-      // Capture kaart
+      // Capture kaart — useCORS is essentieel voor de tiles van Esri.
+      // foreignObjectRendering=false omdat dat met SVG-laag (panel-overlay)
+      // soms blanco geeft in Firefox.
       const canvas=await window.html2canvas(mapEl,{
         useCORS:true,allowTaint:true,scale:1.5,
-        logging:false,backgroundColor:"#f1f5f9"
+        logging:false,backgroundColor:"#f1f5f9",
+        foreignObjectRendering:false
       });
       const imgData=canvas.toDataURL("image/jpeg",0.85);
       const imgW=W-2*M,imgH=Math.min(140,imgW*(canvas.height/canvas.width));
       doc.addImage(imgData,"JPEG",M,y,imgW,imgH);
       y+=imgH+5;
-      sf(8,"normal");sc(MUT);
+      sf(9,"normal");sc(MUT);
       doc.text("Luchtfoto: Esri World Imagery · Paneelplaatsing is een schatting.",M,y);
       y+=8;
-      // Herstel oorspronkelijke styling
-      if(mapArea&&oldDisplay==="none"){
-        mapArea.style.display=oldDisplay;
-        mapArea.style.position=oldPosition||"";
-        mapArea.style.left="";
-        mapArea.style.top="";
-        mapArea.style.width="";
-        mapArea.style.height="";
-        mapArea.style.opacity=oldOpacity||"";
-      }
     }
   }catch(mapErr){console.warn("Kaartfoto mislukt:",mapErr);}
 
@@ -1683,7 +1703,7 @@ async function generatePDF(results,customer,displayName,slope,orientation){
 }function PanelCard({p,selected,onSelect,onDelete,canDelete}){return(
   <div className={`card ${selected?"selected":""}`} onClick={()=>onSelect(p.id)}>
     <div className="card-name">{p.model}</div><div className="card-brand">{p.brand}</div>
-    <div className="chips"><span className="chip gold">{p.watt}W</span><span className="chip">{p.eff}% eff</span><span className="chip">{p.area} m²</span><span className="chip">€{p.price}/st</span><span className="chip">{p.warranty}j</span></div>
+    <div className="chips"><span className="chip gold">{p.watt}W</span><span className="chip">{p.eff}% eff</span><span className="chip">{p.area} m²</span><span className="chip">{p.warranty}j</span></div>
     {p.dims&&<div style={{fontSize:7,color:"var(--muted)",marginTop:4}}>{p.dims} · {p.weight}</div>}
     {canDelete&&<button className="btn danger sm" style={{marginTop:5,width:"fit-content"}} onClick={e=>{e.stopPropagation();onDelete(p.id);}}>✕</button>}
   </div>
@@ -1692,7 +1712,7 @@ function InverterCard({inv,selected,onSelect}){return(
   <div className={`inv-card ${selected?"selected":""}`} onClick={()=>onSelect(inv.id)}>
     <div className="alpha-badge">⚡ AlphaESS G3</div>
     <div className="card-name">{inv.model}</div><div className="card-brand">{inv.brand} · {inv.fase}</div>
-    <div className="chips"><span className="chip alpha-c">{inv.kw}kW</span><span className="chip">{inv.mppt} MPPT</span><span className="chip">max {inv.maxPv/1000}kWp</span><span className="chip">{inv.eff}% eff</span><span className="chip">€{inv.price.toLocaleString()}</span><span className="chip">{inv.warranty}j</span></div>
+    <div className="chips"><span className="chip alpha-c">{inv.kw}kW</span><span className="chip">{inv.mppt} MPPT</span><span className="chip">max {inv.maxPv/1000}kWp</span><span className="chip">{inv.eff}% eff</span><span className="chip">{inv.warranty}j</span></div>
     <div className="card-notes">{inv.notes}</div>
   </div>
 );}
@@ -1700,31 +1720,51 @@ function BattCard({b,selected,onSelect,onDelete,canDelete}){return(
   <div className={`card batt-card ${b.isAlpha?"alpha-card":""} ${selected?"selected":""}`} onClick={()=>onSelect(b.id)}>
     {b.isAlpha&&<div className="alpha-badge">🔋 AlphaESS G3</div>}
     <div className="card-name">{b.model}</div><div className="card-brand">{b.brand}</div>
-    <div className="chips"><span className={`chip ${b.isAlpha?"alpha-c":"blue-c"}`}>{b.kwh} kWh</span><span className="chip">€{b.price.toLocaleString()}</span><span className="chip">{b.cycles.toLocaleString()} cycli</span>{b.dod&&<span className="chip">{b.dod}% DoD</span>}<span className="chip">{b.warranty}j</span></div>
+    <div className="chips"><span className={`chip ${b.isAlpha?"alpha-c":"blue-c"}`}>{b.kwh} kWh</span><span className="chip">{b.cycles.toLocaleString()} cycli</span>{b.dod&&<span className="chip">{b.dod}% DoD</span>}<span className="chip">{b.warranty}j</span></div>
     {b.notes&&<div className="card-notes">{b.notes}</div>}
     {canDelete&&<button className="btn danger sm" style={{marginTop:5,width:"fit-content"}} onClick={e=>{e.stopPropagation();onDelete(b.id);}}>✕</button>}
   </div>
 );}
+
+// ─── TechRow ─────────────────────────────────────────────────────────────────
+// Eén rij in de SMA-stijl detailtabel op de Technische tab.
+// `val(m)` → string voor weergave per MPPT.
+// `check(m)` → optioneel, geeft true (groen vinkje) of false (rood kruis).
+function TechRow({label,mppts,val,check}){
+  return(
+    <tr style={{borderBottom:"1px solid var(--border)"}}>
+      <td style={{padding:"5px 4px",color:"var(--muted)"}}>{label}</td>
+      {mppts.map((m,i)=>(
+        <td key={i} style={{padding:"5px 4px",textAlign:"right"}}>
+          {check?(check(m)
+            ?<span style={{color:"var(--green)",marginRight:4}}>✓</span>
+            :<span style={{color:"var(--red)",marginRight:4}}>✗</span>
+          ):null}
+          <strong>{val(m)}</strong>
+        </td>
+      ))}
+    </tr>
+  );
+}
 function NewPanelForm({onAdd}){
-  const e0={brand:"",model:"",watt:"",area:"",eff:"",price:"",warranty:"25",dims:"",weight:""};
+  const e0={brand:"",model:"",watt:"",area:"",eff:"",warranty:"25",dims:"",weight:""};
   const[f,setF]=useState(e0);const s=(k,v)=>setF(p=>({...p,[k]:v}));
-  const ok=f.brand&&f.model&&+f.watt>0&&+f.area>0&&+f.eff>0&&+f.price>0;
+  const ok=f.brand&&f.model&&+f.watt>0&&+f.area>0&&+f.eff>0;
   return(<div className="new-form"><h4>➕ Nieuw paneel toevoegen</h4>
     <div className="inp-2"><div><div className="inp-label">Merk</div><input className="inp" placeholder="Jinko" value={f.brand} onChange={e=>s("brand",e.target.value)}/></div><div><div className="inp-label">Model</div><input className="inp" placeholder="Tiger 420W" value={f.model} onChange={e=>s("model",e.target.value)}/></div></div>
     <div className="inp-3"><div><div className="inp-label">Watt</div><input className="inp" type="number" placeholder="420" value={f.watt} onChange={e=>s("watt",e.target.value)}/></div><div><div className="inp-label">m²</div><input className="inp" type="number" placeholder="1.72" value={f.area} onChange={e=>s("area",e.target.value)}/></div><div><div className="inp-label">Eff %</div><input className="inp" type="number" placeholder="21.5" value={f.eff} onChange={e=>s("eff",e.target.value)}/></div></div>
-    <div className="inp-2"><div><div className="inp-label">€/st</div><input className="inp" type="number" placeholder="210" value={f.price} onChange={e=>s("price",e.target.value)}/></div><div><div className="inp-label">Garantie (j)</div><input className="inp" type="number" placeholder="25" value={f.warranty} onChange={e=>s("warranty",e.target.value)}/></div></div>
+    <div className="inp-2"><div><div className="inp-label">Garantie (j)</div><input className="inp" type="number" placeholder="25" value={f.warranty} onChange={e=>s("warranty",e.target.value)}/></div><div></div></div>
     <div className="inp-2"><div><div className="inp-label">Afmetingen</div><input className="inp" placeholder="1756×1096×35mm" value={f.dims} onChange={e=>s("dims",e.target.value)}/></div><div><div className="inp-label">Gewicht</div><input className="inp" placeholder="21.3 kg" value={f.weight} onChange={e=>s("weight",e.target.value)}/></div></div>
-    <button className="btn full" disabled={!ok} onClick={()=>{onAdd({...f,id:Date.now(),watt:+f.watt,area:+f.area,eff:+f.eff,price:+f.price,warranty:+f.warranty});setF(e0);}}>Paneel toevoegen</button>
+    <button className="btn full" disabled={!ok} onClick={()=>{onAdd({...f,id:Date.now(),watt:+f.watt,area:+f.area,eff:+f.eff,price:0,warranty:+f.warranty});setF(e0);}}>Paneel toevoegen</button>
   </div>);}
 function NewBattForm({onAdd}){
-  const e0={brand:"",model:"",kwh:"",price:"",cycles:"",warranty:"10"};
+  const e0={brand:"",model:"",kwh:"",cycles:"",warranty:"10"};
   const[f,setF]=useState(e0);const s=(k,v)=>setF(p=>({...p,[k]:v}));
-  const ok=f.brand&&f.model&&+f.kwh>0&&+f.price>0&&+f.cycles>0;
+  const ok=f.brand&&f.model&&+f.kwh>0&&+f.cycles>0;
   return(<div className="new-form"><h4>➕ Nieuwe batterij toevoegen</h4>
     <div className="inp-2"><div><div className="inp-label">Merk</div><input className="inp" placeholder="Tesla" value={f.brand} onChange={e=>s("brand",e.target.value)}/></div><div><div className="inp-label">Model</div><input className="inp" placeholder="Powerwall 3" value={f.model} onChange={e=>s("model",e.target.value)}/></div></div>
-    <div className="inp-3"><div><div className="inp-label">kWh</div><input className="inp" type="number" placeholder="10" value={f.kwh} onChange={e=>s("kwh",e.target.value)}/></div><div><div className="inp-label">Prijs €</div><input className="inp" type="number" placeholder="5500" value={f.price} onChange={e=>s("price",e.target.value)}/></div><div><div className="inp-label">Cycli</div><input className="inp" type="number" placeholder="6000" value={f.cycles} onChange={e=>s("cycles",e.target.value)}/></div></div>
-    <div style={{maxWidth:130}}><div className="inp-label">Garantie (j)</div><input className="inp" type="number" placeholder="10" value={f.warranty} onChange={e=>s("warranty",e.target.value)}/></div>
-    <button className="btn blue full" disabled={!ok} onClick={()=>{onAdd({...f,id:Date.now(),kwh:+f.kwh,price:+f.price,cycles:+f.cycles,warranty:+f.warranty,isAlpha:false});setF(e0);}}>Batterij toevoegen</button>
+    <div className="inp-3"><div><div className="inp-label">kWh</div><input className="inp" type="number" placeholder="10" value={f.kwh} onChange={e=>s("kwh",e.target.value)}/></div><div><div className="inp-label">Cycli</div><input className="inp" type="number" placeholder="6000" value={f.cycles} onChange={e=>s("cycles",e.target.value)}/></div><div><div className="inp-label">Garantie (j)</div><input className="inp" type="number" placeholder="10" value={f.warranty} onChange={e=>s("warranty",e.target.value)}/></div></div>
+    <button className="btn blue full" disabled={!ok} onClick={()=>{onAdd({...f,id:Date.now(),kwh:+f.kwh,price:0,cycles:+f.cycles,warranty:+f.warranty,isAlpha:false});setF(e0);}}>Batterij toevoegen</button>
   </div>);}
 
 // ─── Customer / Teamleader component ─────────────────────────────────────────
@@ -2694,10 +2734,12 @@ export default function App(){
     // Dekkingsgraad t.o.v. werkelijk verbruik (was: hardcoded 3500 kWh aanname)
     const consumption=Math.max(annualConsumption||3500,1);
     const coverage=Math.round((annualKwh/consumption)*100);
-    // Installatieprijs panelen: manueel ingevoerd (offerte) of automatisch.
+    // Installatieprijs uit offerte — VERPLICHT.
+    // Catalogus heeft geen prijzen meer (price:0 voor alle items).
+    // Gebruiker MOET de offerte-prijs zelf invullen op de Resultaten tab.
     const mpp=parseFloat(manualPanelPrice);
-    const autoPanelPrice=Math.round(panelCount*selPanel.price+(selInv?selInv.price:1200));
-    const investPanels=(isFinite(mpp)&&mpp>0)?Math.round(mpp):autoPanelPrice;
+    // 0 = niet ingevuld → null zodat we duidelijk kunnen aangeven "wachten op prijs"
+    const investPanels=(isFinite(mpp)&&mpp>0)?Math.round(mpp):null;
 
     // ─── REALISTISCHE BESPARING in Vlaanderen 2026 ────────────────────────
     // Salderen bestaat niet meer. Opwek splitst in:
@@ -2706,27 +2748,31 @@ export default function App(){
     //
     // Zelfconsumptiegraad zonder batterij: ~30% van opwek (typisch Vlaams huishouden)
     // Met batterij: ~70%
-    // Plafond: zelfverbruik kan nooit groter zijn dan jaarverbruik.
-    const PRIJS_AANKOOP=0.28;  // €/kWh inclusief BTW + heffingen
-    const PRIJS_INJECTIE=0.05; // €/kWh injectievergoeding gemiddeld
-    const selfRatioBase=0.30;  // 30% zonder batterij
-    const selfRatioBatt=0.70;  // 70% met batterij
+    const PRIJS_AANKOOP=0.28;
+    const PRIJS_INJECTIE=0.05;
+    const selfRatioBase=0.30;
+    const selfRatioBatt=0.70;
 
     const selfKwhBase=Math.min(annualKwh*selfRatioBase,consumption);
     const injectKwhBase=Math.max(annualKwh-selfKwhBase,0);
     const annualBase=Math.round(selfKwhBase*PRIJS_AANKOOP+injectKwhBase*PRIJS_INJECTIE);
-    const paybackBase=Math.round(investPanels/Math.max(annualBase,1));
+    // Terugverdientijd alleen berekenen als er een prijs is
+    const paybackBase=investPanels!==null?Math.round(investPanels/Math.max(annualBase,1)):null;
 
     let battResult=null;
     if(battEnabled&&selBatt){
       const mbp=parseFloat(manualBatteryPrice);
-      const battPrice=(isFinite(mbp)&&mbp>0)?Math.round(mbp):selBatt.price;
+      // manualBatteryPrice = TOTAAL met batterij (panelen + omvormer + batterij + installatie),
+      // niet enkel de batterij-prijs. Dit is hoe offertes typisch werken.
+      const totInvBatt=(isFinite(mbp)&&mbp>0)?Math.round(mbp):null;
       const selfKwhBatt=Math.min(annualKwh*selfRatioBatt,consumption);
       const injectKwhBatt=Math.max(annualKwh-selfKwhBatt,0);
       const totSav=Math.round(selfKwhBatt*PRIJS_AANKOOP+injectKwhBatt*PRIJS_INJECTIE);
       const extraSav=totSav-annualBase;
-      const totInv=investPanels+battPrice;
-      battResult={extraSav,totSav,totInv,payback:Math.round(totInv/Math.max(totSav,1)),battPrice,
+      const payback=(totInvBatt!==null)?Math.round(totInvBatt/Math.max(totSav,1)):null;
+      // Afgeleide batterij-meerprijs (alleen voor info-display)
+      const battOnlyPrice=(totInvBatt!==null&&investPanels!==null)?totInvBatt-investPanels:null;
+      battResult={extraSav,totSav,totInv:totInvBatt,payback,battPrice:battOnlyPrice,
         selfRatio:selfRatioBatt,selfKwh:Math.round(selfKwhBatt),injectKwh:Math.round(injectKwhBatt)};
     }
     setResults({irr,panelCount,actualArea:Math.round(actualArea),annualKwh,co2,coverage,
@@ -2774,7 +2820,7 @@ Helling: ${slope}° ${orientation} · ${irr} kWh/m²/j
 ${invStr}
 Opbrengst: ${annualKwh} kWh/j · CO₂: ${co2} kg/j
 Klant jaarverbruik: ${consumption} kWh · dekkingsgraad ${coverage}% · zelfverbruik ${Math.round(selfRatioBase*100)}% (${Math.round(selfKwhBase)} kWh) · injectie ${Math.round(injectKwhBase)} kWh
-Investering: €${investPanels.toLocaleString()} · Besparing: €${annualBase}/j · Terugverdien: ${paybackBase}j
+Investering: ${investPanels!==null?"€"+investPanels.toLocaleString():"nog niet ingevuld"} · Besparing: €${annualBase}/j · Terugverdien: ${paybackBase!==null?paybackBase+"j":"niet bepaalbaar"}
 ${battStr}
 
 GEEF EEN ADVIES VAN MAX 200 WOORDEN MET:
@@ -2793,9 +2839,25 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
   const handlePDF=async()=>{
     if(!results) return;
     setPdfLoading(true);
-    try{await generatePDF(results,customer,displayName,slope,orientation);}
+    // Bewaar huidige tab en schakel tijdelijk naar Configuratie zodat de
+    // Leaflet kaart + panelen-laag volledig gerenderd zijn op het moment
+    // dat html2canvas screenshot maakt. Anders krijgen we een lege of
+    // pannelloze kaart in het rapport.
+    const previousTab=activeTab;
+    setActiveTab("configuratie");
+    // Wacht tot React de render heeft toegepast + Leaflet zijn tiles + panelen
+    // heeft uitgetekend. invalidateSize is essentieel — Leaflet rendert op de
+    // gemeten viewport, en bij tab-switch was die onbekend.
+    await new Promise(r=>setTimeout(r,150));
+    if(leafRef.current?.invalidateSize) leafRef.current.invalidateSize();
+    await new Promise(r=>setTimeout(r,500));
+    try{
+      await generatePDF(results,customer,displayName,slope,orientation);
+    }
     catch(e){alert(`PDF fout: ${e.message}`);}
     setPdfLoading(false);
+    // Terug naar de tab waar de gebruiker stond
+    setActiveTab(previousTab);
   };
 
   const filteredInv=invFilter==="alle"?inverters:inverters.filter(i=>i.fase===invFilter);
@@ -2971,7 +3033,7 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
           <div className="sl">Geselecteerd paneel</div>
           <div className="card selected" style={{cursor:"default"}}>
             <div className="card-name">{selPanel?.model}</div><div className="card-brand">{selPanel?.brand}</div>
-            <div className="chips"><span className="chip gold">{selPanel?.watt}W</span><span className="chip">{selPanel?.eff}% eff</span><span className="chip">€{selPanel?.price}/st</span></div>
+            <div className="chips"><span className="chip gold">{selPanel?.watt}W</span><span className="chip">{selPanel?.eff}% eff</span></div>
           </div>
           <button className="btn sec full" style={{marginTop:6}} onClick={()=>setActiveTab("panelen")}>Paneel wijzigen →</button>
         </div>
@@ -2982,8 +3044,8 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
           {selInv?<div className="inv-card selected" style={{cursor:"default"}}>
             <div className="alpha-badge">⚡ G3</div>
             <div className="card-name">{selInv.model}</div>
-            <div className="chips"><span className="chip alpha-c">{selInv.kw}kW</span><span className="chip">€{selInv.price.toLocaleString()}</span></div>
-          </div>:<div className="info-box" style={{fontSize:8}}>Geen omvormer · forfait €1.200</div>}
+            <div className="chips"><span className="chip alpha-c">{selInv.kw}kW</span><span className="chip">{selInv.mppt} MPPT</span></div>
+          </div>:<div className="info-box" style={{fontSize:11}}>Geen omvormer geselecteerd</div>}
           <button className="btn alpha full" style={{marginTop:6}} onClick={()=>setActiveTab("omvormers")}>{selInv?"Omvormer wijzigen →":"AlphaESS kiezen →"}</button>
         </div>
 
@@ -3096,26 +3158,6 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
         }}>
           {panelMoveMode?"✅ Klaar · klik paneel=select · dubbelklik=rij · sleep=verplaats":"↔️ Verplaats panelen"}
         </button>}
-        {/* Manuele prijzen uit offerte (overschrijven de automatische schatting) */}
-        <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:10,marginBottom:6}}>
-          <div className="sl" style={{marginBottom:6}}>Prijzen uit offerte (optioneel)</div>
-          <div style={{display:"flex",gap:6}}>
-            <div style={{flex:1}}>
-              <div className="inp-label" style={{fontSize:8}}>Panelen + installatie (€)</div>
-              <input className="inp" type="number" min="0" step="50" placeholder="auto"
-                value={manualPanelPrice} onChange={e=>setManualPanelPrice(e.target.value)}/>
-            </div>
-            <div style={{flex:1}}>
-              <div className="inp-label" style={{fontSize:8}}>Batterij (€)</div>
-              <input className="inp" type="number" min="0" step="50" placeholder="auto"
-                value={manualBatteryPrice} onChange={e=>setManualBatteryPrice(e.target.value)}
-                disabled={!battEnabled}/>
-            </div>
-          </div>
-          <div style={{fontSize:8,color:"var(--muted)",marginTop:4}}>
-            Leeg = automatische schatting. Vul in met offerte-prijzen voor correct rapport.
-          </div>
-        </div>
         <button className="btn full" onClick={calculate} disabled={!coords||aiLoading||!buildingCoords||isLoading}>
           {aiLoading?<><div className="spinner"/>Analyseren...</>:dhmStatus==="loading"?<><div className="spinner cyan"/>LiDAR verwerken...</>:grbStatus==="loading"?<><div className="spinner"/>Laden...</>:"☀️ Bereken resultaten"}
         </button>
@@ -3259,54 +3301,106 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
 
         {/* TECHNISCH TAB — string-design validatie */}
         {activeTab==="technisch"&&<div className="section">
-          <div className="sl">Technische validatie · String-design</div>
-          {!selPanel?.voc&&<div className="info-box warn"><strong>⚠️ Onvolledige paneel-data</strong><br/>Het geselecteerde paneel heeft geen elektrische specs (Voc/Vmp/Isc). Voeg deze toe in de catalogus om string-validatie uit te voeren.</div>}
+          <div className="sl">Configuratie van de omvormer</div>
+          {!selPanel?.voc&&<div className="info-box warn"><strong>⚠️ Onvolledige paneel-data</strong><br/>Het geselecteerde paneel heeft geen elektrische specs (Voc/Vmp/Isc).</div>}
           {!selInv&&<div className="info-box warn"><strong>⚠️ Geen omvormer geselecteerd</strong><br/>Kies eerst een omvormer in het AlphaESS-tabblad.</div>}
-          {!selInv?.maxDcVoltage&&selInv&&<div className="info-box warn"><strong>⚠️ Onvolledige omvormer-data</strong><br/>De geselecteerde omvormer heeft geen DC-specs in de catalogus.</div>}
+          {!selInv?.maxDcVoltage&&selInv&&<div className="info-box warn"><strong>⚠️ Onvolledige omvormer-data</strong><br/>De geselecteerde omvormer heeft geen DC-specs.</div>}
           {stringDesign&&<>
-            {/* Samenvatting */}
-            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:12,marginBottom:10}}>
-              <div className="sl" style={{marginBottom:8}}>Configuratie samenvatting</div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:10}}>
-                <div>Paneel</div><div><strong>{selPanel.brand} {selPanel.model}</strong></div>
-                <div>Omvormer</div><div><strong>{selInv.brand} {selInv.model}</strong></div>
-                <div>Aantal panelen</div><div><strong>{panelCount}</strong> ({(panelCount*selPanel.watt/1000).toFixed(2)} kWp DC)</div>
-                <div>MPPTs gebruikt</div><div><strong>{stringDesign.summary.mpptsUsed}</strong> van {stringDesign.summary.mpptsAvailable}</div>
-                <div>Configuratie</div><div><strong>{stringDesign.summary.stringsPerMppt}× {stringDesign.summary.panelsPerString} panelen per MPPT</strong></div>
+            {/* Header met project-info + omgevingstemperatuur */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10,display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+              <div>
+                <div style={{fontSize:11,marginBottom:6}}><strong>Project:</strong> {customer.name||"—"}</div>
+                <div style={{fontSize:11,marginBottom:6}}><strong>Locatie:</strong> {(customer.address||displayName||"—").split(",").slice(0,2).join(",")}</div>
+                <div style={{fontSize:11}}><strong>Datum:</strong> {new Date().toLocaleDateString("nl-BE")}</div>
+              </div>
+              <div>
+                <div style={{fontSize:11,fontWeight:600,marginBottom:4}}>Omgevingstemperatuur</div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Minimale temperatuur: <strong style={{color:"var(--text)"}}>{stringDesign.config.tempMin} °C</strong></div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Configuratietemperatuur: <strong style={{color:"var(--text)"}}>{stringDesign.config.tempConfig} °C</strong></div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Maximale temperatuur: <strong style={{color:"var(--text)"}}>{stringDesign.config.tempMax} °C</strong></div>
               </div>
             </div>
 
-            {/* String-tabel */}
-            {stringDesign.mppts.length>0&&<div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:12,marginBottom:10}}>
-              <div className="sl" style={{marginBottom:8}}>String-verdeling per MPPT</div>
-              <table style={{width:"100%",fontSize:9,borderCollapse:"collapse"}}>
-                <thead><tr style={{borderBottom:"1px solid var(--border)"}}>
-                  <th style={{textAlign:"left",padding:4}}>MPPT</th>
-                  <th style={{textAlign:"left",padding:4}}>Strings</th>
-                  <th style={{textAlign:"left",padding:4}}>Pan/string</th>
-                  <th style={{textAlign:"right",padding:4}}>Voc STC</th>
-                  <th style={{textAlign:"right",padding:4}}>Voc -15°C</th>
-                  <th style={{textAlign:"right",padding:4}}>Vmp 70°C</th>
-                  <th style={{textAlign:"right",padding:4}}>Stroom</th>
-                  <th style={{textAlign:"right",padding:4}}>Vermogen</th>
-                </tr></thead>
-                <tbody>{stringDesign.mppts.map((m,i)=>(
-                  <tr key={i} style={{borderBottom:"1px solid var(--border)"}}>
-                    <td style={{padding:4}}><strong>MPPT {i+1}</strong></td>
-                    <td style={{padding:4}}>{m.stringCount}× parallel</td>
-                    <td style={{padding:4}}>{m.panelsPerString}</td>
-                    <td style={{padding:4,textAlign:"right"}}>{m.vocStc.toFixed(0)} V</td>
-                    <td style={{padding:4,textAlign:"right",color:m.vocCold>selInv.maxDcVoltage?"var(--red)":"inherit",fontWeight:m.vocCold>selInv.maxDcVoltage*0.95?700:400}}>{m.vocCold.toFixed(0)} V</td>
-                    <td style={{padding:4,textAlign:"right",color:m.vmpHot<selInv.mpptVoltageMin?"var(--red)":"inherit"}}>{m.vmpHot.toFixed(0)} V</td>
-                    <td style={{padding:4,textAlign:"right"}}>{m.iscTotal.toFixed(1)} A</td>
-                    <td style={{padding:4,textAlign:"right"}}>{(m.powerStc/1000).toFixed(2)} kWp</td>
+            {/* Omvormer-overzicht */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10}}>
+              <div className="sl" style={{marginBottom:8}}>1× {selInv.brand} {selInv.model}</div>
+              <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+                <tbody>
+                  <tr style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Piekvermogen (kWp DC)</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{(stringDesign.totalPower/1000).toFixed(2)} kWp</td>
                   </tr>
-                ))}</tbody>
+                  <tr style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Totaal aantal PV-panelen</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{panelCount}</td>
+                  </tr>
+                  <tr style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Aantal PV-omvormers</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>1</td>
+                  </tr>
+                  <tr style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Max. DC-vermogen omvormer</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{(stringDesign.config.inverterMaxDcPower/1000).toFixed(2)} kW</td>
+                  </tr>
+                  <tr style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Maximaal werkelijk AC-vermogen</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{(stringDesign.config.inverterMaxAc/1000).toFixed(2)} kW</td>
+                  </tr>
+                  <tr style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Netspanning</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{selInv.fase==="3-fase"?"400V (driefase)":"230V (eenfase)"}</td>
+                  </tr>
+                  {stringDesign.config.sizingFactor!==null&&<tr>
+                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Dimensioneringsfactor</td>
+                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600,color:stringDesign.config.sizingFactor>150?"var(--red)":stringDesign.config.sizingFactor<70?"var(--amber)":"var(--green)"}}>
+                      {stringDesign.config.sizingFactor.toFixed(1)} %
+                    </td>
+                  </tr>}
+                </tbody>
               </table>
-              <div style={{fontSize:8,color:"var(--muted)",marginTop:6}}>
-                Voc -15°C = max spanning bij koude (limiet omvormer: {selInv.maxDcVoltage}V) · Vmp 70°C = min spanning bij hitte (min MPPT: {selInv.mpptVoltageMin}V) · Stroom = totaal Isc per MPPT (limiet: {selInv.maxInputCurrentPerMppt}A)
-              </div>
-            </div>}
+            </div>
+
+            {/* PV-configuratiegegevens — overzicht per ingang/MPPT */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10}}>
+              <div className="sl" style={{marginBottom:8}}>PV-configuratiegegevens</div>
+              {stringDesign.mppts.map((m,i)=>(
+                <div key={i} style={{fontSize:11,marginBottom:6,paddingBottom:6,borderBottom:i<stringDesign.mppts.length-1?"1px solid var(--border)":"none"}}>
+                  <strong>Ingang {String.fromCharCode(65+i)}: MPPT {i+1}</strong>
+                  <span style={{color:"var(--muted)"}}> · {m.totalPanels} × {selPanel.brand} {selPanel.model}</span>
+                  <span style={{color:"var(--muted)"}}> · Azimut: {orientation}</span>
+                  <span style={{color:"var(--muted)"}}> · Helling: {slope}°</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Detailtabel per ingang — SMA-stijl met groene vinkjes */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10,overflowX:"auto"}}>
+              <div className="sl" style={{marginBottom:8}}>Detailwaarden per MPPT-ingang</div>
+              <table style={{width:"100%",fontSize:11,borderCollapse:"collapse",minWidth:500}}>
+                <thead>
+                  <tr style={{borderBottom:"2px solid var(--border)"}}>
+                    <th style={{textAlign:"left",padding:"6px 4px",color:"var(--muted)",fontWeight:500}}></th>
+                    {stringDesign.mppts.map((m,i)=>(
+                      <th key={i} style={{textAlign:"right",padding:"6px 4px",fontWeight:600}}>Ingang {String.fromCharCode(65+i)}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  <TechRow label="Aantal strings" mppts={stringDesign.mppts} val={m=>m.stringCount}/>
+                  <TechRow label="PV-panelen" mppts={stringDesign.mppts} val={m=>m.totalPanels}/>
+                  <TechRow label="Piekvermogen (ingang)" mppts={stringDesign.mppts} val={m=>(m.powerStc/1000).toFixed(2)+" kWp"}/>
+                  <TechRow label={`Min. DC-spanning WR (Netspanning ${selInv.fase==="3-fase"?"400V":"230V"})`} mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMpptMin+" V"}/>
+                  <TechRow label="Typische PV-spanning (config)" mppts={stringDesign.mppts} val={m=>m.vmpConfig.toFixed(0)+" V"} check={m=>m.checks.vmpConfigOk}/>
+                  <TechRow label={`Min. PV-spanning (${stringDesign.config.tempMax}°C)`} mppts={stringDesign.mppts} val={m=>m.vmpHot.toFixed(0)+" V"} check={m=>m.checks.vmpHotOk}/>
+                  <TechRow label="Max. DC-spanning Omvormer" mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMaxDc+" V"}/>
+                  <TechRow label={`Max. PV-spanning (${stringDesign.config.tempMin}°C)`} mppts={stringDesign.mppts} val={m=>m.vocCold.toFixed(0)+" V"} check={m=>m.checks.vocColdOk}/>
+                  <TechRow label="Max. ingangsstroom per MPPT" mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMaxCurrent+" A"}/>
+                  <TechRow label="Max. PV-generatorstroom (Imp)" mppts={stringDesign.mppts} val={m=>m.impTotal.toFixed(1)+" A"} check={m=>m.checks.impOk}/>
+                  <TechRow label="Max. kortsluitstroom per MPPT" mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMaxCurrent+" A"}/>
+                  <TechRow label="Max. kortsluitstroom PV (Isc)" mppts={stringDesign.mppts} val={m=>m.iscTotal.toFixed(1)+" A"} check={m=>m.checks.iscOk}/>
+                </tbody>
+              </table>
+            </div>
 
             {/* Waarschuwingen */}
             {stringDesign.warnings.length>0&&<div style={{display:"flex",flexDirection:"column",gap:6}}>
@@ -3314,13 +3408,13 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
                 <div key={i} className={`info-box ${w.severity==="critical"?"warn":w.severity==="warning"?"warn":"alpha-info"}`}
                      style={{borderLeftWidth:4,borderLeftStyle:"solid",borderLeftColor:w.severity==="critical"?"var(--red)":w.severity==="warning"?"var(--amber)":"var(--blue)"}}>
                   <strong>{w.severity==="critical"?"🚫":w.severity==="warning"?"⚠️":"ℹ️"} {w.title}</strong><br/>
-                  <span style={{fontSize:9}}>{w.detail}</span>
+                  <span style={{fontSize:11}}>{w.detail}</span>
                 </div>
               ))}
             </div>}
             {stringDesign.warnings.length===0&&<div className="info-box alpha-info">
               <strong>✅ Configuratie OK</strong><br/>
-              <span style={{fontSize:9}}>Alle technische limieten worden gerespecteerd. Veilige werking bij temperaturen van −15°C tot +70°C celtemperatuur.</span>
+              <span style={{fontSize:11}}>Alle technische limieten worden gerespecteerd. Veilige werking tussen {stringDesign.config.tempMin}°C en {stringDesign.config.tempMax}°C.</span>
             </div>}
           </>}
         </div>}
@@ -3357,29 +3451,33 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
             <MonthlyChart annualKwh={results.annualKwh}/>
 
             {/* INSTALLATIEKOSTEN — manueel invoerbaar uit offerte */}
-            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,boxShadow:"var(--shadow)"}}>
-              <div className="sl" style={{marginBottom:8}}>Installatiekosten uit offerte</div>
-              <div style={{fontSize:9,color:"var(--muted)",marginBottom:10}}>
-                Vul hier de werkelijke prijzen uit jouw offerte in. Leeg laten = automatische schatting.
-                Wijzigingen werken meteen door in de terugverdientijd hieronder.
+            <div style={{background:results.investPanels===null?"var(--amber-light)":"var(--bg2)",
+                          border:`2px solid ${results.investPanels===null?"var(--amber)":"var(--border)"}`,
+                          borderRadius:8,padding:14,boxShadow:"var(--shadow)"}}>
+              <div className="sl" style={{marginBottom:8}}>
+                {results.investPanels===null?"⚠️ ":""}💰 Totaalprijzen uit offerte
+                {results.investPanels===null&&<span style={{color:"var(--red)",fontWeight:600,marginLeft:8}}>(verplicht)</span>}
+              </div>
+              <div style={{fontSize:11,color:"var(--muted)",marginBottom:10}}>
+                Vul hier de werkelijke totaalprijzen uit jouw offerte in.{results.investPanels===null?" Zonder prijs kan de terugverdientijd niet worden berekend.":""}
+                <br/>Wijzigingen werken meteen door — klik dan opnieuw op "Bereken resultaten".
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
                 <div>
-                  <div className="inp-label" style={{fontSize:9,fontWeight:600}}>🔆 Panelen + installatie + omvormer (€)</div>
+                  <div className="inp-label" style={{fontSize:11,fontWeight:600}}>🔆 Totaalprijs ZONDER batterij (€) <span style={{color:"var(--red)"}}>*</span></div>
                   <input className="inp" type="number" min="0" step="50"
-                    placeholder={`auto: €${(results.panelCount*results.panel.price+(results.inv?results.inv.price:1200)).toLocaleString()}`}
+                    placeholder="bv. 8000"
                     value={manualPanelPrice} onChange={e=>setManualPanelPrice(e.target.value)}/>
+                  <div style={{fontSize:9,color:"var(--muted)",marginTop:3}}>Panelen + installatie + omvormer</div>
                 </div>
                 <div>
-                  <div className="inp-label" style={{fontSize:9,fontWeight:600}}>🔋 Batterij (€)</div>
+                  <div className="inp-label" style={{fontSize:11,fontWeight:600}}>🔋 Totaalprijs MET batterij (€) {battEnabled&&<span style={{color:"var(--red)"}}>*</span>}</div>
                   <input className="inp" type="number" min="0" step="50"
-                    placeholder={battEnabled&&selBatt?`auto: €${selBatt.price.toLocaleString()}`:"Geen batterij gekozen"}
+                    placeholder={battEnabled?"bv. 14000":"Activeer batterij in tabblad 05"}
                     value={manualBatteryPrice} onChange={e=>setManualBatteryPrice(e.target.value)}
                     disabled={!battEnabled}/>
+                  <div style={{fontSize:9,color:"var(--muted)",marginTop:3}}>Volledig pakket incl. batterij</div>
                 </div>
-              </div>
-              <div style={{fontSize:8,color:"var(--muted)",marginTop:8,fontStyle:"italic"}}>
-                Tip: na het wijzigen van prijzen → klik opnieuw "Bereken resultaten" voor het bijwerken van de tabellen.
               </div>
             </div>
 
@@ -3388,36 +3486,36 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
               <div className="compare-grid">
                 <div className="compare-col">
                   <h4>🔆 Alleen zonnepanelen</h4>
-                  <div className="crow">Panelen ({results.panelCount}×)<span>€{(results.panelCount*results.panel.price).toLocaleString()}</span></div>
-                  {results.inv?<div className="crow">{results.inv.model}<span>€{results.inv.price.toLocaleString()}</span></div>:<div className="crow">Installatie forfait<span>€1.200</span></div>}
+                  <div className="crow">Aantal panelen<span>{results.panelCount}× {results.panel.watt}W</span></div>
+                  <div className="crow">Omvormer<span>{results.inv?results.inv.model:"—"}</span></div>
                   <div className="crow">Jaarverbruik klant<span>{results.consumption.toLocaleString()} kWh</span></div>
                   <div className="crow">Opbrengst PV<span>{results.annualKwh.toLocaleString()} kWh</span></div>
                   <div className="crow">Zelfverbruik<span>~{Math.round(results.selfRatioBase*100)}% ({results.selfKwhBase.toLocaleString()} kWh)</span></div>
                   <div className="crow">Injectie naar net<span>{results.injectKwhBase.toLocaleString()} kWh</span></div>
                   <div className="crow">Besparing/jaar<span>€{results.annualBase}</span></div>
-                  <div className="ctotal"><span>Investering</span><span style={{fontSize:12}}>€{results.investPanels.toLocaleString()}</span></div>
-                  <div className="ctotal"><span>Terugverdientijd</span><div className="cval">{results.paybackBase} jaar</div></div>
-                  <div className="pbar"><div className="pfill" style={{width:`${Math.min(100,(results.paybackBase/25)*100)}%`}}/></div>
+                  <div className="ctotal"><span>Investering</span><span style={{fontSize:13}}>{results.investPanels!==null?"€"+results.investPanels.toLocaleString():<span style={{color:"var(--red)",fontStyle:"italic"}}>vul prijs in ↑</span>}</span></div>
+                  <div className="ctotal"><span>Terugverdientijd</span><div className="cval">{results.paybackBase!==null?results.paybackBase+" jaar":<span style={{color:"var(--muted)",fontStyle:"italic",fontSize:11}}>—</span>}</div></div>
+                  {results.paybackBase!==null&&<div className="pbar"><div className="pfill" style={{width:`${Math.min(100,(results.paybackBase/25)*100)}%`}}/></div>}
                 </div>
                 {results.battResult?(
                   <div className={`compare-col batt ${results.batt?.isAlpha?"alpha-col":""}`}>
                     <h4>{results.batt?.isAlpha?"⚡🔋":"🔋"} Met {results.batt?.brand} {results.batt?.model}</h4>
-                    <div className="crow">Panelen + omvormer<span>€{results.investPanels.toLocaleString()}</span></div>
-                    <div className="crow">Batterij ({results.batt?.kwh} kWh)<span>€{(results.battResult.battPrice??results.batt?.price).toLocaleString()}</span></div>
+                    <div className="crow">PV-installatie<span>{results.investPanels!==null?"€"+results.investPanels.toLocaleString():"—"}</span></div>
+                    <div className="crow">Batterij ({results.batt?.kwh} kWh)<span>{results.battResult.battPrice!==null?"€"+results.battResult.battPrice.toLocaleString():<span style={{color:"var(--red)",fontStyle:"italic"}}>vul prijs in ↑</span>}</span></div>
                     <div className="crow">Jaarverbruik klant<span>{results.consumption.toLocaleString()} kWh</span></div>
                     <div className="crow">Opbrengst PV<span>{results.annualKwh.toLocaleString()} kWh</span></div>
                     <div className="crow">Zelfverbruik<span>~70% ({results.battResult.selfKwh.toLocaleString()} kWh)</span></div>
                     <div className="crow">Injectie naar net<span>{results.battResult.injectKwh.toLocaleString()} kWh</span></div>
                     <div className="crow">Extra besparing<span style={{color:"var(--green)"}}>+€{results.battResult.extraSav}/j</span></div>
                     <div className="crow">Totale besparing<span>€{results.battResult.totSav}/j</span></div>
-                    <div className="ctotal"><span>Investering</span><span style={{fontSize:12}}>€{results.battResult.totInv.toLocaleString()}</span></div>
-                    <div className="ctotal"><span>Terugverdientijd</span><div className="cval">{results.battResult.payback} jaar</div></div>
-                    <div className="pbar"><div className="pfill" style={{width:`${Math.min(100,(results.battResult.payback/25)*100)}%`,background:"linear-gradient(90deg,var(--blue),var(--alpha))"}}/></div>
+                    <div className="ctotal"><span>Investering</span><span style={{fontSize:13}}>{results.battResult.totInv!==null?"€"+results.battResult.totInv.toLocaleString():<span style={{color:"var(--red)",fontStyle:"italic"}}>vul prijzen in ↑</span>}</span></div>
+                    <div className="ctotal"><span>Terugverdientijd</span><div className="cval">{results.battResult.payback!==null?results.battResult.payback+" jaar":<span style={{color:"var(--muted)",fontStyle:"italic",fontSize:11}}>—</span>}</div></div>
+                    {results.battResult.payback!==null&&<div className="pbar"><div className="pfill" style={{width:`${Math.min(100,(results.battResult.payback/25)*100)}%`,background:"linear-gradient(90deg,var(--blue),var(--alpha))"}}/></div>}
                   </div>
                 ):(
                   <div className="compare-col" style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:8,opacity:.6}}>
                     <div style={{fontSize:28}}>🔋</div>
-                    <div style={{fontSize:9,textAlign:"center",color:"var(--muted)"}}>Activeer batterij in de Batterij tab voor vergelijking</div>
+                    <div style={{fontSize:11,textAlign:"center",color:"var(--muted)"}}>Activeer batterij in de Batterij tab voor vergelijking</div>
                     <button className="btn blue sm" onClick={()=>setActiveTab("batterij")}>Batterij instellen</button>
                   </div>
                 )}

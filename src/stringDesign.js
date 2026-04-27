@@ -8,9 +8,10 @@
 //   - Hoeveel parallelle strings per MPPT (gebaseerd op stroom-limiet)
 //   - Beste verdeling van het totaal aantal panelen over de MPPT-ingangen
 //
-// Veiligheidsgrenzen voor Vlaanderen/België:
-//   - T_min = -15 °C (koudste typische dag — Voc max bij koude)
-//   - T_max = +70 °C (cellentemperatuur op zwart dak in zomer — Vmp daalt)
+// Veiligheidsgrenzen voor Vlaanderen/België (gematigde berekening — SMA-conventie):
+//   - T_min = -7 °C (typische Belgische winterochtend — Voc max bij koude)
+//   - T_max = +32 °C (typische Belgische zomermiddag, omgevingslucht)
+//   - T_config = +19 °C (jaargemiddelde voor "typische" werking)
 //   - T_STC = +25 °C (paneel-datasheet referentie)
 //
 // Input data verwacht per paneel:
@@ -28,9 +29,12 @@
 // CONSTANTEN
 // =============================================================================
 
-export const T_MIN_BE = -15;  // °C, koudste typische ochtend in Vlaanderen
-export const T_MAX_CELL = 70; // °C, max cellentemperatuur op zwart dak
-export const T_STC = 25;      // °C, datasheet referentietemperatuur
+export const T_MIN_BE = -7;       // °C, koudste typische ochtend in Vlaanderen
+export const T_MAX_AMBIENT = 32;  // °C, warmste omgevingstemperatuur (lucht)
+export const T_CONFIG = 19;       // °C, configuratie-/typische werkingstemp
+export const T_STC = 25;          // °C, datasheet referentietemperatuur
+// Backwards compat alias
+export const T_MAX_CELL = T_MAX_AMBIENT;
 
 // =============================================================================
 // VOLTAGE/CURRENT CORRECTIES VOOR TEMPERATUUR
@@ -350,27 +354,69 @@ export function computeStringDesign(panel, inverter, totalPanels) {
   const distribution = distributeStrings(panel, inverter, totalPanels);
   const warnings = validateDesign(panel, inverter, distribution);
 
-  // Verrijk distribution met berekende voltages/stromen per MPPT
-  const enriched = distribution.mppts.map(m => ({
-    ...m,
-    vocCold: m.panelsPerString * vocAtTemp(panel.voc, panel.tempCoeffVoc, T_MIN_BE),
-    vocStc: m.panelsPerString * panel.voc,
-    vmpStc: m.panelsPerString * panel.vmp,
-    vmpHot: m.panelsPerString * vmpAtTemp(panel.vmp, panel.tempCoeffVoc, T_MAX_CELL),
-    iscTotal: m.stringCount * panel.isc,
-    impTotal: m.stringCount * panel.imp,
-    powerStc: m.totalPanels * panel.watt,
-  }));
+  // Verrijk distribution met berekende voltages/stromen per MPPT.
+  // Deze waarden komen rechtstreeks in de SMA-stijl tabel terecht.
+  const enriched = distribution.mppts.map(m => {
+    // Spanningen bij verschillende temperaturen per string
+    const vocCold = m.panelsPerString * vocAtTemp(panel.voc, panel.tempCoeffVoc, T_MIN_BE);
+    const vocStc = m.panelsPerString * panel.voc;
+    const vmpStc = m.panelsPerString * panel.vmp;
+    const vmpHot = m.panelsPerString * vmpAtTemp(panel.vmp, panel.tempCoeffVoc, T_MAX_AMBIENT);
+    const vmpConfig = m.panelsPerString * vmpAtTemp(panel.vmp, panel.tempCoeffVoc, T_CONFIG);
+
+    // Stroom — bij parallelle strings worden Imp en Isc opgeteld
+    const impTotal = m.stringCount * panel.imp;
+    const iscTotal = m.stringCount * panel.isc;
+
+    // Vermogen
+    const powerStc = m.totalPanels * panel.watt;
+
+    // Pass/fail per check (true = OK, false = FAULT)
+    const checks = {
+      vocColdOk: vocCold <= inverter.maxDcVoltage,
+      vmpHotOk: vmpHot >= inverter.mpptVoltageMin,
+      vmpConfigOk: vmpConfig >= inverter.mpptVoltageMin && vmpConfig <= inverter.mpptVoltageMax,
+      impOk: !inverter.maxInputCurrentPerMppt || impTotal <= inverter.maxInputCurrentPerMppt,
+      iscOk: !inverter.maxInputCurrentPerMppt || iscTotal <= inverter.maxInputCurrentPerMppt,
+    };
+
+    return {
+      ...m,
+      vocCold, vocStc, vmpStc, vmpHot, vmpConfig,
+      iscTotal, impTotal,
+      powerStc,
+      checks,
+    };
+  });
 
   const totalPowerW = enriched.reduce((s, m) => s + m.powerStc, 0);
   const hasCritical = warnings.some(w => w.severity === 'critical');
   const hasWarning = warnings.some(w => w.severity === 'warning');
+
+  // Algemene config-info — wordt getoond in de header van de Technisch tab
+  const config = {
+    tempMin: T_MIN_BE,
+    tempConfig: T_CONFIG,
+    tempMax: T_MAX_AMBIENT,
+    tempStc: T_STC,
+    inverterMaxDc: inverter.maxDcVoltage,
+    inverterMpptMin: inverter.mpptVoltageMin,
+    inverterMpptMax: inverter.mpptVoltageMax,
+    inverterMaxCurrent: inverter.maxInputCurrentPerMppt,
+    inverterMaxAc: inverter.maxAcPower,
+    inverterMaxDcPower: inverter.maxDcPower,
+    // Dimensioneringsfactor = totaal DC-vermogen / max AC-vermogen × 100%
+    sizingFactor: inverter.maxAcPower
+      ? Math.round((totalPowerW / inverter.maxAcPower) * 1000) / 10
+      : null,
+  };
 
   return {
     feasible: distribution.feasible && !hasCritical,
     mppts: enriched,
     warnings,
     totalPower: totalPowerW,
+    config,
     summary: {
       panelsPerString: enriched[0]?.panelsPerString || 0,
       stringsPerMppt: enriched[0]?.stringCount || 0,
