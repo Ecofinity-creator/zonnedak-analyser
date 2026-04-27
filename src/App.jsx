@@ -1337,7 +1337,7 @@ function MonthlyChart({annualKwh}){
 }
 
 // ─── PDF generatie — EcoFinity stijl ───────────────────────────────────────────
-async function generatePDF(results,customer,displayName,slope,orientation){
+async function generatePDF(results,customer,displayName,slope,orientation,mapSnapshot,aiAdvice){
   await loadPdfLibs();
   const{jsPDF}=window.jspdf;
   const{PDFDocument}=window.PDFLib;
@@ -1666,13 +1666,55 @@ async function generatePDF(results,customer,displayName,slope,orientation){
     y+=56;
   }
 
+  // ── AI expert-advies ──
+  // Wordt alleen meegenomen als de gebruiker een advies-tekst heeft
+  // (genereert/bewerkt op de Resultaten tab vóór PDF-download).
+  if(aiAdvice&&aiAdvice.trim().length>0){
+    doc.addPage();
+    // Mini-header
+    doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
+    sf(11,"bold");sc(WHT);doc.text("EcoFinity BV",M,9);
+    sf(11,"normal");doc.text("Project: "+(customer.name||"—"),M+38,9);
+    sf(10,"normal");doc.text("Expert advies",W-M,9,{align:"right"});
+    y=22;
+    y=secTitle("Expert advies van uw installateur",y);
+    sf(10,"normal");sc(TXT);
+    // Wrap tekst over meerdere regels (PDF kan dit niet automatisch met '\n')
+    const adviceLines=doc.splitTextToSize(aiAdvice.trim(),W-2*M);
+    // Page-break als nodig
+    let lineH=4.5;
+    for(const line of adviceLines){
+      if(y>284-15){doc.addPage();y=22;sc(TXT);sf(10,"normal");}
+      doc.text(line,M,y);
+      y+=lineH;
+    }
+    y+=5;
+  }
+
   // ── Luchtfoto met panelen ──
-  // Bij oproep van generatePDF heeft handlePDF al naar de Configuratie tab
-  // geschakeld + invalidateSize uitgevoerd, zodat Leaflet volledig is
-  // gerenderd voor we hier de screenshot maken.
+  // Strategie: gebruik mapSnapshot (gemaakt door gebruiker via "Foto opslaan voor rapport")
+  // als die beschikbaar is. Anders fallback naar live capture.
+  // Pre-captured = robuust en zeker mét panelen erop.
   try{
-    const mapEl=document.getElementById("leaflet-map");
-    if(mapEl&&window.html2canvas){
+    let imgData=null,imgRatio=1;
+    if(mapSnapshot?.dataUrl){
+      // Gebruik pre-captured foto
+      imgData=mapSnapshot.dataUrl;
+      imgRatio=mapSnapshot.height/mapSnapshot.width;
+    }else{
+      // Fallback: live capture
+      const mapEl=document.getElementById("leaflet-map");
+      if(mapEl&&window.html2canvas){
+        const canvas=await window.html2canvas(mapEl,{
+          useCORS:true,allowTaint:true,scale:1.5,
+          logging:false,backgroundColor:"#f1f5f9",
+          foreignObjectRendering:false
+        });
+        imgData=canvas.toDataURL("image/jpeg",0.85);
+        imgRatio=canvas.height/canvas.width;
+      }
+    }
+    if(imgData){
       doc.addPage();
       // Mini-header
       doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
@@ -1681,16 +1723,7 @@ async function generatePDF(results,customer,displayName,slope,orientation){
       sf(10,"normal");doc.text("Luchtfoto",W-M,9,{align:"right"});
       y=22;
       y=secTitle("Paneelplaatsing op het dak",y);
-      // Capture kaart — useCORS is essentieel voor de tiles van Esri.
-      // foreignObjectRendering=false omdat dat met SVG-laag (panel-overlay)
-      // soms blanco geeft in Firefox.
-      const canvas=await window.html2canvas(mapEl,{
-        useCORS:true,allowTaint:true,scale:1.5,
-        logging:false,backgroundColor:"#f1f5f9",
-        foreignObjectRendering:false
-      });
-      const imgData=canvas.toDataURL("image/jpeg",0.85);
-      const imgW=W-2*M,imgH=Math.min(140,imgW*(canvas.height/canvas.width));
+      const imgW=W-2*M,imgH=Math.min(180,imgW*imgRatio);
       doc.addImage(imgData,"JPEG",M,y,imgW,imgH);
       y+=imgH+5;
       sf(9,"normal");sc(MUT);
@@ -1725,7 +1758,10 @@ async function generatePDF(results,customer,displayName,slope,orientation){
     const bytes=await fetchPdfBytes(DS_BASE+dsFile);
     if(!bytes) continue;
     try{
-      const dsPdf=await PDFDocument.load(bytes);
+      // ignoreEncryption: true → laat pdf-lib ook write-protected datasheets inlezen
+      // (zoals Qcells/Trina vaak gebruiken). We doen alleen merge (lees-only),
+      // dus dit is veilig en legaal.
+      const dsPdf=await PDFDocument.load(bytes,{ignoreEncryption:true});
       const pages=await mergedPdf.copyPages(dsPdf,dsPdf.getPageIndices());
       // Scheidingspagina
       const sepPage=mergedPdf.addPage([595,842]);
@@ -2346,6 +2382,14 @@ export default function App(){
   },[tlContact,newDealTitle,newDealPipelineId,newDealValue,dealOptions]);
 
   const[pdfLoading,setPdfLoading]=useState(false);
+  // Pre-captured map snapshot — gebruiker maakt foto van Leaflet-kaart met panelen,
+  // dat slaan we op als data-URL en gebruiken bij PDF i.p.v. live capture.
+  // Voorkomt timing-issues met SVG-panelen die pas net gerenderd zijn.
+  const[mapSnapshot,setMapSnapshot]=useState(null);
+  const[snapshotLoading,setSnapshotLoading]=useState(false);
+  // Bewerkbare versie van het AI-advies. Wordt ingevuld als AI klaar is,
+  // gebruiker kan editen, en de definitieve tekst belandt in PDF.
+  const[editableAiText,setEditableAiText]=useState("");
 
   // Manuele prijzen uit offerte (overschrijven automatische berekening als ingevuld).
   // Leeg string = automatisch; een getal (positief) = manueel.
@@ -2523,6 +2567,8 @@ export default function App(){
     setAnnualConsumption(3500);
     setResults(null);
     setAiText("");
+    setEditableAiText("");
+    setMapSnapshot(null);
     setPanelsDrawn(false);
     // Reset TL state
     setTlContact(null);
@@ -2836,7 +2882,7 @@ export default function App(){
       // panel drawing now in useEffect above
       setPanelsDrawn(true);
     }
-    setActiveTab("resultaten");setAiLoading(true);setAiText("");
+    setActiveTab("resultaten");setAiLoading(true);setAiText("");setEditableAiText("");
     try{
       const dhmStr=dhmStatus==="ok"&&detectedFaces?`\nDHM LiDAR: ${detectedFaces.map(f=>`${f.orientation} ${f.slope}° (${f.pct}%)`).join(", ")}`:"\nHandmatige invoer.";
       const invStr=selInv?`\nOmvormer: ${selInv.brand} ${selInv.model} (${selInv.kw}kW)`:"Geen omvormer.";
@@ -2875,55 +2921,80 @@ GEEF EEN ADVIES VAN MAX 200 WOORDEN MET:
 5. Aandachtspunten zoals BTW-tarief (woningouder 10j), keuring conform AREI, conformiteitsverklaring Synergrid C10/11
 
 Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschafte regelingen (geen salderen, geen REG-premie, geen prosumententarief).`}]})});
-      const d=await resp.json();setAiText(d.content?.find(b=>b.type==="text")?.text||"Analyse niet beschikbaar.");
-    }catch(e){setAiText("AI-analyse tijdelijk niet beschikbaar. "+(e.message||""));}
+      const d=await resp.json();
+      const text=d.content?.find(b=>b.type==="text")?.text||"Analyse niet beschikbaar.";
+      setAiText(text);setEditableAiText(text);
+    }catch(e){const msg="AI-analyse tijdelijk niet beschikbaar. "+(e.message||"");setAiText(msg);setEditableAiText(msg);}
     setAiLoading(false);
   };
+
+  // Pre-capture de Leaflet kaart als data-URL voor het rapport.
+  // Voorkomt timing-issues met SVG-paneel-overlay die soms niet
+  // verschijnt op een live capture vanuit een andere tab.
+  const handleSnapshot=useCallback(async()=>{
+    if(!leafRef.current||!window.html2canvas){
+      alert("Kaart nog niet geladen. Probeer opnieuw.");return;
+    }
+    if(!panelsDrawn){
+      alert("Klik eerst op 'Toon X panelen op dak' zodat de panelen zichtbaar zijn.");
+      return;
+    }
+    setSnapshotLoading(true);
+    try{
+      const mapEl=document.getElementById("leaflet-map");
+      // Forceer Leaflet om alle lagen te herrenderen
+      leafRef.current.invalidateSize(true);
+      await new Promise(r=>setTimeout(r,300));
+      const canvas=await window.html2canvas(mapEl,{
+        useCORS:true,allowTaint:true,scale:1.5,
+        logging:false,backgroundColor:"#f1f5f9",
+        foreignObjectRendering:false
+      });
+      const dataUrl=canvas.toDataURL("image/jpeg",0.85);
+      setMapSnapshot({dataUrl,width:canvas.width,height:canvas.height,timestamp:Date.now()});
+    }catch(e){
+      alert("Foto maken mislukt: "+e.message);
+    }
+    setSnapshotLoading(false);
+  },[panelsDrawn]);
 
   const handlePDF=async()=>{
     if(!results) return;
     setPdfLoading(true);
-    // Bewaar huidige tab en schakel tijdelijk naar Configuratie zodat de
-    // Leaflet kaart + panelen-laag volledig gerenderd zijn op het moment
-    // dat html2canvas screenshot maakt. Anders krijgen we een lege of
-    // pannelloze kaart in het rapport.
-    const previousTab=activeTab;
-    setActiveTab("configuratie");
-    // 1. Wacht 2 frames zodat React zeker heeft gerenderd (display:none → flex)
-    await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
-    await new Promise(r=>setTimeout(r,300));
-    // 2. Leaflet moet zijn dimensies opnieuw meten — anders zijn tiles leeg
-    if(leafRef.current?.invalidateSize) leafRef.current.invalidateSize(true);
-    // 3. Forceer volledige re-render door minieme pan + setView
-    //    Dit triggert een nieuwe SVG-layer-render incl. paneel-polygons
-    if(leafRef.current){
-      const c=leafRef.current.getCenter();
-      const z=leafRef.current.getZoom();
-      leafRef.current.panBy([1,0],{animate:false});
-      leafRef.current.panBy([-1,0],{animate:false});
-      leafRef.current.setView(c,z,{animate:false});
-    }
-    // 4. Wacht op tile-load (Leaflet event) of timeout na 2s
-    await new Promise(resolve=>{
-      let done=false;
-      const finish=()=>{if(!done){done=true;resolve();}};
+    // Als gebruiker via "📸 Foto opslaan voor rapport" een snapshot heeft gemaakt,
+    // gebruiken we die direct — geen tab-switch nodig en geen timing-issues.
+    // Anders fallback: tab switchen + live capturen.
+    let previousTab=null;
+    if(!mapSnapshot){
+      previousTab=activeTab;
+      setActiveTab("configuratie");
+      await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+      await new Promise(r=>setTimeout(r,300));
+      if(leafRef.current?.invalidateSize) leafRef.current.invalidateSize(true);
       if(leafRef.current){
-        leafRef.current.once("load",finish);
-        // Trigger ook een idle-event als geen tiles meer laden
-        setTimeout(finish,1500);
-      }else{
-        setTimeout(finish,800);
+        const c=leafRef.current.getCenter();
+        const z=leafRef.current.getZoom();
+        leafRef.current.panBy([1,0],{animate:false});
+        leafRef.current.panBy([-1,0],{animate:false});
+        leafRef.current.setView(c,z,{animate:false});
       }
-    });
-    // 5. Extra wachttijd voor SVG-render (browser-specifiek)
-    await new Promise(r=>setTimeout(r,400));
+      await new Promise(resolve=>{
+        let done=false;
+        const finish=()=>{if(!done){done=true;resolve();}};
+        if(leafRef.current){
+          leafRef.current.once("load",finish);
+          setTimeout(finish,1500);
+        }else{setTimeout(finish,800);}
+      });
+      await new Promise(r=>setTimeout(r,400));
+    }
     try{
-      await generatePDF(results,customer,displayName,slope,orientation);
+      // Geef snapshot + bewerkbaar AI-advies mee aan generatePDF
+      await generatePDF(results,customer,displayName,slope,orientation,mapSnapshot,editableAiText);
     }
     catch(e){alert(`PDF fout: ${e.message}`);}
     setPdfLoading(false);
-    // Terug naar de tab waar de gebruiker stond
-    setActiveTab(previousTab);
+    if(previousTab) setActiveTab(previousTab);
   };
 
   const filteredInv=invFilter==="alle"?inverters:inverters.filter(i=>i.fase===invFilter);
@@ -3181,6 +3252,17 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
         }} disabled={!coords||!buildingCoords||isLoading}>
           🏠 Toon {panelCount} panelen op dak
         </button>
+        {/* Foto opslaan voor PDF rapport — robuuste manier om panelen
+            in het rapport te krijgen, zonder timing-issues bij capture. */}
+        {panelsDrawn&&<button className="btn green full" style={{marginTop:6}}
+          onClick={handleSnapshot} disabled={snapshotLoading||!coords}>
+          {snapshotLoading?"📸 Foto maken...":mapSnapshot?"✅ Foto opgeslagen · Opnieuw":"📸 Foto opslaan voor rapport"}
+        </button>}
+        {mapSnapshot&&<div style={{fontSize:9,color:"var(--green)",marginTop:3,padding:"4px 8px",background:"var(--bg2)",borderRadius:4,border:"1px solid var(--border)"}}>
+          ✓ Foto klaar voor PDF · {new Date(mapSnapshot.timestamp).toLocaleTimeString("nl-BE",{hour:"2-digit",minute:"2-digit"})}
+          {" "}
+          <span onClick={()=>setMapSnapshot(null)} style={{cursor:"pointer",color:"var(--muted)",marginLeft:4}}>✕ wissen</span>
+        </div>}
         {/* Rotatie-offset slider */}
         {<div style={{marginBottom:6}}>
           <div style={{display:"flex",justifyContent:"space-between",fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"var(--muted)",marginBottom:3}}>
@@ -3588,9 +3670,36 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
               </div>
             </div>
 
-            {/* AI Advies */}
-            <div><div className="sl" style={{marginBottom:7}}>AI Expert Advies</div>
-              {aiLoading?<div className="ai-box loading"><div className="spinner"/>Claude analyseert uw installatie...</div>:<div className="ai-box">{aiText}</div>}
+            {/* AI Advies — bewerkbaar voor PDF */}
+            <div>
+              <div className="sl" style={{marginBottom:7}}>
+                AI Expert Advies
+                {!aiLoading&&aiText&&<span style={{fontSize:10,fontWeight:400,color:"var(--muted)",marginLeft:8}}>· Bewerkbaar voordat het in het rapport komt</span>}
+              </div>
+              {aiLoading?(
+                <div className="ai-box loading"><div className="spinner"/>Claude analyseert uw installatie...</div>
+              ):(
+                <>
+                  <textarea
+                    value={editableAiText}
+                    onChange={e=>setEditableAiText(e.target.value)}
+                    placeholder="Hier verschijnt het AI advies. Je kan dit bewerken voordat het in het PDF-rapport komt."
+                    style={{width:"100%",minHeight:240,padding:12,
+                      background:"var(--bg2)",border:"1px solid var(--border)",
+                      borderRadius:8,color:"var(--text)",fontSize:13,lineHeight:1.6,
+                      fontFamily:"inherit",resize:"vertical",boxShadow:"var(--shadow)"}}
+                  />
+                  <div style={{display:"flex",gap:8,marginTop:6,fontSize:10,color:"var(--muted)"}}>
+                    <span>{editableAiText.length} tekens</span>
+                    {aiText&&aiText!==editableAiText&&(
+                      <button className="btn sec sm" style={{fontSize:10}}
+                        onClick={()=>setEditableAiText(aiText)}>
+                        ↩ Origineel AI advies herstellen
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
 
             {/* PDF sectie */}
