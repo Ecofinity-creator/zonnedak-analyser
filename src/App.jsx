@@ -18,10 +18,6 @@ import { computeStringDesign } from "./stringDesign.js";
 import * as TL from "./teamleaderClient.js";
 import { ECOFINITY_LOGO_BASE64, ECOFINITY_LOGO_WIDTH, ECOFINITY_LOGO_HEIGHT } from "./ecofinityLogo.js";
 
-// Re-export under local names so the rest of App.jsx (which still uses the
-// original call syntax) continues to work without modifications.
-// packPanels wrapper: de module accepteert een opts-object, App.jsx roept
-// nog met positional args aan. We converteren hier.
 const wgs84ToLambert72 = _wgs84ToLambert72;
 const lambert72ToWgs84 = _lambert72ToWgs84;
 const packPanels = (facePoly, pW, pH, maxN, rotOffsetDeg, orient) =>
@@ -35,57 +31,15 @@ const packPanels = (facePoly, pW, pH, maxN, rotOffsetDeg, orient) =>
     logger: msg => console.info(`[ZonneDak] ${msg}`),
   });
 
-// URL van de Vercel serverless function die de Anthropic API proxy draait.
-// Anthropic accepteert geen browser-calls (CORS + API-sleutel moet server-side).
-// De proxy voegt CORS-headers toe en injecteert de sleutel uit zijn env.
-// Deploy-instructies: zie anthropic-proxy.vercel.js
-// BELANGRIJK: vervang deze URL door jouw echte Vercel URL na deploy.
-// Formaat: https://<jouw-project>.vercel.app/api/anthropic-proxy
 const AI_PROXY_URL = "https://zonnedak-ai-proxy-west.vercel.app/api/anthropic-proxy";
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  ZonneDak Analyzer — App.jsx  (GECORRIGEERDE VERSIE)
-//  Meetkundige fixes t.o.v. origineel:
-//
-//  FIX BUG-01 · polyAreaM2 → polyAreaLambert72
-//    Shoelace-formule nu in EPSG:31370 Lambert72 (meter), niet in WGS84 graden.
-//    wgs84ToLambert72() was al aanwezig maar werd niet gebruikt voor meting.
-//    Impact: oppervlaktes waren 3–8% fout. Nu metrisch correct.
-//
-//  FIX BUG-02 · computeRoofFaces: confidence score per vlak
-//    Elke gedetecteerde richting krijgt nu een confidence score (0–1) op basis
-//    van hellingsconsistentie (slopeStd) en aandeel dakpixels.
-//
-//  FIX BUG-03 · 3D schuine dakoppervlakte (compute3dArea)
-//    Formule: A_3d = A_2d / cos(slope°). Was volledig afwezig.
-//    Voorbeeld: 100m² footprint + 35° helling → 122.1m² schuine opp.
-//    Zowel 2D als 3D oppervlakte worden nu getoond in sidebar, resultaten en PDF.
-//
-//  FIX BUG-04 · computeRoofFaces: clip op gebouwcontour
-//    Rasterpixels worden nu gefilterd op de gebouwcontour (omgezet naar
-//    rastercoördinaten). Buurgebouwen en vegetatie worden uitgesloten.
-//
-//  FIX BUG-05 · packPanels: paneelinpassing in Lambert72 meter
-//    Panelen worden nu geplaatst in metrische coördinaten, niet in WGS84 graden.
-//
-//  FIX BUG-06 · autoPanels: gebruik 3D schuine oppervlakte + vlak-aandeel
-//    Paneeltelling houdt nu rekening met hellingshoek en percentage van het
-//    geselecteerde dakvlak. Factor 0.85 voor randen/obstakels.
-//
-//  CRS regel: ALLE metingen in EPSG:31370 (Lambert72 Belgian).
-//             WGS84 enkel voor display op Leaflet kaart.
-// ═══════════════════════════════════════════════════════════════════════════════
 
 // ─── Endpoints ──────────────────────────────────────────────────────────────
 const NOMINATIM = "https://nominatim.openstreetmap.org/search";
 const GRB_WFS   = "https://geo.api.vlaanderen.be/GRB/wfs";
 const DHM_WMS   = "https://geoservices.informatievlaanderen.be/raadpleegdiensten/DHMVII/wms";
-// Digitaal Vlaanderen orthofoto — dekt heel Vlaanderen (beter dan Esri voor BE)
 const ORTHO_WMS = "https://geoservices.informatievlaanderen.be/raadpleegdiensten/OMWRGBMRVL/wms";
 const ORTHO_LYR = "OMWRGBMRVL";
-// WCS wordt via proxy gehaald omdat geo.api.vlaanderen.be geen CORS-headers stuurt
 const WCS_BASE = "https://geo.api.vlaanderen.be/DHMV/wcs";
-// Onze eigen Vercel proxy is betrouwbaarder dan allorigins.win
 const WCS_PROXY_VERCEL = "https://zonnedak-ai-proxy-west.vercel.app/api/wcs-proxy?url=";
 const WCS_PROXY_ALLORIGINS = "https://api.allorigins.win/raw?url=";
 
@@ -100,7 +54,6 @@ const SOLAR_TABLE = {
   NW:{15:820, 30:790, 45:740, 60:670, 90:490},
   N: {15:760, 30:700, 45:630, 60:555, 90:370},
 };
-// Maandelijkse verdeling zonproductie Vlaanderen (totaal ≈ 1)
 const MONTHLY_FACTOR = [0.038,0.056,0.091,0.113,0.128,0.132,0.125,0.110,0.085,0.064,0.037,0.021];
 const MONTHS = ["Jan","Feb","Mrt","Apr","Mei","Jun","Jul","Aug","Sep","Okt","Nov","Dec"];
 
@@ -122,9 +75,6 @@ function getSolarIrr(o,s){
   return t[[15,30,45,60,90].reduce((a,b)=>Math.abs(b-s)<Math.abs(a-s)?b:a)];
 }
 
-// ─── Lambert72 transforms verplaatst naar panelPlacement.js module ───────────
-
-// ─── Inline TIFF parser (Float32) ────────────────────────────────────────────
 function parseTIFF(buf){
   if(buf.byteLength<8) throw new Error("Buffer te klein");
   const dv=new DataView(buf),bo=dv.getUint8(0)===0x49;
@@ -159,8 +109,6 @@ function parseTIFF(buf){
 async function fetchWCS(xmin,ymin,xmax,ymax,mw,mh,cov){
   const p=new URLSearchParams({SERVICE:"WCS",VERSION:"1.0.0",REQUEST:"GetCoverage",COVERAGE:cov,CRS:"EPSG:31370",RESPONSE_CRS:"EPSG:31370",BBOX:`${Math.round(xmin)},${Math.round(ymin)},${Math.round(xmax)},${Math.round(ymax)}`,WIDTH:mw,HEIGHT:mh,FORMAT:"GeoTIFF"});
   const directUrl=`${WCS_BASE}?${p}`;
-  // Probeer in volgorde: direct (CORS faalt vaak), eigen Vercel proxy (betrouwbaar),
-  // allorigins.win als laatste redmiddel (vaak down maar gratis fallback)
   const vercelUrl=`${WCS_PROXY_VERCEL}${encodeURIComponent(directUrl)}`;
   const allOriginsUrl=`${WCS_PROXY_ALLORIGINS}${encodeURIComponent(directUrl)}`;
   let lastErr="";
@@ -176,55 +124,25 @@ async function fetchWCS(xmin,ymin,xmax,ymax,mw,mh,cov){
   throw new Error(lastErr||"WCS niet bereikbaar");
 }
 
-// ─── Hulpfuncties voor dakanalyse ────────────────────────────────────────────
-
-// 3×3 box-filter op DSM (vermindert ruis voor aspectbepaling)
-// PCA op gebouwpolygoon → kortste as = breedte dwars op de nok
 function buildingWidthFromPolygon(lamPts){
-  if(lamPts.length<3) return 10; // fallback
+  if(lamPts.length<3) return 10;
   const cx=lamPts.reduce((s,p)=>s+p[0],0)/lamPts.length;
   const cy=lamPts.reduce((s,p)=>s+p[1],0)/lamPts.length;
   let cxx=0,cxy=0,cyy=0;
   lamPts.forEach(([x,y])=>{const dx=x-cx,dy=y-cy;cxx+=dx*dx;cxy+=dx*dy;cyy+=dy*dy;});
   cxx/=lamPts.length;cxy/=lamPts.length;cyy/=lamPts.length;
-  // Principale assen via eigenvectoren 2×2 matrix
   const ang=Math.atan2(2*cxy,cxx-cyy)/2;
-  // Projecteer alle punten op beide assen en neem de breedte van de kortste as
   const proj1=lamPts.map(([x,y])=>(x-cx)*Math.cos(ang)+(y-cy)*Math.sin(ang));
   const proj2=lamPts.map(([x,y])=>-(x-cx)*Math.sin(ang)+(y-cy)*Math.cos(ang));
   const w1=Math.max(...proj1)-Math.min(...proj1);
   const w2=Math.max(...proj2)-Math.min(...proj2);
-  return Math.min(w1,w2); // kortste dimensie = breedte dwars op de nok
+  return Math.min(w1,w2);
 }
 
-// ─── Circulaire k-means met exhaustieve initialisatie ────────────────────────
-// Lokale minima zijn het hoofdprobleem: als centroids verkeerd starten,
-// splitst k-means één helling in twee clusters.
-// Oplossing: probeer ALLE 8 startposities (elke 45°) en kies de beste.
-// 8 × 30 iteraties = triviaal goedkoop voor <500 punten.
-// ─── Circulaire hulpfuncties (niet meer gebruikt voor aspect-clustering) ─────
-// ─── computeRoofFaces: GRB-footprint voor aspect, LiDAR voor slope ─────────────
-// Kernprincipe: bij zachte hellingen (≤30°) is de DSM-gradiënt te zwak om
-// betrouwbaar aspect te bepalen (SNR < 2 bij 15°, DHM-ruis ±15cm).
-// Oplossing: gebruik de GEBOUWCONTOUR (GRB) voor aspect, LiDAR enkel voor slope.
-//
-// Algoritme:
-//   1. PCA van GRB-polygoon → langste as = nokrichting
-//   2. De twee dakhellingen liggen HAAKS op de nokrichting
-//   3. Elk interior-dakpixel wordt toegewezen aan links/rechts van de nokas
-//   4. Slope via hoogteprofiel (p10-p90 relH / halve breedte) — stabiel bij elke helling
-//
-// Dit werkt voor elke helling ≥ 3° en elke gebouworiëntatie.
 function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts,buildingWidthM,ridgeAngleDeg){
-  // ridgeAngleDeg = hoek van de nok (langste as) in graden t.o.v. Noord (0–180°)
-  // De twee dakhellingen zijn haaks: ridgeAngleDeg+90 en ridgeAngleDeg-90
-
-  // Rotatiematrix voor projectie haaks op de nok
   const ridgeRad=ridgeAngleDeg*Math.PI/180;
   const cosR=Math.cos(ridgeRad), sinR=Math.sin(ridgeRad);
-
-  // Stap 1: verzamel alle dakpixels + centroïde berekening
-  const dakPts=[]; // {crossComp: meters van nok, relH: hoogte boven DTM}
+  const dakPts=[];
   let sumCx=0,sumCy=0,cnt=0;
   for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
     if(bldRasterPts&&bldRasterPts.length>=3&&!pointInPoly([x,y],bldRasterPts)) continue;
@@ -239,33 +157,25 @@ function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts,buildingWidthM,rid
     if(bldRasterPts&&bldRasterPts.length>=3&&!pointInPoly([x,y],bldRasterPts)) continue;
     const i=y*w+x,relH=dsmD[i]-dtmD[i];
     if(relH<1.5||relH>40||isNaN(dsmD[i])||isNaN(dtmD[i])) continue;
-    // Loodrechte afstand tot de nokas in meters
-    // crossComp = projectie op de rechts-loodrechte: (cosR, -sinR) in (Oost, Noord)
-    const dx=x-cxR, dy=cyR-y; // dy gespiegeld: +dy = Noord (GeoTIFF Y omgekeerd)
-    const crossComp=(dx*cosR-dy*sinR)*cellSize; // meter vanaf nok
+    const dx=x-cxR, dy=cyR-y;
+    const crossComp=(dx*cosR-dy*sinR)*cellSize;
     dakPts.push({crossComp,relH});
   }
   if(dakPts.length<10) return null;
 
-  // Stap 2: slope via regressie van relH op |crossComp|
-  // Zadeldak: relH = nok_hoogte - tan(slope) × |crossComp|
-  // => regresseer relH op absComp = -|crossComp|, verwacht negatieve helling = -tan(slope)
-  // Dit is onafhankelijk van gebouwbreedte en DTM-fouten onder het gebouw.
   let n=0,sX=0,sY=0,sXX=0,sXY=0;
   dakPts.forEach(({crossComp,relH})=>{
-    const absComp=Math.abs(crossComp); // afstand tot nok
+    const absComp=Math.abs(crossComp);
     n++;sX+=absComp;sY+=relH;sXX+=absComp*absComp;sXY+=absComp*relH;
   });
   const denom=n*sXX-sX*sX;
-  let slope=20; // fallback
+  let slope=20;
   let nokH=0,slopeStdVal=5;
   if(Math.abs(denom)>0.001){
-    const beta=(n*sXY-sX*sY)/denom; // d(relH)/d(absComp) — negatief voor zadeldak
-    const alpha=(sY-beta*sX)/n;     // intercept = nok hoogte
+    const beta=(n*sXY-sX*sY)/denom;
+    const alpha=(sY-beta*sX)/n;
     nokH=+alpha.toFixed(1);
-    // beta negatief: hellingshoek = atan(|beta|)
     slope=Math.max(3,Math.min(60,Math.round(Math.atan(Math.abs(beta))*180/Math.PI)));
-    // Residuals voor kwaliteitsindicatie
     const residuals=dakPts.map(p=>(p.relH-(alpha+beta*Math.abs(p.crossComp)))**2);
     const rmse=Math.sqrt(residuals.reduce((a,v)=>a+v,0)/n);
     slopeStdVal=+rmse.toFixed(2);
@@ -274,13 +184,11 @@ function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts,buildingWidthM,rid
     console.warn('[ZonneDak] Regressie: onvoldoende variatie in crossComp, gebruik fallback slope');
   }
 
-  // Stap 3: verdeel pixels links/rechts van nok
   const leftN=dakPts.filter(p=>p.crossComp<0).length;
   const rightN=dakPts.filter(p=>p.crossComp>=0).length;
   const total=leftN+rightN;
   const avgH=+(sY/n).toFixed(1);
 
-  // Aspect van elk vlak: haaks op nokrichting
   const rightAspect=((ridgeAngleDeg+90)%360+360)%360;
   const leftAspect =((ridgeAngleDeg-90)%360+360)%360;
 
@@ -307,7 +215,6 @@ function computeRoofFaces(dsmD,dtmD,w,h,cellSize,bldRasterPts,buildingWidthM,rid
   return faces.length>=1?faces.sort((a,b)=>b.n-a.n):null;
 }
 
-// ─── analyzeDHM: met diagnostiek, plat-dak-detectie en fallback ──────────────
 async function analyzeDHM(bc){
   const lats=bc.map(p=>p[0]),lngs=bc.map(p=>p[1]);
   const swL=wgs84ToLambert72(Math.min(...lats)-.0001,Math.min(...lngs)-.0001);
@@ -324,11 +231,9 @@ async function analyzeDHM(bc){
     fetchWCS(xmin,ymin,xmax,ymax,mw,mh,"DHMVII_DTM_1m")
   ]);
 
-  // Gebruik echte rasterafmetingen voor correcte cellSize
   const cell=bboxW/dsmR.w;
   console.info(`[ZonneDak] Raster gekregen ${dsmR.w}×${dsmR.h}px, cel=${cell.toFixed(3)}m/px`);
 
-  // Diagnostiek: hoogtebereik in de bbox
   const validPairs=[];
   for(let i=0;i<dsmR.data.length;i++){
     if(!isNaN(dsmR.data[i])&&!isNaN(dtmR.data[i])) validPairs.push(dsmR.data[i]-dtmR.data[i]);
@@ -338,7 +243,6 @@ async function analyzeDHM(bc){
   const aboveRoof=validPairs.filter(v=>v>=1.5).length;
   console.info(`[ZonneDak] maxRelH=${maxRelH.toFixed(2)}m avgRelH=${avgRelH.toFixed(2)}m boven1.5m=${aboveRoof}`);
 
-  // Plat dak of WCS-probleem?
   if(aboveRoof===0){
     if(maxRelH>0.3){
       return[{orientation:"Z",slope:3,avgH:+avgRelH.toFixed(1),pct:100,
@@ -350,29 +254,21 @@ async function analyzeDHM(bc){
     throw new Error(`DSM≈DTM: max hoogteverschil ${maxRelH.toFixed(2)}m. Stel helling manueel in.`);
   }
 
-  // FIX Y-FLIP: GeoTIFF oorsprong is NW-hoek (rij 0 = ymax).
-  // Correcte conversie: row = (ymax - ly) / cell  (NIET ly - ymin)
   const bldRasterPts=bc.map(([lat,lng])=>{
     const[lx,ly]=wgs84ToLambert72(lat,lng);
-    return[(lx-xmin)/cell,(ymax-ly)/cell]; // ← Y-flip gecorrigeerd
+    return[(lx-xmin)/cell,(ymax-ly)/cell];
   });
 
-  // GRB-polygoon → gebouwbreedte + nokrichting via PCA
   const lamPts=bc.map(([lat,lng])=>wgs84ToLambert72(lat,lng));
   const buildingWidthM=buildingWidthFromPolygon(lamPts);
 
-  // Nokrichting = langste as van de gebouwcontour (PCA)
-  // In Lambert72: X = Oost, Y = Noord. Hoek t.o.v. Noord (geografisch azimut).
   const cx2=lamPts.reduce((s,p)=>s+p[0],0)/lamPts.length;
   const cy2=lamPts.reduce((s,p)=>s+p[1],0)/lamPts.length;
   let cxx=0,cxy=0,cyy=0;
   lamPts.forEach(([x,y])=>{const dx=x-cx2,dy=y-cy2;cxx+=dx*dx;cxy+=dx*dy;cyy+=dy*dy;});
   cxx/=lamPts.length;cxy/=lamPts.length;cyy/=lamPts.length;
-  // Eigenvector van grootste eigenwaarde = langste as (nokrichting)
-  // Hoek van deze as t.o.v. de X-as (Oost): atan2(eigvec_y, eigvec_x)
-  const pcaAng=Math.atan2(2*cxy,cxx-cyy)/2; // hoek t.o.v. Oost in radialen
-  // Geografisch azimut (t.o.v. Noord, met de klok mee): 90° - hoek_tov_Oost
-  const ridgeAngleDeg=((90-pcaAng*180/Math.PI)+360)%180; // 0–180° (nok is bidirectioneel)
+  const pcaAng=Math.atan2(2*cxy,cxx-cyy)/2;
+  const ridgeAngleDeg=((90-pcaAng*180/Math.PI)+360)%180;
   console.info(`[ZonneDak] PCA: gebouwbreedte=${buildingWidthM.toFixed(1)}m nokrichting=${ridgeAngleDeg.toFixed(1)}°`);
 
   const faces=computeRoofFaces(dsmR.data,dtmR.data,dsmR.w,dsmR.h,cell,bldRasterPts,buildingWidthM,ridgeAngleDeg);
@@ -380,13 +276,11 @@ async function analyzeDHM(bc){
   if(!faces||faces.length===0){
     const flatFace={orientation:"Z",slope:3,avgH:+avgRelH.toFixed(1),pct:100,n:aboveRoof,
             slopeStd:1,confidence:0.6,status:"auto",isFlatRoof:true,maxRelH:+maxRelH.toFixed(2)};
-    return[flatFace]; // polygon wordt later toegevoegd via buildingCoords
+    return[flatFace];
   }
-  // Sla nokrichting op in elke face zodat polygon-generatie hem later kan gebruiken
   return faces.map(f=>({...f,ridgeAngleDeg}));
 }
 
-// ─── Polygoon helpers ────────────────────────────────────────────────────────
 function pointInPoly(pt,poly){
   const[x,y]=pt;let inside=false;
   for(let i=0,j=poly.length-1;i<poly.length;j=i++){
@@ -405,49 +299,28 @@ function clipPolyByLat(poly,keepBelow,mid){
   }
   return out.length>=3?out:null;
 }
-// ─── FIX BUG-01: Correcte oppervlaktemeting in EPSG:31370 (Lambert72) ─────────
-// Originele polyAreaM2 gebruikte Shoelace op WGS84 graden met één schaalfactor
-// voor het centrum van het gebouw — dit geeft 3–8% fout.
-// Correcte methode: transformeer elk hoekpunt naar Lambert72 (metrisch),
-// voer dan Shoelace uit in meters. wgs84ToLambert72 staat al in dit bestand.
+
 function polyAreaLambert72(lc){
-  // lc = array van [lat, lng] (Leaflet formaat, WGS84)
-  // Stap 1: elk punt naar Lambert72 metrische coördinaten
   const pts=lc.map(([lat,lng])=>wgs84ToLambert72(lat,lng));
-  // Stap 2: Shoelace in meter (Lambert72 is een geprojecteerd metrisch CRS)
   const n=pts.length;let area=0;
   for(let i=0,j=n-1;i<n;j=i++){
     const[xi,yi]=pts[i],[xj,yj]=pts[j];
     area+=xi*yj-xj*yi;
   }
-  return Math.abs(area/2); // Resultaat in m²
+  return Math.abs(area/2);
 }
-// Behoud polyAreaM2 als alias voor compatibiliteit — stuurt door naar correcte versie
 function polyAreaM2(lc){return polyAreaLambert72(lc);}
 
-// ─── FIX BUG-03: 3D schuine dakoppervlakte ────────────────────────────────────
-// Was volledig afwezig. Formule: A_3d = A_2d / cos(slope°)
-// Voorbeeld: 100m² footprint, 35° helling → 100/cos(35°) = 122.1m²
 function compute3dArea(area2d,slopeDeg){
   if(!slopeDeg||slopeDeg<=0) return area2d;
   return area2d/Math.cos(slopeDeg*Math.PI/180);
 }
-// Hellingscorrectietabel voor UI display
 const SLOPE_FACTOR={0:1.000,10:1.015,15:1.035,20:1.064,25:1.103,30:1.155,35:1.221,40:1.305,45:1.414,50:1.556,55:1.743,60:2.000};
 function getSlopeFactor(deg){
   const k=Object.keys(SLOPE_FACTOR).map(Number).reduce((a,b)=>Math.abs(b-deg)<Math.abs(a-deg)?b:a);
   return SLOPE_FACTOR[k];
 }
-// ─── Paneelinpassing: orient = "portrait" | "landscape" ─────────────────────
-// Rotatie: PCA op het face-polygoon zelf — onafhankelijk van ridgeAngleDeg
-// De langste as van het polygoon = nokrichting (robuust na vertex-aanpassingen)
-// Portrait:  pH (lang) langs de nok, pW (kort) loodrecht
-// Landscape: pW (lang) langs de nok, pH (kort) loodrecht
 
-// ─── Convex hull (Jarvis march) voor panel-plaatsing ─────────────────────────
-// Geeft de convex omhullende van een puntenwolk in [x,y] formaat terug.
-
-// ─── Maak synthetisch face-polygoon op basis van oriëntatie + nokrichting ─────
 function makeFacePoly(buildingCoords, orientation, ridgeAngleDeg){
   if(!buildingCoords||buildingCoords.length<3) return buildingCoords;
   const asp=(ASP_MAP[orientation]||0)*Math.PI/180;
@@ -469,7 +342,6 @@ function makeFacePoly(buildingCoords, orientation, ridgeAngleDeg){
 }
 function convexHullPts(pts){
   if(pts.length<3) return pts;
-  // Startpunt: meest links (kleinste x)
   let start=0;
   for(let i=1;i<pts.length;i++) if(pts[i][0]<pts[start][0]) start=i;
   const hull=[];let cur=start;
@@ -485,12 +357,9 @@ function convexHullPts(pts){
   }while(cur!==start&&hull.length<=pts.length);
   return hull;
 }
-// ─── packPanels verplaatst naar panelPlacement.js module ─────────────────────
-// Zie src/panelPlacement.js voor de implementatie en src/panelPlacement.test.js
-// voor de regressie-tests die voorkomen dat BUG-09, BUG-10, BUG-11 terugkomen.
+
 function geoToLeaflet(ring){return ring.map(([lo,la])=>[la,lo]);}
 
-// ─── GRB ─────────────────────────────────────────────────────────────────────
 async function fetchGRBBuilding(lat,lng){
   const d=0.0015,p=new URLSearchParams({SERVICE:"WFS",VERSION:"2.0.0",REQUEST:"GetFeature",TYPENAMES:"GRB:GBG",OUTPUTFORMAT:"application/json",SRSNAME:"EPSG:4326",BBOX:`${lng-d},${lat-d},${lng+d},${lat+d},EPSG:4326`,COUNT:"50"});
   const r=await fetch(`${GRB_WFS}?${p}`);if(!r.ok) throw new Error(`GRB HTTP ${r.status}`);return r.json();
@@ -501,7 +370,6 @@ function findBuilding(geojson,lat,lng){
   for(const f of geojson.features){
     if(!f.geometry?.coordinates) continue;
     const rings=f.geometry.type==="Polygon"?[f.geometry.coordinates[0]]:f.geometry.coordinates.map(p=>p[0]);
-    // FIX BUG-01: gebruik polyAreaLambert72 voor correcte metrische selectie
     for(const ring of rings) if(pointInPoly([lng,lat],ring)){const lc=geoToLeaflet(ring);cands.push({f,area:polyAreaLambert72(lc),lc});}
   }
   if(cands.length>0){cands.sort((a,b)=>a.area-b.area);return cands[0].f;}
@@ -515,7 +383,6 @@ function findBuilding(geojson,lat,lng){
   return best;
 }
 
-// ─── Teamleader ──────────────────────────────────────────────────────────────
 async function searchTeamleaderContact(name,token){
   const r=await fetch("https://api.teamleader.eu/contacts.list",{
     method:"POST",
@@ -526,7 +393,6 @@ async function searchTeamleaderContact(name,token){
   const d=await r.json();return d.data||[];
 }
 
-// ─── PDF bibliotheken laden ───────────────────────────────────────────────────
 function loadScript(src){
   return new Promise((res,rej)=>{
     if(document.querySelector(`script[src="${src}"]`)){setTimeout(res,200);return;}
@@ -544,42 +410,26 @@ async function fetchPdfBytes(path){
   catch(e){console.warn("Datasheet niet geladen:",path,e.message);return null;}
 }
 
-// ─── Default data (specs rechtstreeks uit datasheets) ──────────────────────────
-// Datasheet pad relatief aan de app base URL (in /public/datasheets/)
 const DS_BASE = import.meta.env.BASE_URL + "datasheets/";
 
-// ─── PANELEN met volledige elektrische specs (voor string-design) ───────────
-// Specs uit datasheets bij STC (1000W/m², 25°C, AM1.5).
-// tempCoeffVoc is %/°C — gebruikt om Voc bij koude te berekenen voor
-// max-string-lengte validatie.
-// price is op 0 gezet — gebruiker geeft de werkelijke prijs in via offerte-velden
-// op de Resultaten tab. De catalogus gaat enkel over technische specs.
 const DEFAULT_PANELS=[
   {id:1,brand:"Qcells",      model:"Q.TRON BLK S-G3R.12+ 440W",   watt:440,area:1.998,eff:22.0,price:0,warranty:25,
    voc:38.74,vmp:32.66,isc:14.42,imp:13.47,tempCoeffVoc:-0.24,tempCoeffPmax:-0.30,
    dims:"1762×1134×30mm",weight:"20.9 kg",datasheet:"qcells-440w.pdf"},
-
   {id:2,brand:"Trina Solar", model:"Vertex S+ TSM-NEG18RC.27 500W",watt:500,area:2.224,eff:22.3,price:0,warranty:30,
    voc:45.4,vmp:38.0,isc:13.92,imp:13.16,tempCoeffVoc:-0.25,tempCoeffPmax:-0.30,
    dims:"1961×1134×30mm",weight:"23.6 kg",datasheet:"trina-500w.pdf"},
-
   {id:3,brand:"Jinko Solar", model:"Tiger Neo N-Type 420W",   watt:420,area:1.722,eff:21.8,price:0,warranty:25,
    voc:37.39,vmp:31.41,isc:14.02,imp:13.38,tempCoeffVoc:-0.25,tempCoeffPmax:-0.29,
    dims:"1722×1134×30mm",weight:"21.3 kg",datasheet:null},
-
   {id:4,brand:"LONGi Solar", model:"Hi-MO 6 Explorer 415W",   watt:415,area:1.722,eff:21.3,price:0,warranty:25,
    voc:37.55,vmp:31.42,isc:13.95,imp:13.21,tempCoeffVoc:-0.27,tempCoeffPmax:-0.34,
    dims:"1722×1134×30mm",weight:"21.3 kg",datasheet:null},
-
   {id:5,brand:"Canadian Solar",model:"HiHero 430W",           watt:430,area:1.879,eff:22.8,price:0,warranty:25,
    voc:39.4,vmp:33.0,isc:13.92,imp:13.04,tempCoeffVoc:-0.26,tempCoeffPmax:-0.29,
    dims:"1756×1096×35mm",weight:"21.3 kg",datasheet:null},
 ];
 
-// ─── OMVORMERS met volledige elektrische specs (voor string-design) ──────────
-// Specs uit AlphaESS SMILE-G3 datasheet 2025.
-// mpptCount, maxDcVoltage, maxInputCurrentPerMppt, mpptVoltageMin/Max,
-// maxAcPower, maxDcPower zijn de string-design parameters.
 const DEFAULT_INVERTERS=[
   {id:1,brand:"AlphaESS",model:"SMILE-G3-S3.6",fase:"1-fase",kw:3.68,mppt:2,maxPv:7360, eff:97.0,price:0,warranty:10,
    mpptCount:2,maxDcVoltage:580,maxInputCurrentPerMppt:16,mpptVoltageMin:90,mpptVoltageMax:560,
@@ -587,26 +437,22 @@ const DEFAULT_INVERTERS=[
    dims:"610×212×366mm",weight:"19.5 kg",
    notes:"3,68kW · max 7,36kWp PV · 2 MPPT · UPS backup · IP65 · C10/11 · Jabba.",
    datasheet:"alphaess-smile-g3.pdf"},
-
   {id:2,brand:"AlphaESS",model:"SMILE-G3-S5",  fase:"1-fase",kw:5.0, mppt:2,maxPv:10000,eff:97.0,price:0,warranty:10,
    mpptCount:2,maxDcVoltage:600,maxInputCurrentPerMppt:16,mpptVoltageMin:90,mpptVoltageMax:560,
    maxAcPower:5000,maxDcPower:10000,
    dims:"610×212×366mm",weight:"19.5 kg",
    notes:"5kW · max 10kWp PV · 2 MPPT · UPS backup · IP65 · C10/11 · Jabba. Populairste model.",
    datasheet:"alphaess-smile-g3.pdf"},
-
   {id:3,brand:"AlphaESS",model:"SMILE-G3-S8",  fase:"1-fase",kw:8.0, mppt:2,maxPv:16000,eff:97.5,price:0,warranty:10,
    mpptCount:2,maxDcVoltage:600,maxInputCurrentPerMppt:20,mpptVoltageMin:90,mpptVoltageMax:560,
    maxAcPower:8000,maxDcPower:16000,
    dims:"610×212×366mm",weight:"22 kg",
    notes:"8kW · max 16kWp · display · EV-laders · IP65.",datasheet:"alphaess-smile-g3.pdf"},
-
   {id:4,brand:"AlphaESS",model:"SMILE-G3-T4/6/8/10",fase:"3-fase",kw:10.0,mppt:3,maxPv:20000,eff:97.5,price:0,warranty:10,
    mpptCount:3,maxDcVoltage:1000,maxInputCurrentPerMppt:16,mpptVoltageMin:160,mpptVoltageMax:850,
    maxAcPower:10000,maxDcPower:20000,
    dims:"610×212×366mm",weight:"25 kg",
    notes:"Driefase hybride · 3 MPPT · 150% overbelasting · max 45,6 kWh.",datasheet:"alphaess-smile-g3.pdf"},
-
   {id:5,brand:"AlphaESS",model:"SMILE-G3-T15/20", fase:"3-fase",kw:20.0,mppt:3,maxPv:40000,eff:97.6,price:0,warranty:10,
    mpptCount:3,maxDcVoltage:1000,maxInputCurrentPerMppt:32,mpptVoltageMin:200,mpptVoltageMax:850,
    maxAcPower:20000,maxDcPower:40000,
@@ -624,9 +470,7 @@ const DEFAULT_BATTERIES=[
   {id:8,brand:"BYD",     model:"Battery-Box HVS 10.2",       kwh:10.2,price:0,cycles:8000, warranty:10,dod:100,notes:"Hoogspanning modulaire opbouw.",isAlpha:false},
 ];
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  STYLES — LICHT THEMA
-// ═══════════════════════════════════════════════════════════════════════════
+
 const STYLES=`
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@300;400;500&display=swap');
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -665,7 +509,6 @@ body{background:#f1f5f9;}
 .inp-2{display:grid;grid-template-columns:1fr 1fr;gap:7px;}
 .inp-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;}
 .sugg-wrap{position:relative;}
-/* FIX: sugg visible boven alles, muisdown ipv click */
 .sugg{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--bg2);border:1px solid var(--border-dark);border-radius:6px;z-index:9999;max-height:180px;overflow-y:auto;box-shadow:var(--shadow-md);}
 .sugg-item{padding:10px 12px;font-size:12px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .1s;line-height:1.4;}
 .sugg-item:hover,.sugg-item:active{background:var(--amber-light);color:var(--amber);}
@@ -751,7 +594,6 @@ body{background:#f1f5f9;}
 .face-btn .fb-main{font-family:'Syne',sans-serif;font-size:14px;font-weight:700;display:block;}
 .face-btn .fb-sub{font-size:9px;color:var(--muted);margin-top:2px;display:block;}
 .face-btn.active .fb-sub{color:var(--alpha);}
-/* Result cards */
 .rc{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;position:relative;overflow:hidden;box-shadow:var(--shadow);}
 .rc::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--amber);}
 .rc.green::before{background:var(--green);}
@@ -784,7 +626,6 @@ body{background:#f1f5f9;}
 .dhm-bar{height:3px;background:var(--bg4);border-radius:2px;overflow:hidden;margin-top:4px;}
 .dhm-bar-fill{height:100%;width:40%;background:linear-gradient(90deg,var(--alpha),var(--blue));border-radius:2px;animation:dhm-ani 1.5s ease-in-out infinite;}
 @keyframes dhm-ani{0%{margin-left:0;width:30%}50%{margin-left:40%;width:50%}100%{margin-left:100%;width:0%}}
-/* Map */
 .map-area{flex:1;position:relative;min-height:0;}
 #leaflet-map{width:100%;height:100%;}
 .map-btns{position:absolute;top:10px;right:10px;z-index:999;display:flex;flex-direction:column;gap:5px;}
@@ -798,7 +639,6 @@ body{background:#f1f5f9;}
 .leaflet-container{background:#e8e8e8!important;}
 .leaflet-control-zoom a{background:var(--bg2)!important;color:var(--text)!important;border-color:var(--border-dark)!important;box-shadow:var(--shadow)!important;}
 .leaflet-control-attribution{background:rgba(255,255,255,.8)!important;color:var(--muted)!important;font-size:7px!important;}
-/* Section layout */
 .section{padding:14px 18px;display:flex;flex-direction:column;gap:10px;overflow-y:auto;}
 .list{display:flex;flex-direction:column;gap:7px;}
 .new-form{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:13px;display:flex;flex-direction:column;gap:8px;box-shadow:var(--shadow);}
@@ -815,28 +655,18 @@ body{background:#f1f5f9;}
 .inv-card:hover{border-color:var(--alpha);box-shadow:var(--shadow-md);}
 .inv-card.selected{border-color:var(--alpha);background:var(--alpha-bg);box-shadow:var(--shadow-md);}
 .inv-card.selected::before{content:'✓';position:absolute;top:7px;right:9px;color:var(--alpha);font-size:11px;font-weight:bold;}
-/* Monthly chart */
-.chart-bar{transition:all .3s;}
-.chart-bar:hover{opacity:.8;}
-/* Maand grafiek */
 .monthly-chart{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;box-shadow:var(--shadow);}
-/* Customer section */
 .customer-section{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:13px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:8px;}
 .tl-result{padding:7px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:5px;cursor:pointer;transition:background .15s;font-size:10px;}
 .tl-result:hover{background:var(--amber-light);border-color:var(--amber);}
 .tl-result.selected{background:var(--amber-light);border-color:var(--amber);}
-
-/* Dakvlak editor */
-.roof-editor-bar{position:absolute;bottom:60px;left:50%;transform:translateX(-50%);z-index:1000;background:rgba(255,255,255,.97);border:1px solid var(--border-dark);border-radius:8px;padding:8px 12px;display:flex;align-items:center;gap:8px;box-shadow:var(--shadow-md);font-family:'IBM Plex Mono',monospace;font-size:9px;}
-.roof-editor-bar .edit-title{font-weight:600;color:var(--text);}
-.vertex-handle{cursor:grab!important;}
-.vertex-handle:active{cursor:grabbing!important;}
+.chart-bar{transition:all .3s;}
+.chart-bar:hover{opacity:.8;}
 `;
 
-// ─── Kaartfuncties ─────────────────────────────────────────────────────────
+
 const ASP_MAP={N:0,NO:45,O:90,ZO:135,Z:180,ZW:225,W:270,NW:315};
 
-// Clip polygoon naar angulaire sector (radiale slice vanuit centroid)
 function clipPolyToSector(lc,cLat,cLng,aspDeg,halfW){
   const getAng=(lat,lng)=>((Math.atan2(lng-cLng,lat-cLat)*180/Math.PI)+360)%360;
   const inSec=(lat,lng)=>{const a=getAng(lat,lng);const d=Math.abs(((a-aspDeg+180+360)%360)-180);return d<=halfW;};
@@ -847,7 +677,6 @@ function clipPolyToSector(lc,cLat,cLng,aspDeg,halfW){
     const cIn=inSec(c[0],c[1]),nIn=inSec(nx[0],nx[1]);
     if(cIn) result.push(c);
     if(cIn!==nIn){
-      // interpoleer overgang
       for(let t=0.05;t<1;t+=0.05){
         const lat=c[0]+t*(nx[0]-c[0]),lng=c[1]+t*(nx[1]-c[1]);
         if(inSec(lat,lng)!==cIn){result.push([lat,lng]);break;}
@@ -857,30 +686,17 @@ function clipPolyToSector(lc,cLat,cLng,aspDeg,halfW){
   return result.length>=2?[[cLat,cLng],...result]:null;
 }
 
-// ─── Dakpolygonen genereren uit GRB-footprint + nokrichting ────────────────────
-// Splitst de GRB-footprint langs de noklijn in 2 (zadeldak) of behoudt
-// de volledige footprint per vlak (schilddak: 4 driehoeken vanuit middelpunt).
-// Geeft per face een array van [lat,lng] hoekpunten terug.
 function generateFacePolygons(lc, faces, ridgeAngleDeg){
   if(!lc||!faces||!faces.length) return faces.map(f=>({...f,polygon:lc}));
-
   const lats=lc.map(p=>p[0]), lngs=lc.map(p=>p[1]);
   const cLat=(Math.min(...lats)+Math.max(...lats))/2;
   const cLng=(Math.min(...lngs)+Math.max(...lngs))/2;
-
-  if(faces.length===1){
-    return [{...faces[0],polygon:lc}];
-  }
-
-  // Voor 2 vlakken (zadeldak): splits langs de noklijn
-  // Noklijn = door centroïde, richting ridgeAngleDeg
-  // Gebruik crossComp-teken om punt links/rechts te bepalen
+  if(faces.length===1){ return [{...faces[0],polygon:lc}]; }
   if(faces.length===2){
     const ridgeRad=(ridgeAngleDeg||0)*Math.PI/180;
     const cosR=Math.cos(ridgeRad),sinR=Math.sin(ridgeRad);
-    // Zijde 0 = rechts (aspectDeg van face 0), zijde 1 = links
     const side=(lat,lng)=>{
-      const dx=lng-cLng, dy=lat-cLat; // geografisch: dy=Noord, dx=Oost
+      const dx=lng-cLng, dy=lat-cLat;
       return dx*cosR-dy*sinR>=0?0:1;
     };
     const polys=[[],[]];
@@ -890,11 +706,7 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
       const sA=side(a[0],a[1]), sB=side(b[0],b[1]);
       polys[sA].push(a);
       if(sA!==sB){
-        // Snijpunt met de noklijn (via lineaire interpolatie)
-        // Noklijn: door (cLat,cLng) met richting (sinR, cosR)
-        // Rand: van a naar b
         const dlat=b[0]-a[0],dlng=b[1]-a[1];
-        // crossComp(t) = (a_lng+t*dlng-cLng)*cosR - (a_lat+t*dlat-cLat)*sinR = 0
         const denom=dlng*cosR-dlat*sinR;
         if(Math.abs(denom)>1e-12){
           const t=((cLng-a[1])*cosR-(cLat-a[0])*sinR)/denom;
@@ -906,11 +718,6 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
         }
       }
     }
-    // Toewijzing via oppervlakte-rank matching:
-    // faces zijn gesorteerd op n (pixelcount): faces[0]=grootste face.
-    // Bereken polygon-oppervlaktes via Shoelace.
-    // Grootste polygon → grootste face, kleinste → kleinste.
-    // Dit werkt ook voor asymmetrische gebouwen met aanbouwen.
     const shoelaceArea=poly=>{
       if(!poly||poly.length<3) return 0;
       let s=0;
@@ -921,17 +728,12 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
       return Math.abs(s)/2;
     };
     const a0=shoelaceArea(polys[0]),a1=shoelaceArea(polys[1]);
-    // Sorteer polys op oppervlakte (groot eerst), wijs toe aan faces (groot eerst)
     const sortedPolys=a0>=a1?[polys[0],polys[1]]:[polys[1],polys[0]];
-    // faces zijn al gesorteerd op n (groot eerst), dus faces[i] → sortedPolys[i]
     return faces.map((f,fi)=>{
       const poly=sortedPolys[fi];
       return{...f,polygon:poly&&poly.length>=3?poly:lc};
     });
   }
-
-  // Voor 3-4 vlakken (schilddak): driehoeken vanuit centroïde
-  // Elk vlak krijgt de edges die het dichtst bij zijn aspect-richting liggen
   const n=lc.length;
   const edgeFace=[];
   for(let i=0;i<n;i++){
@@ -954,20 +756,15 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
   return faces.map((f,i)=>({...f,polygon:polys[i]&&polys[i].length>=3?polys[i]:lc}));
 }
 
-// ─── Dakpolygonen tekenen op de kaart (editeerbaar) ─────────────────────────
 function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVertexDrag,onVertexDragEnd){
   if(!faces||!faces.length) return null;
   const g=L.layerGroup();
-
   faces.forEach((f,fi)=>{
     if(!f.polygon||f.polygon.length<3) return;
     const q=ZONE_Q[f.orientation]||ZONE_Q.Z;
     const isGood=BEST_SOUTH[f.orientation]!==false;
     const color=isGood?q[0].c:q[1].c;
     const isSel=fi===selFaceIdx;
-
-    // Polygon — sla referentie op voor live vertex-drag update
-    // In edit mode: geselecteerde face = amber fill 50%, andere = transparant
     const facePoly=L.polygon(f.polygon,{
       color:isSel?(editMode?"#f59e0b":"#1e293b"):color,
       fillColor:editMode&&isSel?"#f59e0b":color,
@@ -978,8 +775,6 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
     .bindTooltip(`<b>${fi+1}. ${f.orientation} · ${f.slope}°</b><br>${(q[isGood?0:1]||{l:''}).l}<br>${f.pct}% van dak`,{sticky:true,direction:"top"})
     .on("click",()=>onSelect(fi))
     .addTo(g);
-
-    // Nummerlabel op centroïde van polygoon
     const pLats=f.polygon.map(p=>p[0]),pLngs=f.polygon.map(p=>p[1]);
     const pCLat=(Math.min(...pLats)+Math.max(...pLats))/2;
     const pCLng=(Math.min(...pLngs)+Math.max(...pLngs))/2;
@@ -987,11 +782,8 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
       html:`<div style="width:26px;height:26px;background:${color};border:${isSel?"3px solid #1e293b":"2px solid rgba(255,255,255,.8)"};border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:12px;color:#fff;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4);user-select:none">${fi+1}</div>`,
       iconSize:[26,26],iconAnchor:[13,13],className:""
     })}).on("click",()=>onSelect(fi)).addTo(g);
-
-    // Editeerbare vertices — oranje bolletjes op elke hoek
     if(editMode&&fi===selFaceIdx){
       const liveLatLngs=f.polygon.map(pt=>L.latLng(pt[0],pt[1]));
-
       f.polygon.forEach((pt,vi)=>{
         const marker=L.circleMarker([pt[0],pt[1]],{
           radius:9, color:"#1e293b", fillColor:"#f59e0b",
@@ -999,7 +791,6 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
         })
         .bindTooltip("Punt "+(vi+1)+" · versleep (rood = samenvoegen)",{direction:"top",offset:[0,-8]})
         .addTo(g);
-
         marker.on("mousedown",function(e){
           L.DomEvent.stop(e);
           map.dragging.disable();
@@ -1007,13 +798,11 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
           const mLat2=111320,cLat2=f.polygon[0][0];
           const mLng2=111320*Math.cos(cLat2*Math.PI/180);
           const distPts=(a,b)=>Math.sqrt(((b[0]-a[0])*mLat2)**2+((b[1]-a[1])*mLng2)**2);
-
           const onMove=function(me){
             const ll=me.latlng;
             marker.setLatLng(ll);
             liveLatLngs[vi]=ll;
             facePoly.setLatLngs(liveLatLngs);
-            // Rood als binnen 0.5m van naburig punt
             const nearClose=f.polygon.some((other,oi)=>oi!==vi&&distPts([ll.lat,ll.lng],other)<0.5);
             marker.setStyle({fillColor:nearClose?"#dc2626":"#f59e0b"});
             if(onVertexDrag) onVertexDrag(fi,vi,[ll.lat,ll.lng]);
@@ -1024,7 +813,6 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
             map.dragging.enable();
             map.getContainer().style.cursor="";
             marker.setStyle({fillColor:"#f59e0b"});
-            // Merge als punt binnen 0.5m van naburig punt bij loslaten
             const curLL2=marker.getLatLng();
             const curPt2=[curLL2.lat,curLL2.lng];
             const livePts2=liveLatLngs.map(ll=>Array.isArray(ll)?ll:[ll.lat,ll.lng]);
@@ -1034,8 +822,7 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
               for(const ni of[(vi+1)%n3,(vi-1+n3)%n3]){
                 const other=livePts2[ni];
                 const otherPt=Array.isArray(other)?other:[other.lat,other.lng];
-                if(distPts(curPt2,otherPt)<0.5){ // 0.5m drempel
-                  // Samenvoegen: vervang ni door gemiddelde, verwijder vi
+                if(distPts(curPt2,otherPt)<0.5){
                   const avg=[(curPt2[0]+otherPt[0])/2,(curPt2[1]+otherPt[1])/2];
                   livePts2.splice(Math.max(vi,ni),1);
                   livePts2[Math.min(vi,ni)]=avg;
@@ -1056,22 +843,17 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
       });
     }
   });
-
-  g.addTo(map); // KRITIEK: voeg toe aan kaart hier (redrawRoof gebruikt return value voor removeLayer)
+  g.addTo(map);
   return g;
 }
 
-// Genummerde dakvlaksectoren tekenen (LiDAR-gedetecteerde richtingen)
-// BEHOUDEN als fallback voor backwards-compat
 function drawFaceSectors(map,L,lc,faces,selFaceIdx,onSelect){
   return drawFacePolygons(map,L,faces,selFaceIdx,onSelect,false,-1,null,null);
 }
 
-// Fallback: eenvoudig 2-helling dak (zonder LiDAR)
 function drawRealRoof(map,L,lc,orientation){
   const g=L.layerGroup();
   L.polygon(lc,{color:"#e07b00",fillOpacity:0,weight:2.5,dashArray:"6,3"}).addTo(g);
-  // PCA van GRB-contour → nokrichting → splits langs die as (zelfde als analyzeDHM)
   const mLat=111320,cLat0=lc.reduce((s,p)=>s+p[0],0)/lc.length;
   const mLng=111320*Math.cos(cLat0*Math.PI/180);
   const pts=lc.map(([la,ln])=>[(ln-lc.reduce((s,p)=>s+p[1],0)/lc.length)*mLng,(la-cLat0)*mLat]);
@@ -1079,18 +861,16 @@ function drawRealRoof(map,L,lc,orientation){
   const plen=pts.length;
   pts.forEach(([x,y])=>{cxx+=x*x;cxy+=x*y;cyy+=y*y;});
   cxx/=plen;cxy/=plen;cyy/=plen;
-  const pcaAng=Math.atan2(2*cxy,cxx-cyy)/2; // hoek t.o.v. Oost
-  const ridgeDeg=((90-pcaAng*180/Math.PI)+360)%180; // azimut nok
-  const rightAsp=((ridgeDeg+90)+360)%360; // aspect rechterkant
+  const pcaAng=Math.atan2(2*cxy,cxx-cyy)/2;
+  const ridgeDeg=((90-pcaAng*180/Math.PI)+360)%180;
+  const rightAsp=((ridgeDeg+90)+360)%360;
   const leftAsp =((ridgeDeg-90)+360)%360;
-  // Bepaal welke kant "zuidelijk" is (closer to 180° azimut = Zuid)
   const distTo180=a=>Math.abs(((a-180)+540)%360-180);
   const rightIsSouth=distTo180(rightAsp)<distTo180(leftAsp);
   const sAsp=rightIsSouth?rightAsp:leftAsp;
   const nAsp=rightIsSouth?leftAsp:rightAsp;
   const[sQ]=ZONE_Q[orientation]||ZONE_Q.Z;
   const[,nQ]=ZONE_Q[orientation]||ZONE_Q.Z;
-  // Clip langs de noklijn via dot-product
   const cLat=lc.reduce((s,p)=>s+p[0],0)/lc.length;
   const cLng=lc.reduce((s,p)=>s+p[1],0)/lc.length;
   const clipSide=(asp)=>{
@@ -1112,27 +892,24 @@ function drawRealRoof(map,L,lc,orientation){
     .bindTooltip(`<b>Noordkant · ${Math.round(nAsp)}°</b><br>${nQ.l}`,{sticky:true}).on("click",()=>{}).addTo(g);
   g.addTo(map);return g;
 }
+
 function shiftPanels(panels,dLat,dLng){
   return panels.map(p=>({
     corners:p.corners.map(([la,ln])=>[la+dLat,ln+dLng]),
     midLine:p.midLine.map(([la,ln])=>[la+dLat,ln+dLng])
   }));
 }
-// ─── Rij-detectie: groepeer panelen op basis van hun positie langs de nok ────
-// Panelen in dezelfde rij hebben dezelfde crossComp (loodrechte afstand tot nok).
-// We discretiseren op 0.5m nauwkeurigheid om floating-point drift te vermijden.
+
 function detectPanelRows(panels,facePoly){
-  if(!panels||!panels.length) return panels.map((_,i)=>i); // elke paneel eigen rij
+  if(!panels||!panels.length) return panels.map((_,i)=>i);
   const cLat=facePoly.reduce((s,p)=>s+p[0],0)/facePoly.length;
   const cLng=facePoly.reduce((s,p)=>s+p[1],0)/facePoly.length;
   const mLat=111320,mLng=111320*Math.cos(cLat*Math.PI/180);
-  // Centroïde van elk paneel in meters
   const panelCtrM=panels.map(p=>{
     const la=p.corners.reduce((s,c)=>s+c[0],0)/p.corners.length;
     const ln=p.corners.reduce((s,c)=>s+c[1],0)/p.corners.length;
-    return[(ln-cLng)*mLng,(la-cLat)*mLat]; // [x=Oost, y=Noord]
+    return[(ln-cLng)*mLng,(la-cLat)*mLat];
   });
-  // PCA op het face-polygoon om de nok-richting te bepalen
   const polyM=facePoly.map(([la,ln])=>[(ln-cLng)*mLng,(la-cLat)*mLat]);
   const cx=polyM.reduce((s,p)=>s+p[0],0)/polyM.length;
   const cy=polyM.reduce((s,p)=>s+p[1],0)/polyM.length;
@@ -1140,35 +917,32 @@ function detectPanelRows(panels,facePoly){
   polyM.forEach(([x,y])=>{const dx=x-cx,dy=y-cy;sxx+=dx*dx;sxy+=dx*dy;syy+=dy*dy;});
   const pcaAng=Math.atan2(2*sxy,sxx-syy)/2;
   const cosA=Math.cos(pcaAng),sinA=Math.sin(pcaAng);
-  // Project centroïde op de as loodrecht op de nok (= rij-coördinaat)
-  const rowCoords=panelCtrM.map(([x,y])=>x*cosA+y*sinA); // langs de nok
-  // Discretiseer op 0.5m → panelen in dezelfde rij hebben dezelfde sleutel
+  const rowCoords=panelCtrM.map(([x,y])=>x*cosA+y*sinA);
   const rowKeys=rowCoords.map(r=>Math.round(r/0.5));
   const uniqueRows=[...new Set(rowKeys)].sort((a,b)=>a-b);
   const rowMap=Object.fromEntries(uniqueRows.map((k,i)=>[k,i]));
-  return rowKeys.map(k=>rowMap[k]); // array: paneel[i] → rijnummer
+  return rowKeys.map(k=>rowMap[k]);
 }
 
 function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDataRef,moveMode){
-  // Lees echte paneelafmetingen uit dims als beschikbaar ("1762x1134x30mm")
   let pW,pH;
   const dimMatch=panel.dims&&panel.dims.match(/(\d+)[x×](\d+)/i);
   if(dimMatch){
-    const d1=+dimMatch[1]/1000,d2=+dimMatch[2]/1000; // meters
-    pH=Math.max(d1,d2); // lange zijde
-    pW=Math.min(d1,d2); // korte zijde
+    const d1=+dimMatch[1]/1000,d2=+dimMatch[2]/1000;
+    pH=Math.max(d1,d2);
+    pW=Math.min(d1,d2);
   } else {
     const ratio=1.56;pW=Math.sqrt(panel.area/ratio);pH=panel.area/pW;
   }
   let panels=panelDataRef?.current||packPanels(facePoly,pW,pH,count,ridgeAngleDeg||0,orient||"portrait");
   if(panelDataRef) panelDataRef.current=panels;
 
-  const rowOf=detectPanelRows(panels,facePoly); // rijnummer per paneel
+  const rowOf=detectPanelRows(panels,facePoly);
   const kWp=((panels.length*panel.watt)/1000).toFixed(1);
   const g=L.layerGroup();
 
   const SEL_COL="#f59e0b",DEF_COL="#2563eb",DEF_BRD="#1e3a5f",SEL_BRD="#92400e";
-  const selected=new Set(); // geselecteerde paneelindices
+  const selected=new Set();
 
   const polyLayers=[],midLayers=[];
 
@@ -1217,12 +991,9 @@ function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDat
         L.DomEvent.stop(e);
         const startLL=e.latlng;
         let hasMoved=false,toMove=null,startSnap2=null;
-
-        // Disable map drag METEEN — anders "steelt" Leaflet de mousemove events
-        const downEvent=e; // bewaar voor dubbelklik detectie in onUp
+        const downEvent=e;
         map.dragging.disable();
         map.getContainer().style.cursor="grab";
-
         const onMove=function(me){
           const dLat=me.latlng.lat-startLL.lat,dLng=me.latlng.lng-startLL.lng;
           const mLat=111320,mLng=111320*Math.cos(startLL.lat*Math.PI/180);
@@ -1241,27 +1012,18 @@ function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDat
             }));
           }
           if(!toMove||!startSnap2) return;
-
-          // Snap-to-grid: rond delta af op dichtstbijzijnde rasterstap
-          // in het geroteerde dakframe (langs nok = Y, loodrecht = X)
           const r=(ridgeAngleDeg||0)*Math.PI/180;
           const cosR=Math.cos(r),sinR=Math.sin(r);
-          // Delta in lokale meters (Oost, Noord)
           const dE=dLng*mLng,dN=dLat*mLat;
-          // Projecteer op dakframe-assen
-          const dAlong= dE*sinR+dN*cosR;  // langs nok (Y)
-          const dAcross= dE*cosR-dN*sinR; // loodrecht op nok (X)
-          // Rasterstap = paneelgrootte + gap
+          const dAlong= dE*sinR+dN*cosR;
+          const dAcross= dE*cosR-dN*sinR;
           const gapX=0.05,gapY=0.05;
-          const stepAlong=pH+gapY,stepAcross=W+gapX;
-          // Snap: dichtstbijzijnde veelvoud van de rasterstap
+          const stepAlong=pH+gapY,stepAcross=pW+gapX;
           const snapAlong=Math.round(dAlong/stepAlong)*stepAlong;
           const snapAcross=Math.round(dAcross/stepAcross)*stepAcross;
-          // Terug naar (Oost, Noord)
           const snapE=snapAlong*sinR+snapAcross*cosR;
           const snapN=snapAlong*cosR-snapAcross*sinR;
           const snapDLat=snapN/mLat,snapDLng=snapE/mLng;
-
           toMove.forEach(idx=>{
             const np=startSnap2[idx];
             polyLayers[idx]?.setLatLngs(np.corners.map(([la,ln])=>[la+snapDLat,ln+snapDLng]));
@@ -1272,7 +1034,6 @@ function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDat
           map.off("mousemove",onMove);map.off("mouseup",onUp);
           map.dragging.enable();map.getContainer().style.cursor="";
           if(!hasMoved){
-            // Dubbelklik (detail>=2) = selecteer hele rij; enkelvoudig klik = toggle paneel
             if(downEvent.originalEvent&&downEvent.originalEvent.detail>=2){
               selRow(rowOf[i]);
             } else {
@@ -1298,7 +1059,6 @@ function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDat
   g.addTo(map);return g;
 }
 
-// ─── Maandelijkse grafiek (SVG) ──────────────────────────────────────────────
 function MonthlyChart({annualKwh}){
   const monthlyKwh=MONTHLY_FACTOR.map(f=>Math.round(annualKwh*f));
   const maxVal=Math.max(...monthlyKwh);
@@ -1309,7 +1069,6 @@ function MonthlyChart({annualKwh}){
     <div className="monthly-chart">
       <div className="sl" style={{marginBottom:10}}>Maandelijkse productie</div>
       <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto"}}>
-        {/* Y gridlijnen */}
         {[0,.25,.5,.75,1].map(f=>{
           const y=padT+chartH*(1-f);
           return <g key={f}>
@@ -1317,7 +1076,6 @@ function MonthlyChart({annualKwh}){
             <text x={padL-4} y={y+4} textAnchor="end" fill="#94a3b8" fontSize="8">{Math.round(maxVal*f)}</text>
           </g>;
         })}
-        {/* Staven */}
         {monthlyKwh.map((v,i)=>{
           const bH=(v/maxVal)*chartH;
           const x=padL+(chartW/12)*i+gap;
@@ -1336,7 +1094,7 @@ function MonthlyChart({annualKwh}){
   );
 }
 
-// ─── PDF generatie — EcoFinity stijl ───────────────────────────────────────────
+
 async function generatePDF(results,customer,displayName,slope,orientation,mapSnapshot,aiAdvice){
   await loadPdfLibs();
   const{jsPDF}=window.jspdf;
@@ -1362,55 +1120,36 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     sf(8,"normal");doc.text("Pagina "+pg,W-M,9,{align:"right"});
   };
 
-  // ════ PAGINA 1 — Voorblad + Systeemoverzicht ════
-  // Header layout (briefhoofd-stijl): logo links, klantgegevens rechts.
-  //
-  //   ┌──────────────────────────────────────────────────────┐
-  //   │  [LOGO ECOFINITY]            Klant: Jan Janssens     │
-  //   │                              Adres: Hofstraat 12     │
-  //   │                              9000 Gent               │
-  //   │                              jan@example.com         │
-  //   └──────────────────────────────────────────────────────┘
-
-  // Logo links (50mm breed, hoogte op aspect ratio)
   const LOGO_W = 50;
   const LOGO_H = LOGO_W * (ECOFINITY_LOGO_HEIGHT / ECOFINITY_LOGO_WIDTH);
   try {
     doc.addImage(ECOFINITY_LOGO_BASE64, "JPEG", M, 12, LOGO_W, LOGO_H);
   } catch(e) {
-    // Fallback bij logo-fout: tekst
     sf(16,"bold");sc(OR);doc.text("ECOFINITY",M,22);
     sf(8,"normal");sc(MUT);doc.text("Energy & Building Solutions",M,28);
   }
 
-  // Klantgegevens rechts
   const rightX = W - M;
   let yh = 18;
   sf(11,"bold");sc(TXT);doc.text((customer.name||"—"),rightX,yh,{align:"right"}); yh+=6;
   if(customer.address){
     sf(9,"normal");sc(MUT);
-    // Splits het adres in regels indien lang (TL geeft soms "straat, postcode gemeente, land")
     const addrLines=customer.address.split(/,\s*/).filter(Boolean);
     addrLines.forEach(line=>{doc.text(line,rightX,yh,{align:"right"});yh+=5;});
   }
   if(customer.email){sf(9,"normal");sc(MUT);doc.text(customer.email,rightX,yh,{align:"right"});yh+=5;}
-
-  // Datum onder klantblok
   sf(8,"italic");sc(MUT);
   doc.text("Rapport: "+new Date().toLocaleDateString("nl-BE"),rightX,yh+2,{align:"right"});
 
-  // Oranje scheidingslijn onder de header
   const headerBottomY = Math.max(12 + LOGO_H + 4, yh + 6);
   doc.setDrawColor(...OR);doc.setLineWidth(0.8);
   doc.line(M, headerBottomY, W-M, headerBottomY);
 
-  // Projectsectie eronder met locatie
   let y = headerBottomY + 8;
   sf(11,"bold");sc(TXT);doc.text("Locatie:",M,y);
   sf(11,"normal");sc(OR);doc.text(displayName.split(",").slice(0,3).join(","),M+25,y);
   y += 10;
 
-  // Systeemoverzicht
   y=secTitle("Systeemoverzicht",y);
   const kWp=((results.panelCount*results.panel.watt)/1000).toFixed(2);
   const sysItems=[
@@ -1425,7 +1164,6 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
   });
   y+=3;
 
-  // PV-configuratiegegevens (2 kolommen)
   y=secTitle("PV-configuratiegegevens",y+2);
   const cfgL=[
     ["Totaal PV-panelen",results.panelCount+""],
@@ -1455,12 +1193,9 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
   });
   y+=cfgL.length*7+6;
 
-  // ════ PAGINA 2 — Financiën + Maandwaarden ════
   doc.addPage();miniHeader(2);y=22;
 
-  // Financiële KPI-blokken
   y=secTitle("Financiële analyse",y);
-  // Helper voor prijzen die nullable zijn
   const fmtPrice=(p)=>p!==null&&p!==undefined?"€ "+p.toLocaleString("nl-BE"):"— niet ingevuld —";
   const fmtPayback=(p)=>p!==null&&p!==undefined?p+" jaar":"—";
   const kpis=[
@@ -1480,7 +1215,6 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
   });
   y+=24;
 
-  // Algemene info-tabel (één kolom — geldt voor beide scenario's)
   const generalRows=[
     ["Geselecteerd paneel",results.panelCount+" × "+results.panel.brand+" "+results.panel.model],
     ["Geselecteerde omvormer",results.inv?results.inv.brand+" "+results.inv.model:"Geen specifiek model"],
@@ -1495,7 +1229,6 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     margin:{left:M,right:M},tableWidth:W-2*M});
   y=doc.lastAutoTable.finalY+8;
 
-  // Vergelijkingstabel — twee kolommen naast elkaar (zelfde indeling als scherm)
   if(y>284-80){doc.addPage();y=20;}
   sf(11,"bold");sc(TXT);doc.text("Terugverdientijd vergelijking",M,y);y+=6;
 
@@ -1516,12 +1249,10 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     ["Terugverdientijd",fmtPayback(results.battResult.payback)],
   ]:null;
 
-  // Render twee tabellen naast elkaar
-  const colW=(W-2*M-4)/2; // 2 kolommen, 4mm gap ertussen
+  const colW=(W-2*M-4)/2;
   const colLeftX=M, colRightX=M+colW+4;
   const startY=y;
 
-  // LINKERKOLOM — Alleen zonnepanelen
   doc.autoTable({startY:y,
     head:[["Alleen zonnepanelen",""]],
     body:colWithoutBatt,
@@ -1531,7 +1262,6 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     margin:{left:colLeftX,right:M},tableWidth:colW});
   const leftEndY=doc.lastAutoTable.finalY;
 
-  // RECHTERKOLOM — Met batterij (of placeholder)
   if(hasBatt){
     doc.autoTable({startY:startY,
       head:[["Met "+(results.batt?.brand||"")+" "+(results.batt?.model||""),""]],
@@ -1542,25 +1272,19 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
       margin:{left:colRightX,right:M},tableWidth:colW});
     y=Math.max(leftEndY,doc.lastAutoTable.finalY)+8;
   }else{
-    // Placeholder rechts: "geen batterij"
     sf(8,"italic");sc(MUT);
     doc.text("Geen batterij geactiveerd",colRightX+5,startY+15);
     y=leftEndY+8;
   }
   hLine(y);y+=8;
 
-  // ─── Technische validatie · String-design (SMA-stijl tabel) ────────────────
   if(results.stringDesign&&results.stringDesign.mppts.length>0){
     if(y>284-40){doc.addPage();y=20;}
     y=secTitle("Configuratie van de omvormer",y);
     const sd=results.stringDesign;
-
-    // Header met temperatuurinstellingen
     sf(8,"normal");sc(TXT);
     doc.text(`Omgevingstemperatuur: min ${sd.config.tempMin}°C · config ${sd.config.tempConfig}°C · max ${sd.config.tempMax}°C`,M,y);
     y+=6;
-
-    // Omvormer-overzicht tabel
     if(y>284-40){doc.addPage();y=20;}
     sf(9,"bold");sc(TXT);doc.text(`1× ${results.inv.brand} ${results.inv.model}`,M,y);y+=5;
     const invRows=[
@@ -1579,12 +1303,9 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
       theme:"plain",
       margin:{left:M,right:M},tableWidth:W-2*M});
     y=doc.lastAutoTable.finalY+5;
-
-    // Detailtabel per MPPT — SMA-stijl
     if(y>284-50){doc.addPage();y=20;}
     sf(9,"bold");sc(TXT);doc.text("Detailwaarden per MPPT-ingang",M,y);y+=5;
     const head=["",...sd.mppts.map((m,i)=>"Ingang "+String.fromCharCode(65+i))];
-    // Helper: build cell with check-symbol
     const cell=(check,val)=>check===null?val:(check?"+ ":"- ")+val;
     const rows=[
       ["Aantal strings",...sd.mppts.map(m=>m.stringCount+"")],
@@ -1608,12 +1329,9 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
       alternateRowStyles:{fillColor:[239,246,255]},
       margin:{left:M,right:M},tableWidth:W-2*M});
     y=doc.lastAutoTable.finalY+4;
-
-    // Legend voor + / -
     sf(7,"italic");sc(MUT);
     doc.text("+ = waarde valt binnen de veiligheidslimieten · - = waarde overschrijdt limiet",M,y);
     y+=6;
-
     if(sd.warnings.length>0){
       if(y>284-30){doc.addPage();y=20;}
       sf(9,"bold");sc(TXT);doc.text("Aandachtspunten:",M,y);y+=5;
@@ -1632,8 +1350,6 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     y+=4;hLine(y);y+=8;
   }
 
-  // Maandwaarden — forceer nieuwe pagina als titel + tabel niet meer past
-  // (titel ~6mm + tabel ~22mm + buffer ~10mm = 38mm benodigde ruimte; pagina = 297mm; footer start op 284)
   if(y>284-40){doc.addPage();y=20;}
   y=secTitle("Maandwaarden — Energieopbrengst",y);
   const mVals=MONTHLY_FACTOR.map(f=>Math.round(results.annualKwh*f));
@@ -1646,7 +1362,6 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     margin:{left:M,right:M},tableWidth:W-2*M});
   y=doc.lastAutoTable.finalY+6;
 
-  // Balkgrafiek
   if(y+55<278){
     const maxV=Math.max(...mVals);
     const bW=(W-2*M-4)/12;
@@ -1666,12 +1381,8 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     y+=56;
   }
 
-  // ── AI expert-advies ──
-  // Wordt alleen meegenomen als de gebruiker een advies-tekst heeft
-  // (genereert/bewerkt op de Resultaten tab vóór PDF-download).
   if(aiAdvice&&aiAdvice.trim().length>0){
     doc.addPage();
-    // Mini-header
     doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
     sf(11,"bold");sc(WHT);doc.text("EcoFinity BV",M,9);
     sf(11,"normal");doc.text("Project: "+(customer.name||"—"),M+38,9);
@@ -1679,9 +1390,7 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     y=22;
     y=secTitle("Expert advies van uw installateur",y);
     sf(10,"normal");sc(TXT);
-    // Wrap tekst over meerdere regels (PDF kan dit niet automatisch met '\n')
     const adviceLines=doc.splitTextToSize(aiAdvice.trim(),W-2*M);
-    // Page-break als nodig
     let lineH=4.5;
     for(const line of adviceLines){
       if(y>284-15){doc.addPage();y=22;sc(TXT);sf(10,"normal");}
@@ -1692,21 +1401,16 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
   }
 
   // ── Luchtfoto met panelen ──
-  // Strategie: gebruik mapSnapshot (gemaakt door gebruiker via "Foto opslaan voor rapport")
-  // als die beschikbaar is. Anders fallback naar live capture.
-  // Pre-captured = robuust en zeker mét panelen erop.
   try{
     let imgData=null,imgRatio=1;
     if(mapSnapshot?.dataUrl){
-      // Gebruik pre-captured foto
       imgData=mapSnapshot.dataUrl;
       imgRatio=mapSnapshot.height/mapSnapshot.width;
     }else{
-      // Fallback: live capture
       const mapEl=document.getElementById("leaflet-map");
       if(mapEl&&window.html2canvas){
         const canvas=await window.html2canvas(mapEl,{
-          useCORS:true,allowTaint:true,scale:1.5,
+          useCORS:true,allowTaint:false,scale:1.5,
           logging:false,backgroundColor:"#f1f5f9",
           foreignObjectRendering:false
         });
@@ -1716,7 +1420,6 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     }
     if(imgData){
       doc.addPage();
-      // Mini-header
       doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
       sf(11,"bold");sc(WHT);doc.text("EcoFinity BV",M,9);
       sf(11,"normal");doc.text("Project: "+(customer.name||"—"),M+38,9);
@@ -1727,12 +1430,11 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
       doc.addImage(imgData,"JPEG",M,y,imgW,imgH);
       y+=imgH+5;
       sf(9,"normal");sc(MUT);
-      doc.text("Luchtfoto: Esri World Imagery · Paneelplaatsing is een schatting.",M,y);
+      doc.text("Kaartachtergrond: OpenStreetMap · Paneelplaatsing is een schatting.",M,y);
       y+=8;
     }
   }catch(mapErr){console.warn("Kaartfoto mislukt:",mapErr);}
 
-  // Footer
   const pgC=doc.getNumberOfPages();
   for(let i=1;i<=pgC;i++){
     doc.setPage(i);
@@ -1744,11 +1446,9 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     doc.text("Berekeningen zijn schattingen gebaseerd op een gemiddelde zonne-instraling in uw woonplaats.",M,288,{maxWidth:W-2*M-20});
   }
 
-    // ── Datasheets samenvoegen via pdf-lib ──
   const mainPdfBytes=doc.output("arraybuffer");
   const mergedPdf=await PDFDocument.load(new Uint8Array(mainPdfBytes));
 
-  // Verzamel unieke datasheets (paneel + omvormer)
   const dsFiles=new Set();
   if(results.panel?.datasheet) dsFiles.add(results.panel.datasheet);
   if(results.inv?.datasheet)   dsFiles.add(results.inv.datasheet);
@@ -1758,12 +1458,8 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     const bytes=await fetchPdfBytes(DS_BASE+dsFile);
     if(!bytes) continue;
     try{
-      // ignoreEncryption: true → laat pdf-lib ook write-protected datasheets inlezen
-      // (zoals Qcells/Trina vaak gebruiken). We doen alleen merge (lees-only),
-      // dus dit is veilig en legaal.
       const dsPdf=await PDFDocument.load(bytes,{ignoreEncryption:true});
       const pages=await mergedPdf.copyPages(dsPdf,dsPdf.getPageIndices());
-      // Scheidingspagina
       const sepPage=mergedPdf.addPage([595,842]);
       const {rgb}=window.PDFLib;
       sepPage.drawRectangle({x:0,y:0,width:595,height:842,color:rgb(0.95,0.96,0.98)});
@@ -1780,7 +1476,10 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
   a.href=url;a.download=`ZonneDak_${(customer.name||"rapport").replace(/\s+/g,"_")}_${new Date().toISOString().slice(0,10)}.pdf`;
   a.click();URL.revokeObjectURL(url);
   return dsCount;
-}function PanelCard({p,selected,onSelect,onDelete,canDelete}){return(
+}
+
+
+function PanelCard({p,selected,onSelect,onDelete,canDelete}){return(
   <div className={`card ${selected?"selected":""}`} onClick={()=>onSelect(p.id)}>
     <div className="card-name">{p.model}</div><div className="card-brand">{p.brand}</div>
     <div className="chips"><span className="chip gold">{p.watt}W</span><span className="chip">{p.eff}% eff</span><span className="chip">{p.area} m²</span><span className="chip">{p.warranty}j</span></div>
@@ -1806,10 +1505,6 @@ function BattCard({b,selected,onSelect,onDelete,canDelete}){return(
   </div>
 );}
 
-// ─── TechRow ─────────────────────────────────────────────────────────────────
-// Eén rij in de SMA-stijl detailtabel op de Technische tab.
-// `val(m)` → string voor weergave per MPPT.
-// `check(m)` → optioneel, geeft true (groen vinkje) of false (rood kruis).
 function TechRow({label,mppts,val,check}){
   return(
     <tr style={{borderBottom:"1px solid var(--border)"}}>
@@ -1847,44 +1542,31 @@ function NewBattForm({onAdd}){
     <button className="btn blue full" disabled={!ok} onClick={()=>{onAdd({...f,id:Date.now(),kwh:+f.kwh,price:0,cycles:+f.cycles,warranty:+f.warranty,isAlpha:false});setF(e0);}}>Batterij toevoegen</button>
   </div>);}
 
-// ─── Customer / Teamleader component ─────────────────────────────────────────
-// ─── Teamleader integratie paneel ────────────────────────────────────────────
-// Toont login-knop bij niet-ingelogd, anders zoek-veld + suggesties +
-// adres/email/deals selectie na keuze van een contact.
 function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearching,
   tlContact,tlLoadingDetails,tlSelectedAddressIdx,tlSelectedDealId,setTlSelectedDealId,
   onLogin,onLogout,onSelectContact,onSelectAddress,
   showNewDealForm,newDealTitle,setNewDealTitle,newDealValue,setNewDealValue,
   dealOptions,newDealPipelineId,setNewDealPipelineId,creatingDeal,
   onOpenNewDeal,onCancelNewDeal,onCreateDeal}){
-  // Niet ingelogd: login knop
   if(tlAuth===null) return <div className="customer-section"><div style={{fontSize:9,color:"var(--muted)"}}>Teamleader status laden...</div></div>;
   if(tlAuth===false||!tlAuth.logged_in){
     return(
       <div className="customer-section">
         <div className="sl">Teamleader</div>
         {tlAuthMsg&&<div style={{fontSize:9,color:tlAuthMsg.includes("succesvol")?"var(--green)":"var(--red)"}}>{tlAuthMsg}</div>}
-        <div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>
-          Niet ingelogd. Log in om klanten op te zoeken.
-        </div>
+        <div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>Niet ingelogd. Log in om klanten op te zoeken.</div>
         <button className="btn full" onClick={onLogin}>🔗 Inloggen via Teamleader</button>
       </div>
     );
   }
-  // Ingelogd
   return(
     <div className="customer-section">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div className="sl">Teamleader</div>
-        <button onClick={onLogout} style={{background:"none",border:"none",color:"var(--muted)",fontSize:9,cursor:"pointer"}}
-                title="Uitloggen">⏻ Uitloggen</button>
+        <button onClick={onLogout} style={{background:"none",border:"none",color:"var(--muted)",fontSize:9,cursor:"pointer"}} title="Uitloggen">⏻ Uitloggen</button>
       </div>
-      <div style={{fontSize:9,color:"var(--muted)"}}>
-        Ingelogd als <strong>{tlAuth.user?.name||tlAuth.user?.email||"?"}</strong>
-      </div>
+      <div style={{fontSize:9,color:"var(--muted)"}}>Ingelogd als <strong>{tlAuth.user?.name||tlAuth.user?.email||"?"}</strong></div>
       {tlAuthMsg&&<div style={{fontSize:9,color:"var(--green)"}}>{tlAuthMsg}</div>}
-
-      {/* Zoekveld met live suggesties */}
       <div style={{position:"relative"}}>
         <div className="inp-label" style={{fontSize:9,fontWeight:600}}>1️⃣ Klant zoeken in Teamleader</div>
         <input className="inp" type="text" placeholder="Typ minstens 2 letters..."
@@ -1904,18 +1586,12 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
           ))}
         </div>}
       </div>
-
       {tlLoadingDetails&&<div style={{fontSize:9,color:"var(--alpha)",marginTop:6}}>⏳ Details ophalen...</div>}
-
-      {/* Geselecteerd contact: adressen, emails, deals */}
       {tlContact&&!tlLoadingDetails&&<>
         <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:6,padding:8,marginTop:6}}>
           <div style={{fontSize:11,fontWeight:600}}>{tlContact.name}</div>
-          {tlContact.emails?.length>0&&<div style={{fontSize:9,color:"var(--muted)"}}>
-            {tlContact.emails.map(e=>e.email).join(" · ")}
-          </div>}
+          {tlContact.emails?.length>0&&<div style={{fontSize:9,color:"var(--muted)"}}>{tlContact.emails.map(e=>e.email).join(" · ")}</div>}
         </div>
-
         {tlContact.addresses?.length>0&&<div style={{marginTop:8}}>
           <div className="sl" style={{fontSize:9,marginBottom:4}}>Adres voor dit project</div>
           {tlContact.addresses.length===1?<div style={{fontSize:9,color:"var(--muted)"}}>{tlContact.addresses[0].full}</div>:
@@ -1927,11 +1603,6 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
             ))
           }
         </div>}
-
-        {tlContact.addresses?.length===0&&<div style={{fontSize:9,color:"var(--amber)",marginTop:6}}>
-          ⚠ Deze klant heeft geen adres in TL. Voeg één toe in TL of vul handmatig in.
-        </div>}
-
         {tlContact.deals?.length>0&&<div style={{marginTop:10}}>
           <div className="sl" style={{fontSize:9,marginBottom:4}}>Koppel aan een Deal (optioneel)</div>
           <div style={{maxHeight:180,overflowY:"auto"}}>
@@ -1940,66 +1611,29 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
               <span style={{color:"var(--muted)"}}>(geen deal koppelen)</span>
             </label>
             {tlContact.deals.map(d=>(
-              <label key={d.id} style={{display:"flex",alignItems:"flex-start",gap:6,padding:"4px 0",cursor:"pointer",fontSize:9,
-                     borderTop:"1px solid var(--border)"}}>
+              <label key={d.id} style={{display:"flex",alignItems:"flex-start",gap:6,padding:"4px 0",cursor:"pointer",fontSize:9,borderTop:"1px solid var(--border)"}}>
                 <input type="radio" checked={tlSelectedDealId===d.id} onChange={()=>setTlSelectedDealId(d.id)} style={{marginTop:2}}/>
-                <span>
-                  <strong>{d.title}</strong>
-                  {d.phase&&<span style={{color:"var(--muted)"}}> · {d.phase}</span>}
-                  {d.estimated_value&&<span style={{color:"var(--muted)"}}> · €{d.estimated_value.toLocaleString("nl-BE")}</span>}
-                </span>
+                <span><strong>{d.title}</strong>{d.phase&&<span style={{color:"var(--muted)"}}> · {d.phase}</span>}{d.estimated_value&&<span style={{color:"var(--muted)"}}> · €{d.estimated_value.toLocaleString("nl-BE")}</span>}</span>
               </label>
             ))}
           </div>
         </div>}
-
-        {tlContact.deals?.length===0&&<div style={{fontSize:9,color:"var(--muted)",marginTop:6}}>
-          Geen deals voor deze klant in TL.
-        </div>}
-
-        {/* Knop om nieuwe deal aan te maken — altijd zichtbaar (ook met bestaande deals) */}
-        {!showNewDealForm&&<button className="btn sec" onClick={onOpenNewDeal}
-                                    style={{marginTop:8,fontSize:9,width:"100%"}}>
-          + Nieuwe deal aanmaken in Teamleader
-        </button>}
-
-        {/* Inline form voor nieuwe deal */}
-        {showNewDealForm&&<div style={{marginTop:8,background:"var(--bg2)",border:"1px solid var(--border)",
-                                        borderRadius:6,padding:10}}>
+        {!showNewDealForm&&<button className="btn sec" onClick={onOpenNewDeal} style={{marginTop:8,fontSize:9,width:"100%"}}>+ Nieuwe deal aanmaken in Teamleader</button>}
+        {showNewDealForm&&<div style={{marginTop:8,background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:6,padding:10}}>
           <div className="sl" style={{fontSize:9,marginBottom:6}}>Nieuwe deal aanmaken</div>
-
           <div className="inp-label" style={{fontSize:8}}>Titel</div>
-          <input className="inp" value={newDealTitle} onChange={e=>setNewDealTitle(e.target.value)}
-                 placeholder="bv. Zonnepanelen Janssens 2026-04-26" maxLength={200}/>
-
+          <input className="inp" value={newDealTitle} onChange={e=>setNewDealTitle(e.target.value)} placeholder="bv. Zonnepanelen Janssens 2026-04-26" maxLength={200}/>
           <div className="inp-label" style={{fontSize:8,marginTop:6}}>Pipeline</div>
           {!dealOptions?<div style={{fontSize:9,color:"var(--muted)"}}>Pipelines laden...</div>:
-            dealOptions.pipelines?.length===0?<div style={{fontSize:9,color:"var(--red)"}}>
-              Geen pipelines gevonden in TL.
-            </div>:
-            <select className="inp" value={newDealPipelineId||""}
-                    onChange={e=>setNewDealPipelineId(e.target.value)}>
-              {dealOptions.pipelines.map(p=>(
-                <option key={p.id} value={p.id}>
-                  {p.name}{p.isDefault?" (standaard)":""}
-                  {p.firstPhaseName?` — start in fase: ${p.firstPhaseName}`:""}
-                </option>
-              ))}
-            </select>
-          }
-
+            dealOptions.pipelines?.length===0?<div style={{fontSize:9,color:"var(--red)"}}>Geen pipelines gevonden in TL.</div>:
+            <select className="inp" value={newDealPipelineId||""} onChange={e=>setNewDealPipelineId(e.target.value)}>
+              {dealOptions.pipelines.map(p=><option key={p.id} value={p.id}>{p.name}{p.isDefault?" (standaard)":""}{p.firstPhaseName?` — start in fase: ${p.firstPhaseName}`:""}</option>)}
+            </select>}
           <div className="inp-label" style={{fontSize:8,marginTop:6}}>Geschatte waarde (€) — optioneel</div>
-          <input className="inp" type="number" min="0" step="100"
-                 placeholder="Leeg laten als nog onbekend"
-                 value={newDealValue} onChange={e=>setNewDealValue(e.target.value)}/>
-
+          <input className="inp" type="number" min="0" step="100" placeholder="Leeg laten als nog onbekend" value={newDealValue} onChange={e=>setNewDealValue(e.target.value)}/>
           <div style={{display:"flex",gap:6,marginTop:10}}>
-            <button className="btn sec" onClick={onCancelNewDeal} disabled={creatingDeal}
-                    style={{flex:1,fontSize:9}}>Annuleren</button>
-            <button className="btn full" onClick={onCreateDeal} disabled={creatingDeal||!newDealTitle.trim()||!newDealPipelineId}
-                    style={{flex:2,fontSize:9}}>
-              {creatingDeal?"Aanmaken...":"✓ Aanmaken in Teamleader"}
-            </button>
+            <button className="btn sec" onClick={onCancelNewDeal} disabled={creatingDeal} style={{flex:1,fontSize:9}}>Annuleren</button>
+            <button className="btn full" onClick={onCreateDeal} disabled={creatingDeal||!newDealTitle.trim()||!newDealPipelineId} style={{flex:2,fontSize:9}}>{creatingDeal?"Aanmaken...":"✓ Aanmaken in Teamleader"}</button>
           </div>
         </div>}
       </>}
@@ -2007,17 +1641,10 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
   );
 }
 
-// ─── Project opslag & beheer paneel ──────────────────────────────────────────
-// Identificatie op klantnaam. Auto-save (debounced) gebeurt via App-state.
-// Biedt: Nieuw / Openen / Download JSON / Upload JSON + status-indicator.
 function ProjectPanel({customer,projectList,lastSavedAt,isLoadingProject,
   showProjectMenu,setShowProjectMenu,onNew,onLoad,onDelete,onDownload,onUpload}){
   const fileInputRef=useRef(null);
-  const handleFileChange=e=>{
-    const f=e.target.files?.[0];
-    if(f) onUpload(f);
-    e.target.value=""; // reset zodat dezelfde file opnieuw kan worden geselecteerd
-  };
+  const handleFileChange=e=>{const f=e.target.files?.[0];if(f) onUpload(f);e.target.value="";};
   const hasName=!!customer?.name?.trim();
   const savedLabel=lastSavedAt
     ?(`💾 Opgeslagen · ${new Date(lastSavedAt).toLocaleTimeString("nl-BE",{hour:"2-digit",minute:"2-digit"})}`)
@@ -2027,39 +1654,22 @@ function ProjectPanel({customer,projectList,lastSavedAt,isLoadingProject,
       <div className="sl">Project</div>
       <div style={{fontSize:9,color:"var(--muted)"}}>{savedLabel}</div>
       <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-        <button className="btn sec" onClick={onNew} style={{flex:"1 1 auto",fontSize:9}}>
-          ➕ Nieuw
-        </button>
-        <button className="btn sec" onClick={()=>setShowProjectMenu(v=>!v)} style={{flex:"1 1 auto",fontSize:9}}
-                disabled={projectList.length===0}>
-          📂 Openen ({projectList.length})
-        </button>
-        <button className="btn sec" onClick={onDownload} style={{flex:"1 1 auto",fontSize:9}}
-                disabled={!hasName}>
-          ⬇ Download
-        </button>
-        <button className="btn sec" onClick={()=>fileInputRef.current?.click()} style={{flex:"1 1 auto",fontSize:9}}>
-          ⬆ Upload
-        </button>
-        <input ref={fileInputRef} type="file" accept="application/json,.json"
-               onChange={handleFileChange} style={{display:"none"}}/>
+        <button className="btn sec" onClick={onNew} style={{flex:"1 1 auto",fontSize:9}}>➕ Nieuw</button>
+        <button className="btn sec" onClick={()=>setShowProjectMenu(v=>!v)} style={{flex:"1 1 auto",fontSize:9}} disabled={projectList.length===0}>📂 Openen ({projectList.length})</button>
+        <button className="btn sec" onClick={onDownload} style={{flex:"1 1 auto",fontSize:9}} disabled={!hasName}>⬇ Download</button>
+        <button className="btn sec" onClick={()=>fileInputRef.current?.click()} style={{flex:"1 1 auto",fontSize:9}}>⬆ Upload</button>
+        <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={handleFileChange} style={{display:"none"}}/>
       </div>
-      {showProjectMenu&&projectList.length>0&&<div style={{background:"var(--bg1)",border:"1px solid var(--border)",
-        borderRadius:6,maxHeight:200,overflowY:"auto",padding:4}}>
+      {showProjectMenu&&projectList.length>0&&<div style={{background:"var(--bg1)",border:"1px solid var(--border)",borderRadius:6,maxHeight:200,overflowY:"auto",padding:4}}>
         {projectList.map(p=>(
-          <div key={p.customerName} style={{display:"flex",alignItems:"center",gap:6,
-                padding:"5px 8px",borderRadius:4,cursor:"pointer"}}
+          <div key={p.customerName} style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",borderRadius:4,cursor:"pointer"}}
                onMouseEnter={e=>e.currentTarget.style.background="var(--bg2)"}
                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
             <div style={{flex:1,cursor:"pointer"}} onClick={()=>onLoad(p.customerName)}>
               <div style={{fontSize:10,fontWeight:600}}>{p.customerName}</div>
-              <div style={{fontSize:8,color:"var(--muted)"}}>
-                {new Date(p.savedAt).toLocaleString("nl-BE",{dateStyle:"short",timeStyle:"short"})}
-              </div>
+              <div style={{fontSize:8,color:"var(--muted)"}}>{new Date(p.savedAt).toLocaleString("nl-BE",{dateStyle:"short",timeStyle:"short"})}</div>
             </div>
-            <button onClick={()=>onDelete(p.customerName)}
-                    style={{background:"none",border:"none",cursor:"pointer",color:"var(--muted)",fontSize:11,padding:"2px 6px"}}
-                    title="Verwijderen">🗑</button>
+            <button onClick={()=>onDelete(p.customerName)} style={{background:"none",border:"none",cursor:"pointer",color:"var(--muted)",fontSize:11,padding:"2px 6px"}} title="Verwijderen">🗑</button>
           </div>
         ))}
       </div>}
@@ -2068,68 +1678,7 @@ function ProjectPanel({customer,projectList,lastSavedAt,isLoadingProject,
   );
 }
 
-function CustomerPanel({customer,setCustomer,tlToken,setTlToken}){
-  const[search,setSearch]=useState("");
-  const[tlResults,setTlResults]=useState([]);
-  const[tlLoading,setTlLoading]=useState(false);
-  const[tlError,setTlError]=useState("");
 
-  const doSearch=async()=>{
-    if(!tlToken||!search) return;
-    setTlLoading(true);setTlError("");setTlResults([]);
-    try{
-      const r=await searchTeamleaderContact(search,tlToken);
-      setTlResults(r);
-      if(!r.length) setTlError("Geen contacten gevonden.");
-    }catch(e){setTlError(`Teamleader fout: ${e.message}`);}
-    setTlLoading(false);
-  };
-
-  const selectContact=c=>{
-    const addr=[c.addresses?.[0]?.line_1,c.addresses?.[0]?.postal_code,c.addresses?.[0]?.city].filter(Boolean).join(", ");
-    setCustomer({name:`${c.first_name||""} ${c.last_name||""}`.trim(),address:addr,email:c.primary_email?.email||""});
-    setTlResults([]);
-  };
-
-  return(
-    <div className="customer-section">
-      <div className="sl">Klantgegevens</div>
-      <div><div className="inp-label">Naam klant</div>
-        <input className="inp" placeholder="Jan Janssen" value={customer.name} onChange={e=>setCustomer(p=>({...p,name:e.target.value}))}/>
-      </div>
-      <div><div className="inp-label">Adres</div>
-        <input className="inp" placeholder="Kerkstraat 1, 9000 Gent" value={customer.address} onChange={e=>setCustomer(p=>({...p,address:e.target.value}))}/>
-      </div>
-      <div><div className="inp-label">E-mail</div>
-        <input className="inp" placeholder="jan@example.be" value={customer.email} onChange={e=>setCustomer(p=>({...p,email:e.target.value}))}/>
-      </div>
-      <div style={{borderTop:"1px solid var(--border)",paddingTop:8}}>
-        <div className="sl" style={{marginBottom:6}}>Teamleader integratie</div>
-        <div><div className="inp-label">API Access Token</div>
-          <input className="inp" type="password" placeholder="Teamleader access token..." value={tlToken} onChange={e=>setTlToken(e.target.value)}/>
-        </div>
-        {tlToken&&<div style={{display:"flex",gap:6,marginTop:6}}>
-          <input className="inp" placeholder="Klant zoeken op naam..." value={search} onChange={e=>setSearch(e.target.value)}
-            onKeyDown={e=>e.key==="Enter"&&doSearch()} style={{flex:1}}/>
-          <button className="btn sec" onClick={doSearch} disabled={tlLoading}>
-            {tlLoading?<div className="spinner blue"/>:"Zoek"}
-          </button>
-        </div>}
-        {tlError&&<div className="info-box err" style={{marginTop:5}}><strong>⚠️</strong> {tlError}</div>}
-        {tlResults.length>0&&<div style={{display:"flex",flexDirection:"column",gap:4,marginTop:6}}>
-          {tlResults.map(c=><div key={c.id} className="tl-result" onClick={()=>selectContact(c)}>
-            <strong>{c.first_name} {c.last_name}</strong>
-            <div style={{fontSize:8,color:"var(--muted)"}}>{c.primary_email?.email||""} · {c.addresses?.[0]?.city||""}</div>
-          </div>)}
-        </div>}
-      </div>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  MAIN APP
-// ═══════════════════════════════════════════════════════════════════════════
 export class ErrorBoundary extends Component {
   constructor(props){super(props);this.state={hasError:false,error:null};}
   static getDerivedStateFromError(error){return{hasError:true,error};}
@@ -2154,7 +1703,7 @@ export default function App(){
   const[coords,setCoords]=useState(null);const[displayName,setDisplayName]=useState("");
   const[slope,setSlope]=useState(35);const[orientation,setOrientation]=useState("Z");
   const[activeLayer,setActiveLayer]=useState("luchtfoto");
-  const[mapReady,setMapReady]=useState(false); // FIX: was per ongeluk in commentaar opgeslokt
+  const[mapReady,setMapReady]=useState(false);
 
   const[grbStatus,setGrbStatus]=useState("idle");
   const[buildingCoords,setBuildingCoords]=useState(null);
@@ -2164,16 +1713,16 @@ export default function App(){
   const[detectedFaces,setDetectedFaces]=useState(null);const[selFaceIdx,setSelFaceIdx]=useState(0);
   const[editMode,setEditMode]=useState(false);
   const[panelMoveMode,setPanelMoveMode]=useState(false);
-  const[panelRotOffset,setPanelRotOffset]=useState(0); // handmatige rotatie-offset °
+  const[panelRotOffset,setPanelRotOffset]=useState(0);
   const[panelOrient,setPanelOrient]=useState("portrait");
   const panelDataRef=useRef(null);
-  const ridgeAngleDegRef=useRef(0); // altijd up-to-date nokrichting
+  const ridgeAngleDegRef=useRef(0);
   const detectedFacesRef=useRef(null);
   const draggedPolygonsRef=useRef(null);
 
   const leafRef=useRef(null);const markerRef=useRef(null);
   const selectingRef=useRef(false);
-  const baseTileRef=useRef(null); // luchtfoto / kaart base layer  // Fix: bijhoud of suggestie geselecteerd wordt
+  const baseTileRef=useRef(null);
   const dhmLayerRef=useRef(null);const searchTO=useRef(null);
   const roofLayerRef=useRef(null);const panelLayerRef=useRef(null);
 
@@ -2201,34 +1750,25 @@ export default function App(){
   const[aiText,setAiText]=useState("");const[aiLoading,setAiLoading]=useState(false);
   const[panelsDrawn,setPanelsDrawn]=useState(false);
 
-  // Klant & Teamleader
   const[customer,setCustomer]=useState({name:"",address:"",email:""});
   const[tlToken,setTlToken]=useState("");
 
-  // ─── Teamleader OAuth integratie ────────────────────────────────────────
-  // tlAuth: huidige login-status. null = nog niet gecheckt, false = uitgelogd,
-  // {user:{name,email}} = ingelogd.
   const[tlAuth,setTlAuth]=useState(null);
-  const[tlAuthMsg,setTlAuthMsg]=useState(""); // bv. "denied", "error" na callback
-  // Zoekstate: live suggesties tijdens typen
+  const[tlAuthMsg,setTlAuthMsg]=useState("");
   const[tlQuery,setTlQuery]=useState("");
   const[tlResults,setTlResults]=useState([]);
   const[tlSearching,setTlSearching]=useState(false);
-  // Geselecteerd contact + details
-  const[tlContact,setTlContact]=useState(null); // {id, type, name, addresses, emails, phones, deals}
+  const[tlContact,setTlContact]=useState(null);
   const[tlLoadingDetails,setTlLoadingDetails]=useState(false);
-  // Welk adres + welke deal de gebruiker heeft gekozen
   const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
   const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
-  // Nieuwe deal form
   const[showNewDealForm,setShowNewDealForm]=useState(false);
   const[newDealTitle,setNewDealTitle]=useState("");
-  const[newDealValue,setNewDealValue]=useState(""); // optioneel — leeg = niet meegeven
-  const[dealOptions,setDealOptions]=useState(null); // {pipelines, currentUserId} of null
+  const[newDealValue,setNewDealValue]=useState("");
+  const[dealOptions,setDealOptions]=useState(null);
   const[newDealPipelineId,setNewDealPipelineId]=useState(null);
   const[creatingDeal,setCreatingDeal]=useState(false);
 
-  // Bij eerste mount: check OAuth callback in URL + auth-status
   useEffect(()=>{
     const cb=TL.consumeAuthCallback();
     if(cb==='success'){setTlAuthMsg("Login succesvol!");setTimeout(()=>setTlAuthMsg(""),3000);}
@@ -2237,178 +1777,181 @@ export default function App(){
     TL.checkAuthStatus().then(s=>setTlAuth(s.logged_in?s:false));
   },[]);
 
-  // Debounced search — created once via useRef zodat hij niet bij elke render
-  // opnieuw wordt aangemaakt (anders verliest debounce zijn timer-state).
   const debouncedSearchRef=useRef(null);
-  if(!debouncedSearchRef.current){
-    debouncedSearchRef.current=TL.debounce(TL.searchContacts,400);
-  }
+  if(!debouncedSearchRef.current){ debouncedSearchRef.current=TL.debounce(TL.searchContacts,400); }
 
-  // Trigger search bij wijziging van tlQuery
   useEffect(()=>{
-    if(!tlAuth?.logged_in||!tlQuery||tlQuery.trim().length<2){
-      setTlResults([]);setTlSearching(false);return;
-    }
+    if(!tlAuth?.logged_in||!tlQuery||tlQuery.trim().length<2){setTlResults([]);setTlSearching(false);return;}
     setTlSearching(true);
     debouncedSearchRef.current(tlQuery).then(res=>{
-      if(res===null) return; // gecanceld door nieuwere call
+      if(res===null) return;
       setTlSearching(false);
       if(res?.notLoggedIn){setTlAuth(false);setTlResults([]);return;}
       setTlResults(res?.results||[]);
     });
   },[tlQuery,tlAuth?.logged_in]);
 
-  // Wanneer een contact geselecteerd wordt: details ophalen
   const handleSelectTlContact=useCallback(async(item)=>{
-    setTlLoadingDetails(true);
-    setTlResults([]); // verberg suggesties
-    setTlQuery(item.name);
+    setTlLoadingDetails(true);setTlResults([]);setTlQuery(item.name);
     const details=await TL.getContactDetails(item.type,item.id);
     setTlLoadingDetails(false);
-    if(details?.error){
-      alert("Kon details niet ophalen: "+details.error);return;
-    }
-    setTlContact(details);
-    setTlSelectedAddressIdx(0);
-    setTlSelectedDealId(null);
-    // Populeer customer-state — naam altijd, primary email indien aanwezig
+    if(details?.error){alert("Kon details niet ophalen: "+details.error);return;}
+    setTlContact(details);setTlSelectedAddressIdx(0);setTlSelectedDealId(null);
     const primaryEmail=details.emails?.[0]?.email||"";
     const primaryAddress=details.addresses?.[0];
-    setCustomer({
-      name:details.name||"",
-      address:primaryAddress?.full||"",
-      email:primaryEmail,
-    });
-    // Geocode primary address → coords + auto-laden van de kaart.
-    // We hergebruiken de bestaande selectAddr() flow zodat GRB+DHM ook
-    // correct laden. Daarvoor bouwen we een Nominatim-achtige struct.
+    setCustomer({name:details.name||"",address:primaryAddress?.full||"",email:primaryEmail});
     if(primaryAddress){
       const geo=await TL.geocodeAddress(primaryAddress);
-      if(geo){
-        await selectAddr({
-          lat: String(geo.lat),
-          lon: String(geo.lng),
-          display_name: geo.displayName,
-        });
-      }else{
-        alert("Adres niet gevonden in OpenStreetMap. Voer het adres handmatig in op het Configuratie-tabblad.");
-      }
+      if(geo){await selectAddr({lat:String(geo.lat),lon:String(geo.lng),display_name:geo.displayName});}
+      else{alert("Adres niet gevonden in OpenStreetMap. Voer het adres handmatig in op het Configuratie-tabblad.");}
     }
   },[mapReady]);
 
-  // Wanneer gebruiker een ander adres kiest uit de lijst
   const handleSelectAddress=useCallback(async(idx)=>{
     setTlSelectedAddressIdx(idx);
     if(!tlContact?.addresses?.[idx]) return;
     const addr=tlContact.addresses[idx];
     setCustomer(c=>({...c,address:addr.full||""}));
     const geo=await TL.geocodeAddress(addr);
-    if(geo){
-      // Hergebruik de bestaande selectAddr flow (incl. GRB+DHM laden)
-      await selectAddr({
-        lat: String(geo.lat),
-        lon: String(geo.lng),
-        display_name: geo.displayName,
-      });
-    }else{
-      alert("Adres niet gevonden in OpenStreetMap. Voer handmatig in.");
-    }
+    if(geo){await selectAddr({lat:String(geo.lat),lon:String(geo.lng),display_name:geo.displayName});}
+    else{alert("Adres niet gevonden in OpenStreetMap. Voer handmatig in.");}
   },[tlContact]);
 
-  const handleTlLogin=useCallback(()=>{
-    TL.startTeamleaderLogin();
-  },[]);
+  const handleTlLogin=useCallback(()=>{TL.startTeamleaderLogin();},[]);
+  const handleTlLogout=useCallback(()=>{TL.clearUserId();setTlAuth(false);setTlContact(null);setTlResults([]);setTlQuery("");},[]);
 
-  const handleTlLogout=useCallback(()=>{
-    TL.clearUserId();
-    setTlAuth(false);
-    setTlContact(null);
-    setTlResults([]);
-    setTlQuery("");
-  },[]);
-
-  // Open het "nieuwe deal" formulier — laad opties on-demand (slechts 1× per sessie)
   const handleOpenNewDeal=useCallback(async()=>{
-    setShowNewDealForm(true);
-    // Default titel is bewust kort — gebruiker mag aanpassen indien gewenst
-    setNewDealTitle("Zonnepanelen");
-    setNewDealValue("");
-    // Laad pipelines indien nog niet geladen
+    setShowNewDealForm(true);setNewDealTitle("Zonnepanelen");setNewDealValue("");
     if(!dealOptions){
       const opts=await TL.getDealOptions();
       if(opts?.error){alert("Kon pipelines niet laden: "+opts.error);setShowNewDealForm(false);return;}
       setDealOptions(opts);
-      // Default: eerste pipeline (= default pipeline want we sorteren erop)
       if(opts.pipelines?.length>0){setNewDealPipelineId(opts.pipelines[0].id);}
     }
   },[tlContact,customer.name,dealOptions]);
 
-  const handleCancelNewDeal=useCallback(()=>{
-    setShowNewDealForm(false);
-    setNewDealTitle("");
-    setNewDealValue("");
-  },[]);
+  const handleCancelNewDeal=useCallback(()=>{setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");},[]);
 
-  // Submit het nieuwe-deal formulier → API call → toevoegen aan tlContact.deals + selecteren
   const handleCreateDeal=useCallback(async()=>{
     if(!tlContact){alert("Geen klant geselecteerd");return;}
     if(!newDealTitle.trim()){alert("Vul een titel in");return;}
     if(!newDealPipelineId){alert("Kies een pipeline");return;}
     const pipeline=dealOptions?.pipelines?.find(p=>p.id===newDealPipelineId);
-    if(!pipeline?.firstPhaseId){
-      alert("Deze pipeline heeft geen phases. Configureer eerst phases in Teamleader.");return;
-    }
+    if(!pipeline?.firstPhaseId){alert("Deze pipeline heeft geen phases. Configureer eerst phases in Teamleader.");return;}
     setCreatingDeal(true);
     const valueNum=parseFloat(newDealValue);
     const result=await TL.createDeal({
-      title:newDealTitle.trim(),
-      contactType:tlContact.type,
-      contactId:tlContact.id,
-      phaseId:pipeline.firstPhaseId,
-      responsibleUserId:dealOptions.currentUserId||undefined,
+      title:newDealTitle.trim(),contactType:tlContact.type,contactId:tlContact.id,
+      phaseId:pipeline.firstPhaseId,responsibleUserId:dealOptions.currentUserId||undefined,
       estimatedValueEur:isFinite(valueNum)&&valueNum>0?valueNum:undefined,
     });
     setCreatingDeal(false);
     if(result.error){alert("Deal aanmaken mislukt: "+result.error);return;}
-    // Voeg de nieuwe deal toe aan tlContact.deals én selecteer hem
-    setTlContact(prev=>prev?{
-      ...prev,
-      deals:[result.deal,...(prev.deals||[])],
-    }:prev);
+    setTlContact(prev=>prev?{...prev,deals:[result.deal,...(prev.deals||[])]}:prev);
     setTlSelectedDealId(result.deal.id);
-    setShowNewDealForm(false);
-    setNewDealTitle("");
-    setNewDealValue("");
+    setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");
   },[tlContact,newDealTitle,newDealPipelineId,newDealValue,dealOptions]);
 
   const[pdfLoading,setPdfLoading]=useState(false);
-  // Pre-captured map snapshot — gebruiker maakt foto van Leaflet-kaart met panelen,
-  // dat slaan we op als data-URL en gebruiken bij PDF i.p.v. live capture.
-  // Voorkomt timing-issues met SVG-panelen die pas net gerenderd zijn.
   const[mapSnapshot,setMapSnapshot]=useState(null);
   const[snapshotLoading,setSnapshotLoading]=useState(false);
-  // Bewerkbare versie van het AI-advies. Wordt ingevuld als AI klaar is,
-  // gebruiker kan editen, en de definitieve tekst belandt in PDF.
   const[editableAiText,setEditableAiText]=useState("");
-
-  // Manuele prijzen uit offerte (overschrijven automatische berekening als ingevuld).
-  // Leeg string = automatisch; een getal (positief) = manueel.
   const[manualPanelPrice,setManualPanelPrice]=useState("");
   const[manualBatteryPrice,setManualBatteryPrice]=useState("");
-  // Jaarlijks elektriciteitsverbruik van de klant (kWh). Default 3500 (Vlaams gemiddelde
-  // gezin van 4). Wordt gebruikt voor zelfconsumptiegraad + dekkingsgraad-berekening.
   const[annualConsumption,setAnnualConsumption]=useState(3500);
 
-  // Auto-save systeem: debounced saver die elk veranderd project opslaat.
   const autoSaverRef=useRef(null);
   const[lastSavedAt,setLastSavedAt]=useState(null);
   const[projectList,setProjectList]=useState([]);
   const[showProjectMenu,setShowProjectMenu]=useState(false);
   const[isLoadingProject,setIsLoadingProject]=useState(false);
-  // Flag om te voorkomen dat auto-save triggert tijdens het laden zelf
   const suppressAutoSaveRef=useRef(false);
 
-  // customCount wordt NIET automatisch gereset naar autoPanels (gebruiker kiest zelf)
+  if(!autoSaverRef.current){ autoSaverRef.current=createAutoSaver(1000); }
+
+  const buildProjectSnapshot=useCallback(()=>({
+    customer,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
+    selPanelId,selInvId,selBattId,battEnabled,customCount,panelOrient,panelRotOffset,
+    orientation,slope,manualPanelPrice,manualBatteryPrice,annualConsumption,
+    tlContactType:tlContact?.type||null,tlContactId:tlContact?.id||null,tlDealId:tlSelectedDealId,
+  }),[customer,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
+      selPanelId,selInvId,selBattId,battEnabled,customCount,panelOrient,panelRotOffset,
+      orientation,slope,manualPanelPrice,manualBatteryPrice,annualConsumption,
+      tlContact,tlSelectedDealId]);
+
+  useEffect(()=>{
+    if(suppressAutoSaveRef.current) return;
+    if(!customer?.name?.trim()) return;
+    const snapshot=buildProjectSnapshot();
+    autoSaverRef.current.saveNow(customer.name,snapshot);
+    const t=setTimeout(()=>setLastSavedAt(new Date()),1100);
+    return()=>clearTimeout(t);
+  },[buildProjectSnapshot,customer.name]);
+
+  useEffect(()=>{setProjectList(listProjects());},[lastSavedAt]);
+
+  const handleLoadProject=useCallback((customerName)=>{
+    const p=loadProject(customerName);
+    if(!p){alert("Project niet gevonden.");return;}
+    suppressAutoSaveRef.current=true;setIsLoadingProject(true);
+    const d=p.data||{};
+    if(d.customer) setCustomer(d.customer);
+    if(d.coords) setCoords(d.coords);
+    if(d.displayName!=null) setDisplayName(d.displayName);
+    if(d.buildingCoords) setBuildingCoords(d.buildingCoords);
+    if(d.detectedFaces) setDetectedFaces(d.detectedFaces);
+    if(d.selFaceIdx!=null) setSelFaceIdx(d.selFaceIdx);
+    if(d.selPanelId!=null) setSelPanelId(d.selPanelId);
+    if(d.selInvId!==undefined) setSelInvId(d.selInvId);
+    if(d.selBattId!=null) setSelBattId(d.selBattId);
+    if(d.battEnabled!=null) setBattEnabled(d.battEnabled);
+    if(d.customCount!=null) setCustomCount(d.customCount);
+    if(d.panelOrient) setPanelOrient(d.panelOrient);
+    if(d.panelRotOffset!=null) setPanelRotOffset(d.panelRotOffset);
+    if(d.orientation) setOrientation(d.orientation);
+    if(d.slope!=null) setSlope(d.slope);
+    if(d.manualPanelPrice!=null) setManualPanelPrice(d.manualPanelPrice);
+    if(d.manualBatteryPrice!=null) setManualBatteryPrice(d.manualBatteryPrice);
+    if(d.annualConsumption!=null) setAnnualConsumption(d.annualConsumption);
+    if(d.tlDealId!==undefined) setTlSelectedDealId(d.tlDealId);
+    setTimeout(()=>{suppressAutoSaveRef.current=false;setIsLoadingProject(false);setShowProjectMenu(false);},100);
+  },[]);
+
+  const handleNewProject=useCallback(()=>{
+    if(!confirm("Huidig project afsluiten en een nieuw project starten?")) return;
+    autoSaverRef.current?.flush();suppressAutoSaveRef.current=true;
+    setCustomer({name:"",address:"",email:""});setCoords(null);setDisplayName("");
+    setBuildingCoords(null);setDetectedFaces(null);setSelFaceIdx(0);setBattEnabled(false);
+    setCustomCount(10);setPanelRotOffset(0);setManualPanelPrice("");setManualBatteryPrice("");
+    setAnnualConsumption(3500);setResults(null);setAiText("");setEditableAiText("");
+    setMapSnapshot(null);setPanelsDrawn(false);
+    setTlContact(null);setTlQuery("");setTlResults([]);setTlSelectedDealId(null);
+    setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");
+    setTimeout(()=>{suppressAutoSaveRef.current=false;setShowProjectMenu(false);},100);
+  },[]);
+
+  const handleDownloadProject=useCallback(()=>{
+    if(!customer?.name?.trim()){alert("Vul eerst een klantnaam in.");return;}
+    autoSaverRef.current?.flush();
+    const ok=downloadProjectAsJSON(customer.name);
+    if(!ok) alert("Download mislukt.");
+  },[customer]);
+
+  const handleUploadProject=useCallback((file)=>{
+    const reader=new FileReader();
+    reader.onload=e=>{
+      const result=importProjectFromJSON(e.target.result);
+      if(!result.success){alert("Import mislukt: "+result.error);return;}
+      handleLoadProject(result.customerName);setLastSavedAt(new Date());
+    };
+    reader.readAsText(file);
+  },[handleLoadProject]);
+
+  const handleDeleteProject=useCallback((customerName)=>{
+    if(!confirm(`Project "${customerName}" definitief verwijderen?`)) return;
+    deleteProject(customerName);setLastSavedAt(new Date());
+    if(customer?.name?.toLowerCase()===customerName.toLowerCase()) handleNewProject();
+  },[customer,handleNewProject]);
 
   const selectFace=useCallback((idx,faces)=>{
     const f=(faces||detectedFaces)?.[idx];if(!f) return;
@@ -2416,13 +1959,11 @@ export default function App(){
     if(f.ridgeAngleDeg!=null) ridgeAngleDegRef.current=f.ridgeAngleDeg;
   },[detectedFaces]);
 
-  // Update ridgeAngleDegRef wanneer detectedFaces geladen wordt
   useEffect(()=>{
     const f=detectedFaces?.[selFaceIdx];
     if(f?.ridgeAngleDeg!=null) ridgeAngleDegRef.current=f.ridgeAngleDeg;
   },[detectedFaces,selFaceIdx]);
 
-  // Vertex drag handlers
   useEffect(()=>{detectedFacesRef.current=detectedFaces;},[detectedFaces]);
 
   const onVertexDrag=useCallback((faceIdx,vertexIdx,newLatLng)=>{
@@ -2453,166 +1994,6 @@ export default function App(){
 
   const redrawRoofRef=useRef(null);
 
-  // Initialiseer auto-saver (debounced: 1 seconde)
-  if(!autoSaverRef.current){
-    autoSaverRef.current=createAutoSaver(1000);
-  }
-
-  // Bouw de project-data snapshot op basis van de huidige app-state.
-  // Alles wat hier in zit wordt opgeslagen/hersteld bij project laden.
-  // We slaan de IDs op (selPanelId, selInvId, selBattId), niet de hele
-  // objecten — zo blijven projecten consistent met latere catalogus-updates.
-  const buildProjectSnapshot=useCallback(()=>({
-    customer,
-    coords,
-    displayName,
-    buildingCoords,
-    detectedFaces,
-    selFaceIdx,
-    selPanelId,
-    selInvId,
-    selBattId,
-    battEnabled,
-    customCount,
-    panelOrient,
-    panelRotOffset,
-    orientation,
-    slope,
-    manualPanelPrice,
-    manualBatteryPrice,
-    annualConsumption,
-    // Teamleader koppelingen — voor latere terugschrijving naar TL
-    tlContactType:tlContact?.type||null,
-    tlContactId:tlContact?.id||null,
-    tlDealId:tlSelectedDealId,
-  }),[customer,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
-      selPanelId,selInvId,selBattId,battEnabled,customCount,panelOrient,panelRotOffset,
-      orientation,slope,manualPanelPrice,manualBatteryPrice,annualConsumption,
-      tlContact,tlSelectedDealId]);
-
-  // Auto-save: triggert telkens als iets in de snapshot verandert én er een
-  // klantnaam is ingevuld. Debounced tot 1 sec na laatste wijziging.
-  useEffect(()=>{
-    if(suppressAutoSaveRef.current) return; // tijdens project-laden niet saven
-    if(!customer?.name?.trim()) return;      // geen naam = geen opslag
-    const snapshot=buildProjectSnapshot();
-    autoSaverRef.current.saveNow(customer.name,snapshot);
-    // Update "laatst opgeslagen" indicator na debounce-interval + kleine marge
-    const t=setTimeout(()=>setLastSavedAt(new Date()),1100);
-    return()=>clearTimeout(t);
-  },[buildProjectSnapshot,customer.name]);
-
-  // Refresh project-lijst bij mount en na save-events
-  useEffect(()=>{
-    setProjectList(listProjects());
-  },[lastSavedAt]);
-
-  // Laad een bestaand project terug in de app-state.
-  // suppressAutoSaveRef voorkomt dat de state-updates direct terug opslaan.
-  const handleLoadProject=useCallback((customerName)=>{
-    const p=loadProject(customerName);
-    if(!p){alert("Project niet gevonden.");return;}
-    suppressAutoSaveRef.current=true;
-    setIsLoadingProject(true);
-    const d=p.data||{};
-    // Volgorde: eerst customer, dan rest (zodat auto-save niet tussendoor triggert)
-    if(d.customer) setCustomer(d.customer);
-    if(d.coords) setCoords(d.coords);
-    if(d.displayName!=null) setDisplayName(d.displayName);
-    if(d.buildingCoords) setBuildingCoords(d.buildingCoords);
-    if(d.detectedFaces) setDetectedFaces(d.detectedFaces);
-    if(d.selFaceIdx!=null) setSelFaceIdx(d.selFaceIdx);
-    if(d.selPanelId!=null) setSelPanelId(d.selPanelId);
-    if(d.selInvId!==undefined) setSelInvId(d.selInvId);
-    if(d.selBattId!=null) setSelBattId(d.selBattId);
-    if(d.battEnabled!=null) setBattEnabled(d.battEnabled);
-    if(d.customCount!=null) setCustomCount(d.customCount);
-    if(d.panelOrient) setPanelOrient(d.panelOrient);
-    if(d.panelRotOffset!=null) setPanelRotOffset(d.panelRotOffset);
-    if(d.orientation) setOrientation(d.orientation);
-    if(d.slope!=null) setSlope(d.slope);
-    if(d.manualPanelPrice!=null) setManualPanelPrice(d.manualPanelPrice);
-    if(d.manualBatteryPrice!=null) setManualBatteryPrice(d.manualBatteryPrice);
-    if(d.annualConsumption!=null) setAnnualConsumption(d.annualConsumption);
-    // Teamleader: selected deal ID herstellen. Het volledige tlContact wordt
-    // niet hersteld — dat zou een nieuwe TL-call vragen. De gebruiker kan
-    // het opnieuw zoeken in TL als hij wijzigingen wil maken aan de klantdata.
-    if(d.tlDealId!==undefined) setTlSelectedDealId(d.tlDealId);
-    // Na de batch state-updates: auto-save weer aanzetten.
-    // React batcht synchroon; setTimeout zorgt dat alle useEffects gelopen zijn.
-    setTimeout(()=>{
-      suppressAutoSaveRef.current=false;
-      setIsLoadingProject(false);
-      setShowProjectMenu(false);
-    },100);
-  },[]);
-
-  // Nieuw project: wis alle klantspecifieke state om opnieuw te beginnen.
-  const handleNewProject=useCallback(()=>{
-    if(!confirm("Huidig project afsluiten en een nieuw project starten?")) return;
-    // Flush eventuele pending auto-save voor we alles wissen
-    autoSaverRef.current?.flush();
-    suppressAutoSaveRef.current=true;
-    setCustomer({name:"",address:"",email:""});
-    setCoords(null);
-    setDisplayName("");
-    setBuildingCoords(null);
-    setDetectedFaces(null);
-    setSelFaceIdx(0);
-    setBattEnabled(false);
-    setCustomCount(10);
-    setPanelRotOffset(0);
-    setManualPanelPrice("");
-    setManualBatteryPrice("");
-    setAnnualConsumption(3500);
-    setResults(null);
-    setAiText("");
-    setEditableAiText("");
-    setMapSnapshot(null);
-    setPanelsDrawn(false);
-    // Reset TL state
-    setTlContact(null);
-    setTlQuery("");
-    setTlResults([]);
-    setTlSelectedDealId(null);
-    setShowNewDealForm(false);
-    setNewDealTitle("");
-    setNewDealValue("");
-    setTimeout(()=>{suppressAutoSaveRef.current=false;setShowProjectMenu(false);},100);
-  },[]);
-
-  // Download huidig project als JSON-bestand
-  const handleDownloadProject=useCallback(()=>{
-    if(!customer?.name?.trim()){alert("Vul eerst een klantnaam in.");return;}
-    autoSaverRef.current?.flush(); // zorg dat laatste state gesaved is
-    const ok=downloadProjectAsJSON(customer.name);
-    if(!ok) alert("Download mislukt.");
-  },[customer]);
-
-  // Upload een JSON-bestand als nieuw project
-  const handleUploadProject=useCallback((file)=>{
-    const reader=new FileReader();
-    reader.onload=e=>{
-      const result=importProjectFromJSON(e.target.result);
-      if(!result.success){alert("Import mislukt: "+result.error);return;}
-      // Direct dat project laden
-      handleLoadProject(result.customerName);
-      setLastSavedAt(new Date()); // refresh lijst
-    };
-    reader.readAsText(file);
-  },[handleLoadProject]);
-
-  // Verwijder project
-  const handleDeleteProject=useCallback((customerName)=>{
-    if(!confirm(`Project "${customerName}" definitief verwijderen?`)) return;
-    deleteProject(customerName);
-    setLastSavedAt(new Date()); // refresh lijst
-    // Als het huidige project werd verwijderd, start een nieuw
-    if(customer?.name?.toLowerCase()===customerName.toLowerCase()){
-      handleNewProject();
-    }
-  },[customer,handleNewProject]);
-
   const redrawRoof=useCallback(()=>{
     if(!leafRef.current||!buildingCoords||!window.L) return;
     const L=window.L,map=leafRef.current;
@@ -2631,37 +2012,29 @@ export default function App(){
         setTimeout(()=>setDetectedFaces(facesToDraw),0);
       }
       const outlineLayer=L.polygon(buildingCoords,{color:"#e07b00",fillOpacity:0,weight:2,dashArray:"5,3"}).addTo(map);
-      const dimGroup=L.layerGroup().addTo(map); // voor afmetingslabels: wordt opgeruimd bij hertekenen
-
-      // Dakafmetingen langs ELKE ZIJDE van elk vlak
-      // Per edge: toon 3D lengte (slopcorrectie voor zijden loodrecht op nok)
+      const dimGroup=L.layerGroup().addTo(map);
       const mLat111=111320;
       const ridgeRad111=(detectedFaces[0]?.ridgeAngleDeg||0)*Math.PI/180;
       const cosRidge=Math.cos(ridgeRad111),sinRidge=Math.sin(ridgeRad111);
       facesToDraw.forEach(f=>{
         if(!f.polygon||f.polygon.length<3) return;
         const np=f.polygon.length;
-        const shown=new Set(); // voorkom dubbele labels op gedeelde nokranden
+        const shown=new Set();
         for(let ei=0;ei<np;ei++){
           const a=f.polygon[ei],b=f.polygon[(ei+1)%np];
           const dLat=b[0]-a[0],dLng=b[1]-a[1];
           const mLng111=111320*Math.cos(a[0]*Math.PI/180);
-          const dE=dLng*mLng111,dN=dLat*mLat111; // meter (Oost, Noord)
+          const dE=dLng*mLng111,dN=dLat*mLat111;
           const len2d=Math.sqrt(dE*dE+dN*dN);
-          if(len2d<2) continue; // te kort om te labelen
-          // Bepaal of zijde evenwijdig (nok) of loodrecht (helling) is
-          // Project rand op nokrichting: |dot| groot = evenwijdig met nok = 2D lengte
-          // Project op loodrechte: |dot| groot = loodrecht op nok = helling → 3D lengte
-          const dotNok=Math.abs(dE*sinRidge+dN*cosRidge)/len2d; // cos(hoek met nok)
+          if(len2d<2) continue;
+          const dotNok=Math.abs(dE*sinRidge+dN*cosRidge)/len2d;
           const slope3d=dotNok>0.5?len2d:len2d/Math.cos((f.slope||0)*Math.PI/180);
-          // Midpunt van de rand
           const midLat=(a[0]+b[0])/2,midLng=(a[1]+b[1])/2;
-          // Kleine offset loodrecht naar buiten (weg van centroïde)
           const cLat=f.polygon.reduce((s,p)=>s+p[0],0)/f.polygon.length;
           const cLng=f.polygon.reduce((s,p)=>s+p[1],0)/f.polygon.length;
           const offLat=(midLat-cLat)*0.18,offLng=(midLng-cLng)*0.18;
           const lKey=slope3d.toFixed(0);
-          if(shown.has(lKey)&&dotNok>0.5) continue; // dedupliceer nokranden
+          if(shown.has(lKey)&&dotNok>0.5) continue;
           shown.add(lKey);
           L.marker([midLat+offLat,midLng+offLng],{icon:L.divIcon({
             html:"<div style='background:rgba(0,0,0,.75);color:#fff;padding:1px 5px;border-radius:3px;font-size:8px;font-family:IBM Plex Mono,monospace;white-space:nowrap;transform:translate(-50%,-50%)'>"
@@ -2670,12 +2043,9 @@ export default function App(){
           }),interactive:false}).addTo(dimGroup);
         }
       });
-
-      const faceGroup=drawFacePolygons(
-        map,L,facesToDraw,selFaceIdx,
+      const faceGroup=drawFacePolygons(map,L,facesToDraw,selFaceIdx,
         (idx)=>{setSelFaceIdx(idx);setOrientation(facesToDraw[idx].orientation);setSlope(facesToDraw[idx].slope);},
-        editMode,selFaceIdx,onVertexDrag,onVertexDragEnd
-      );
+        editMode,selFaceIdx,onVertexDrag,onVertexDragEnd);
       roofLayerRef.current={remove:()=>{map.removeLayer(outlineLayer);map.removeLayer(dimGroup);if(faceGroup) map.removeLayer(faceGroup);}};
     } else {
       roofLayerRef.current=drawRealRoof(map,L,buildingCoords,orientation);
@@ -2684,24 +2054,20 @@ export default function App(){
 
   redrawRoofRef.current=redrawRoof;
   useEffect(()=>{if(mapReady&&buildingCoords) redrawRoof();},[mapReady,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode]);
-  useEffect(()=>{if(activeTab==="configuratie"&&leafRef.current&&mapReady){setTimeout(()=>leafRef.current?.invalidateSize?.(),50);}},[ activeTab,mapReady]);
+  useEffect(()=>{if(activeTab==="configuratie"&&leafRef.current&&mapReady){setTimeout(()=>leafRef.current?.invalidateSize?.(),50);}},[activeTab,mapReady]);
 
   useEffect(()=>{
     if(!panelsDrawn||!buildingCoords||!selPanel||!leafRef.current||!window.L||!coords) return;
     const L=window.L,map=leafRef.current;
     if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
-    // Zorg dat polygon aanwezig is — roep generateFacePolygons aan indien nodig
     let _sf=detectedFaces?.[selFaceIdx];
     if(_sf&&!_sf.polygon&&buildingCoords){
       const withPolys=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);
-      setDetectedFaces(withPolys);
-      _sf=withPolys?.[selFaceIdx]||_sf;
+      setDetectedFaces(withPolys);_sf=withPolys?.[selFaceIdx]||_sf;
     }
     const _fp=_sf?.polygon||buildingCoords;
     const _ridge2=ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0;
     const _fp2=_fp.length>=3?_fp:(buildingCoords?makeFacePoly(buildingCoords,orientation,_ridge2):buildingCoords)||buildingCoords;
-    // Na BUG-11: packPanels detecteert nokrichting zelf via edge-voting.
-    // We geven hier alleen de slider-offset door, niet het totaal.
     const _ra=panelRotOffset;
     panelLayerRef.current=drawPanelLayer(map,L,_fp2,panelCount,selPanel,_ra,panelOrient,panelDataRef,panelMoveMode);
   },[panelCount,selPanel,panelsDrawn,panelRotOffset]);
@@ -2714,10 +2080,10 @@ export default function App(){
     scr.src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
     scr.onload=()=>setMapReady(true);document.head.appendChild(scr);
   },[]);
+
   useEffect(()=>{
     if(!mapReady||leafRef.current) return;
     const L=window.L,map=L.map("leaflet-map",{center:[50.85,4.35],zoom:8});
-    // Start met luchtfoto
     baseTileRef.current=L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       {attribution:"© Esri World Imagery",maxZoom:21,maxNativeZoom:18}
@@ -2728,7 +2094,6 @@ export default function App(){
   useEffect(()=>{
     if(!leafRef.current||!mapReady) return;
     const L=window.L,map=leafRef.current;
-    // Wissel base tile laag
     if(baseTileRef.current){map.removeLayer(baseTileRef.current);}
     if(activeLayer==="kaart"){
       baseTileRef.current=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:"© OSM",maxZoom:21}).addTo(map);
@@ -2738,7 +2103,6 @@ export default function App(){
         {attribution:"© Esri World Imagery",maxZoom:21,maxNativeZoom:18}
       ).addTo(map);
     }
-    // DHM overlay
     if(dhmLayerRef.current) map.removeLayer(dhmLayerRef.current);
     if(activeLayer==="dsm"||activeLayer==="dtm"){
       const lyr=L.tileLayer.wms(DHM_WMS,{
@@ -2759,14 +2123,12 @@ export default function App(){
 
   const selectingRef2=useRef(false);
   const selectAddr=async(item)=>{
-    if(selectingRef2.current) return; // voorkom dubbele aanroep
-    selectingRef2.current=true;
-    setTimeout(()=>{selectingRef2.current=false;},2000);
+    if(selectingRef2.current) return;
+    selectingRef2.current=true;setTimeout(()=>{selectingRef2.current=false;},2000);
     setShowSuggs(false);setSuggs([]);
     setQuery(item.display_name.split(",").slice(0,3).join(","));
     const lat=parseFloat(item.lat),lng=parseFloat(item.lon);
     setCoords({lat,lng});setDisplayName(item.display_name);
-    // Adres invullen bij klant als leeg
     setCustomer(p=>p.address?p:{...p,address:item.display_name.split(",").slice(0,3).join(",")});
     setPanelsDrawn(false);setBuildingCoords(null);setDetectedArea(null);
     setDetectedFaces(null);setDhmStatus("idle");setDhmError("");setGrbStatus("loading");
@@ -2785,7 +2147,6 @@ export default function App(){
         const ring=bld.geometry.type==="Polygon"?bld.geometry.coordinates[0]:bld.geometry.coordinates[0][0];
         lCoords=geoToLeaflet(ring);
         setDetectedArea(Math.round(polyAreaLambert72(lCoords)));setBuildingCoords(lCoords);setCustomCount(10);setGrbStatus("ok");
-        // Bereken nokrichting via PCA van GRB-contour (ook beschikbaar als LiDAR faalt)
         try{
           const lamPts2=lCoords.map(([la,ln])=>wgs84ToLambert72(la,ln));
           const cx3=lamPts2.reduce((s,p)=>s+p[0],0)/lamPts2.length;
@@ -2812,7 +2173,7 @@ export default function App(){
     try{
       const faces=await analyzeDHM(bc);
       if(faces?.length>0){setDetectedFaces(faces);setSelFaceIdx(0);setOrientation(faces[0].orientation);setSlope(faces[0].slope);setDhmStatus("ok");}
-      else{setDhmStatus("error");setDhmError("Geen dakvlakken gevonden in LiDAR data (plat dak of kleine bounding box).");}
+      else{setDhmStatus("error");setDhmError("Geen dakvlakken gevonden in LiDAR data.");}
     }catch(e){console.error("DHM:",e);setDhmStatus("error");setDhmError(e.message||"WCS endpoint niet bereikbaar");}
   };
 
@@ -2821,46 +2182,25 @@ export default function App(){
     const irr=getSolarIrr(orientation,slope);
     const actualArea=panelCount*selPanel.area,annualKwh=Math.round(actualArea*irr*(selPanel.eff/100));
     const co2=Math.round(annualKwh*.202);
-    // Dekkingsgraad t.o.v. werkelijk verbruik (was: hardcoded 3500 kWh aanname)
     const consumption=Math.max(annualConsumption||3500,1);
     const coverage=Math.round((annualKwh/consumption)*100);
-    // Installatieprijs uit offerte — VERPLICHT.
-    // Catalogus heeft geen prijzen meer (price:0 voor alle items).
-    // Gebruiker MOET de offerte-prijs zelf invullen op de Resultaten tab.
     const mpp=parseFloat(manualPanelPrice);
-    // 0 = niet ingevuld → null zodat we duidelijk kunnen aangeven "wachten op prijs"
     const investPanels=(isFinite(mpp)&&mpp>0)?Math.round(mpp):null;
-
-    // ─── REALISTISCHE BESPARING in Vlaanderen 2026 ────────────────────────
-    // Salderen bestaat niet meer. Opwek splitst in:
-    //   - Zelfverbruik (eigen huis verbruikt direct) → bespaart aankoopprijs €0.28/kWh
-    //   - Injectie (overschot naar net) → vergoed aan ~€0.05/kWh
-    //
-    // Zelfconsumptiegraad zonder batterij: ~30% van opwek (typisch Vlaams huishouden)
-    // Met batterij: ~70%
-    const PRIJS_AANKOOP=0.28;
-    const PRIJS_INJECTIE=0.05;
-    const selfRatioBase=0.30;
-    const selfRatioBatt=0.70;
-
+    const PRIJS_AANKOOP=0.28,PRIJS_INJECTIE=0.05,selfRatioBase=0.30,selfRatioBatt=0.70;
     const selfKwhBase=Math.min(annualKwh*selfRatioBase,consumption);
     const injectKwhBase=Math.max(annualKwh-selfKwhBase,0);
     const annualBase=Math.round(selfKwhBase*PRIJS_AANKOOP+injectKwhBase*PRIJS_INJECTIE);
-    // Terugverdientijd alleen berekenen als er een prijs is
     const paybackBase=investPanels!==null?Math.round(investPanels/Math.max(annualBase,1)):null;
 
     let battResult=null;
     if(battEnabled&&selBatt){
       const mbp=parseFloat(manualBatteryPrice);
-      // manualBatteryPrice = TOTAAL met batterij (panelen + omvormer + batterij + installatie),
-      // niet enkel de batterij-prijs. Dit is hoe offertes typisch werken.
       const totInvBatt=(isFinite(mbp)&&mbp>0)?Math.round(mbp):null;
       const selfKwhBatt=Math.min(annualKwh*selfRatioBatt,consumption);
       const injectKwhBatt=Math.max(annualKwh-selfKwhBatt,0);
       const totSav=Math.round(selfKwhBatt*PRIJS_AANKOOP+injectKwhBatt*PRIJS_INJECTIE);
       const extraSav=totSav-annualBase;
       const payback=(totInvBatt!==null)?Math.round(totInvBatt/Math.max(totSav,1)):null;
-      // Afgeleide batterij-meerprijs (alleen voor info-display)
       const battOnlyPrice=(totInvBatt!==null&&investPanels!==null)?totInvBatt-investPanels:null;
       battResult={extraSav,totSav,totInv:totInvBatt,payback,battPrice:battOnlyPrice,
         selfRatio:selfRatioBatt,selfKwh:Math.round(selfKwhBatt),injectKwh:Math.round(injectKwhBatt)};
@@ -2868,40 +2208,30 @@ export default function App(){
     setResults({irr,panelCount,actualArea:Math.round(actualArea),annualKwh,co2,coverage,
       investPanels,annualBase,paybackBase,battResult,panel:selPanel,inv:selInv,batt:battEnabled?selBatt:null,
       detectedArea,grbOk:grbStatus==="ok",dhmOk:dhmStatus==="ok",orientation,slope,
-      stringDesign:stringDesign||null,
-      // Nieuwe velden voor verbruik-informatie
-      consumption:Math.round(consumption),
-      selfKwhBase:Math.round(selfKwhBase),
-      injectKwhBase:Math.round(injectKwhBase),
-      selfRatioBase,
-      priceBuy:PRIJS_AANKOOP,
-      priceInject:PRIJS_INJECTIE});
+      stringDesign:stringDesign||null,consumption:Math.round(consumption),
+      selfKwhBase:Math.round(selfKwhBase),injectKwhBase:Math.round(injectKwhBase),
+      selfRatioBase,priceBuy:PRIJS_AANKOOP,priceInject:PRIJS_INJECTIE});
     if(leafRef.current&&window.L){
       const L=window.L,map=leafRef.current;
       if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
-      // panel drawing now in useEffect above
       setPanelsDrawn(true);
     }
     setActiveTab("resultaten");setAiLoading(true);setAiText("");setEditableAiText("");
     try{
       const dhmStr=dhmStatus==="ok"&&detectedFaces?`\nDHM LiDAR: ${detectedFaces.map(f=>`${f.orientation} ${f.slope}° (${f.pct}%)`).join(", ")}`:"\nHandmatige invoer.";
       const invStr=selInv?`\nOmvormer: ${selInv.brand} ${selInv.model} (${selInv.kw}kW)`:"Geen omvormer.";
-      const battStr=battResult?`\nBatterij: ${selBatt.brand} ${selBatt.model} (${selBatt.kwh}kWh, €${selBatt.price}) · Extra: €${battResult.extraSav}/j · Terugverdien: ${battResult.payback}j`:"Geen batterij.";
+      const battStr=battResult?`\nBatterij: ${selBatt.brand} ${selBatt.model} (${selBatt.kwh}kWh) · Extra: €${battResult.extraSav}/j · Terugverdien: ${battResult.payback}j`:"Geen batterij.";
       const resp=await fetch(AI_PROXY_URL,{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,
-          messages:[{role:"user",content:`Je bent een onafhankelijk PV-installatie expert voor woningen in Vlaanderen, België. Geef een beknopt en professioneel advies in het Nederlands voor onderstaande installatie. Belangrijk:
+          messages:[{role:"user",content:`Je bent een onafhankelijk PV-installatie expert voor woningen in Vlaanderen, België. Geef een beknopt en professioneel advies in het Nederlands voor onderstaande installatie.
 
 CONTEXT VLAANDEREN 2026:
-- Salderen bestaat NIET meer in Vlaanderen sinds 2021 (digitale meter verplicht).
-- Eigen verbruik is essentieel: opbrengst die direct verbruikt wordt is de meest waardevolle (bespaart aankoopprijs ~€0,28/kWh inclusief BTW).
-- Injectie naar het net wordt vergoed aan de injectievergoeding (~€0,03–0,06/kWh, sterk variabel per leverancier).
-- Capaciteitstarief is van toepassing sinds 2023: piekverbruik (kW) bepaalt distributiekosten naast verbruik (kWh). Een batterij of slim laden kan dit drukken.
-- Prosumententarief is afgeschaft (was vergoeding voor digitale meter, niet meer relevant).
-- BTW 6% is enkel mogelijk bij installatie op een woning ouder dan 10 jaar; anders 21%.
-- Geen vaste premies meer voor PV (REG-premie afgeschaft 2024). Wel premie voor batterijen via Fluvius mogelijk afhankelijk van regio en periode.
-- Realistische terugverdientijd in 2026: 7–11 jaar voor PV-installatie zonder batterij, 9–13 jaar met batterij.
+- Salderen bestaat NIET meer. Eigen verbruik bespaart ~€0,28/kWh, injectie levert ~€0,03–0,06/kWh.
+- Capaciteitstarief van toepassing. Batterij kan piekverbruik drukken.
+- BTW 6% enkel bij woning ouder dan 10 jaar. Geen REG-premie meer.
+- Realistisch terugverdien: 7–11 jaar PV zonder batterij, 9–13 jaar met.
 
-INSTALLATIE GEGEVENS:
+INSTALLATIE:
 Locatie: ${displayName}
 Dak: ${grbStatus==="ok"?"GRB-contour":"Schatting"} · ${detectedArea||80} m²${dhmStr}
 Paneel: ${selPanel.brand} ${selPanel.model} (${selPanel.watt}W, ${selPanel.eff}%)
@@ -2909,18 +2239,18 @@ Aantal: ${panelCount} · ${Math.round(actualArea)} m² · ${((panelCount*selPane
 Helling: ${slope}° ${orientation} · ${irr} kWh/m²/j
 ${invStr}
 Opbrengst: ${annualKwh} kWh/j · CO₂: ${co2} kg/j
-Klant jaarverbruik: ${consumption} kWh · dekkingsgraad ${coverage}% · zelfverbruik ${Math.round(selfRatioBase*100)}% (${Math.round(selfKwhBase)} kWh) · injectie ${Math.round(injectKwhBase)} kWh
-Investering: ${investPanels!==null?"€"+investPanels.toLocaleString():"nog niet ingevuld"} · Besparing: €${annualBase}/j · Terugverdien: ${paybackBase!==null?paybackBase+"j":"niet bepaalbaar"}
+Klant verbruik: ${consumption} kWh · dekking ${coverage}% · zelfverbruik ${Math.round(selfRatioBase*100)}%
+Investering: ${investPanels!==null?"€"+investPanels.toLocaleString():"niet ingevuld"} · Besparing: €${annualBase}/j · Terugverdien: ${paybackBase!==null?paybackBase+"j":"—"}
 ${battStr}
 
-GEEF EEN ADVIES VAN MAX 200 WOORDEN MET:
-1. Beoordeling van paneelkeuze en daksituatie (oriëntatie, helling, opbrengst)
-2. Eigen verbruik en zelfconsumptie — concrete tips voor deze installatie
-3. Capaciteitstarief implicaties${battEnabled?" en hoe de batterij dit beïnvloedt":""}
-4. Realistische verwachting terugverdientijd in Vlaamse context
-5. Aandachtspunten zoals BTW-tarief (woningouder 10j), keuring conform AREI, conformiteitsverklaring Synergrid C10/11
+GEEF ADVIES VAN MAX 200 WOORDEN:
+1. Paneelkeuze en daksituatie beoordeling
+2. Eigen verbruik tips
+3. Capaciteitstarief implicaties
+4. Realistisch terugverdientijd verwachting
+5. Aandachtspunten (BTW, AREI, C10/11)
 
-Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschafte regelingen (geen salderen, geen REG-premie, geen prosumententarief).`}]})});
+Wees concreet en feitelijk. Geen verkooppraat.`}]})});
       const d=await resp.json();
       const text=d.content?.find(b=>b.type==="text")?.text||"Analyse niet beschikbaar.";
       setAiText(text);setEditableAiText(text);
@@ -2928,76 +2258,114 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
     setAiLoading(false);
   };
 
-  // Pre-capture de Leaflet kaart als data-URL voor het rapport.
-  // Voorkomt timing-issues met SVG-paneel-overlay die soms niet
-  // verschijnt op een live capture vanuit een andere tab.
+  // ═══════════════════════════════════════════════════════════════════════
+  //  FIXED handleSnapshot
+  //  Kernprobleem was: Esri tiles (arcgisonline.com) hebben GEEN CORS headers.
+  //  Zodra html2canvas die tiles op een <canvas> zet, wordt de canvas "tainted".
+  //  canvas.toDataURL() op een tainted canvas → SecurityError → geen snapshot.
+  //
+  //  Fix: tijdelijk OSM tiles laden (Access-Control-Allow-Origin: *)
+  //  Capture met allowTaint:false + useCORS:true → toDataURL() werkt
+  //  Na capture: originele tiles herstellen.
+  // ═══════════════════════════════════════════════════════════════════════
   const handleSnapshot=useCallback(async()=>{
     if(!leafRef.current){
-      alert("Kaart nog niet geladen. Probeer opnieuw.");return;
+      alert("Kaart nog niet geladen. Probeer opnieuw."); return;
     }
     if(!panelsDrawn){
       alert("Klik eerst op 'Toon X panelen op dak' zodat de panelen zichtbaar zijn.");
       return;
     }
+
     setSnapshotLoading(true);
+    const map=leafRef.current;
+    const L=window.L;
+    let osmLayer=null;
+    const origTile=baseTileRef.current;
+
     try{
-      // html2canvas is lazy-loaded — wordt pas ingelezen wanneer nodig.
-      // Bij de eerste klik op deze knop moet hij eerst opgehaald worden.
       if(!window.html2canvas){
         await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
       }
+
       const mapEl=document.getElementById("leaflet-map");
-      if(!mapEl){throw new Error("Kaart-element niet gevonden");}
-      // Forceer Leaflet om alle lagen te herrenderen
-      leafRef.current.invalidateSize(true);
-      await new Promise(r=>setTimeout(r,300));
-      const canvas=await window.html2canvas(mapEl,{
-        useCORS:true,allowTaint:true,scale:1.5,
-        logging:false,backgroundColor:"#f1f5f9",
-        foreignObjectRendering:false
+      if(!mapEl) throw new Error("Kaart-element niet gevonden");
+
+      // Tijdelijk OSM tiles (CORS-enabled) vervangen Esri tiles
+      osmLayer=L.tileLayer(
+        "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        {attribution:"© OpenStreetMap contributors",maxZoom:21,crossOrigin:""}
+      );
+      if(origTile) map.removeLayer(origTile);
+      osmLayer.addTo(map);
+
+      // Wacht tot OSM tiles geladen zijn (max 3s)
+      await new Promise(resolve=>{
+        let done=false;
+        const finish=()=>{if(!done){done=true;resolve();}};
+        osmLayer.on("load",finish);
+        setTimeout(finish,3000);
       });
+
+      map.invalidateSize(true);
+      await new Promise(r=>setTimeout(r,250));
+
+      const canvas=await window.html2canvas(mapEl,{
+        useCORS:              true,
+        allowTaint:           false,   // false + OSM CORS tiles = toDataURL() werkt
+        scale:                1.5,
+        logging:              false,
+        backgroundColor:      "#e8e8e8",
+        foreignObjectRendering:false,
+        imageTimeout:         15000,
+        onclone:(clonedDoc)=>{
+          // Zorg dat Leaflet SVG overlay (panelen, dakpolygonen) volledig zichtbaar is
+          clonedDoc.querySelectorAll(".leaflet-overlay-pane svg").forEach(svg=>{
+            svg.style.overflow="visible";
+          });
+          clonedDoc.querySelectorAll(".leaflet-pane").forEach(pane=>{
+            pane.style.display="block";
+          });
+        },
+      });
+
       const dataUrl=canvas.toDataURL("image/jpeg",0.85);
-      setMapSnapshot({dataUrl,width:canvas.width,height:canvas.height,timestamp:Date.now()});
+      setMapSnapshot({
+        dataUrl,
+        width:  canvas.width,
+        height: canvas.height,
+        timestamp: Date.now(),
+      });
+
     }catch(e){
-      alert("Foto maken mislukt: "+(e.message||"onbekende fout"));
+      console.error("[ZonneDak] Snapshot fout:",e);
+      alert("Foto maken mislukt: "+(e.message||"onbekende fout")+
+            "\n\nTip: zorg dat panelen zichtbaar zijn en probeer opnieuw.");
+    }finally{
+      // Altijd originele tiles herstellen — ook bij fout
+      if(osmLayer){try{map.removeLayer(osmLayer);}catch{}}
+      if(origTile) {try{origTile.addTo(map);       }catch{}}
+      setSnapshotLoading(false);
     }
-    setSnapshotLoading(false);
   },[panelsDrawn]);
 
   const handlePDF=async()=>{
     if(!results) return;
     setPdfLoading(true);
-    // Als gebruiker via "📸 Foto opslaan voor rapport" een snapshot heeft gemaakt,
-    // gebruiken we die direct — geen tab-switch nodig en geen timing-issues.
-    // Anders fallback: tab switchen + live capturen.
     let previousTab=null;
     if(!mapSnapshot){
-      previousTab=activeTab;
-      setActiveTab("configuratie");
+      previousTab=activeTab;setActiveTab("configuratie");
       await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
       await new Promise(r=>setTimeout(r,300));
       if(leafRef.current?.invalidateSize) leafRef.current.invalidateSize(true);
-      if(leafRef.current){
-        const c=leafRef.current.getCenter();
-        const z=leafRef.current.getZoom();
-        leafRef.current.panBy([1,0],{animate:false});
-        leafRef.current.panBy([-1,0],{animate:false});
-        leafRef.current.setView(c,z,{animate:false});
-      }
       await new Promise(resolve=>{
-        let done=false;
-        const finish=()=>{if(!done){done=true;resolve();}};
-        if(leafRef.current){
-          leafRef.current.once("load",finish);
-          setTimeout(finish,1500);
-        }else{setTimeout(finish,800);}
+        let done=false;const finish=()=>{if(!done){done=true;resolve();}};
+        if(leafRef.current){leafRef.current.once("load",finish);setTimeout(finish,1500);}
+        else{setTimeout(finish,800);}
       });
       await new Promise(r=>setTimeout(r,400));
     }
-    try{
-      // Geef snapshot + bewerkbaar AI-advies mee aan generatePDF
-      await generatePDF(results,customer,displayName,slope,orientation,mapSnapshot,editableAiText);
-    }
+    try{await generatePDF(results,customer,displayName,slope,orientation,mapSnapshot,editableAiText);}
     catch(e){alert(`PDF fout: ${e.message}`);}
     setPdfLoading(false);
     if(previousTab) setActiveTab(previousTab);
@@ -3007,10 +2375,7 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
   const filteredBatt=battFilter==="alle"?batteries:battFilter==="alpha"?batteries.filter(b=>b.isAlpha):batteries.filter(b=>!b.isAlpha);
   const zq=ZONE_Q[orientation]||ZONE_Q.Z;
   const dhmHits=new Set(detectedFaces?.map(f=>f.orientation)||[]);
-  // String design — alleen berekenen als panel + omvormer beide volledige specs hebben
-  const stringDesign = (selPanel?.voc && selInv?.maxDcVoltage)
-    ? computeStringDesign(selPanel, selInv, panelCount)
-    : null;
+  const stringDesign=(selPanel?.voc&&selInv?.maxDcVoltage)?computeStringDesign(selPanel,selInv,panelCount):null;
   const isLoading=grbStatus==="loading"||dhmStatus==="loading";
 
   const TABS=[
@@ -3019,6 +2384,7 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
     {k:"batterij",l:"05 Batterij"},{k:"technisch",l:"06 Technisch"},
     {k:"resultaten",l:"07 Resultaten"}
   ];
+
 
   return(<><style>{STYLES}</style>
   <div className="app">
@@ -3032,14 +2398,11 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
     </header>
     <div className="tabs">{TABS.map(t=><button key={t.k} className={`tab ${activeTab===t.k?"active":""}`} onClick={()=>{setActiveTab(t.k);if(t.k==="configuratie")setTimeout(()=>{if(leafRef.current)leafRef.current.invalidateSize?.();},80);}}>{t.l}</button>)}</div>
     <div className="main">
-      {/* ── Sidebar ── */}
       <aside className="sidebar">
-        {/* Locatie */}
         <div>
           <div className="sl">Locatie</div>
           <div style={{display:"flex",flexDirection:"column",gap:5}}>
             <div className="sugg-wrap">
-                {/* FIX dubbel klikken: mouseDown stopt blur, click selecteert */}
               <input className="inp" placeholder="Adres in Vlaanderen..." value={query}
                 onChange={e=>{setQuery(e.target.value);setShowSuggs(true);}}
                 onFocus={()=>setSuggs(s=>s)}
@@ -3059,7 +2422,6 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
           </div>
         </div>
 
-        {/* DHM */}
         {dhmStatus!=="idle"&&<div>
           <div className="sl">LiDAR Analyse</div>
           {dhmStatus==="loading"&&<div className="info-box" style={{flexDirection:"column",gap:4}}>
@@ -3069,10 +2431,8 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
           {(dhmStatus==="ok"||dhmStatus==="error")&&detectedFaces&&<div>
             <div className="info-box dhm-ok" style={{marginBottom:5}}>
               {dhmStatus==="ok"
-                ?<><strong>✅ {detectedFaces.length} dakvlak(ken) gedetecteerd via LiDAR</strong>
-                   <span style={{display:"block",marginTop:3,fontSize:8,color:"var(--muted)"}}>GRB-contour · EPSG:31370</span></>
-                :<><strong style={{color:"#92400e"}}>⚠️ LiDAR niet beschikbaar</strong> — GRB-contour gebruikt
-                   <span style={{display:"block",marginTop:3,fontSize:8,color:"var(--muted)"}}>{dhmError}</span></>
+                ?<><strong>✅ {detectedFaces.length} dakvlak(ken) gedetecteerd via LiDAR</strong><span style={{display:"block",marginTop:3,fontSize:8,color:"var(--muted)"}}>GRB-contour · EPSG:31370</span></>
+                :<><strong style={{color:"#92400e"}}>⚠️ LiDAR niet beschikbaar</strong> — GRB-contour gebruikt<span style={{display:"block",marginTop:3,fontSize:8,color:"var(--muted)"}}>{dhmError}</span></>
               }
             </div>
             <div className="face-grid">
@@ -3086,17 +2446,11 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
                 const face3d=f.area3d_manual||compute3dArea(face2d,f.slope);
                 return(
                   <button key={i} className={`face-btn ${selFaceIdx===i?"active":""}`} onClick={()=>selectFace(i,detectedFaces)}>
-                    <span className="fb-main">{f.isFlatRoof?"🏢 ":""}{f.orientation} · {f.slope}°
-                      {f.status==="manual"&&<span style={{fontSize:7,color:"var(--amber)",marginLeft:4}}>✏️</span>}
-                    </span>
+                    <span className="fb-main">{f.isFlatRoof?"🏢 ":""}{f.orientation} · {f.slope}°{f.status==="manual"&&<span style={{fontSize:7,color:"var(--amber)",marginLeft:4}}>✏️</span>}</span>
                     <span className="fb-sub">{f.pct}% · {f.avgH}m hoogte</span>
-                    <span style={{fontSize:8,color:"var(--blue)",display:"block",marginTop:2}}>
-                      3D: {face3d.toFixed(0)}m² <span style={{color:"var(--muted)"}}>(2D: {face2d.toFixed(0)}m²)</span>
-                    </span>
+                    <span style={{fontSize:8,color:"var(--blue)",display:"block",marginTop:2}}>3D: {face3d.toFixed(0)}m² <span style={{color:"var(--muted)"}}>(2D: {face2d.toFixed(0)}m²)</span></span>
                     <span style={{fontSize:8,color:selFaceIdx===i?"var(--alpha)":qC.c,display:"block"}}>{qC.l}</span>
-                    {conf>0&&<span style={{fontSize:7,color:confColor,display:"block"}}>
-                      {conf>=0.7?"✅":conf>=0.4?"⚠️":"❌"} conf: {Math.round(conf*100)}%
-                    </span>}
+                    {conf>0&&<span style={{fontSize:7,color:confColor,display:"block"}}>{conf>=0.7?"✅":conf>=0.4?"⚠️":"❌"} conf: {Math.round(conf*100)}%</span>}
                   </button>
                 );
               })}
@@ -3106,15 +2460,11 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
                 ?<button className="btn sec sm" style={{flex:1}} onClick={()=>{
                     if(!detectedFaces[selFaceIdx]?.polygon){
                       const withPolys=generateFacePolygons(buildingCoords,detectedFaces,detectedFaces[0]?.ridgeAngleDeg);
-                      setDetectedFaces(withPolys);
-                      setTimeout(()=>setEditMode(true),50);
+                      setDetectedFaces(withPolys);setTimeout(()=>setEditMode(true),50);
                     } else {setEditMode(true);}
                   }}>✏️ Dakvlak aanpassen</button>
                 :<>
-                  <button className="btn green sm" style={{flex:1}} onClick={()=>{
-                    setDetectedFaces(prev=>prev?.map((f,i)=>i===selFaceIdx?{...f,status:"manual"}:f));
-                    setEditMode(false);
-                  }}>✅ Bevestig</button>
+                  <button className="btn green sm" style={{flex:1}} onClick={()=>{setDetectedFaces(prev=>prev?.map((f,i)=>i===selFaceIdx?{...f,status:"manual"}:f));setEditMode(false);}}>✅ Bevestig</button>
                   <button className="btn danger sm" onClick={()=>setEditMode(false)}>✕</button>
                 </>
               }
@@ -3127,20 +2477,13 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
                 setDetectedFaces(prev=>[...prev.slice(0,selFaceIdx),half1,half2,...prev.slice(selFaceIdx+1)]);
               }}>➕ Splits</button>}
             </div>
-            {editMode&&<div className="info-box" style={{marginTop:5,background:"#fffbeb",borderColor:"#fde68a",fontSize:9}}>
-              <strong>✏️ Editeer modus</strong> — Versleep oranje bolletjes op de kaart. Rode bol = samenvoegen bij loslaten.
-            </div>}
+            {editMode&&<div className="info-box" style={{marginTop:5,background:"#fffbeb",borderColor:"#fde68a",fontSize:9}}><strong>✏️ Editeer modus</strong> — Versleep oranje bolletjes op de kaart.</div>}
           </div>}
-          {dhmStatus==="error"&&!detectedFaces&&<div className="info-box err">
-            <strong>⚠️ LiDAR niet beschikbaar</strong><br/>
-            <span style={{fontSize:8,color:"var(--muted)"}}>{dhmError}</span><br/>
-            Stel helling &amp; richting handmatig in hieronder.
-          </div>}
+          {dhmStatus==="error"&&!detectedFaces&&<div className="info-box err"><strong>⚠️ LiDAR niet beschikbaar</strong><br/><span style={{fontSize:8,color:"var(--muted)"}}>{dhmError}</span><br/>Stel helling &amp; richting handmatig in hieronder.</div>}
         </div>}
 
         <div className="divider"/>
 
-        {/* Dakparameters */}
         <div>
           <div className="sl">Dakparameters</div>
           <div style={{display:"flex",flexDirection:"column",gap:9}}>
@@ -3171,7 +2514,6 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
 
         <div className="divider"/>
 
-        {/* Geselecteerd paneel */}
         <div>
           <div className="sl">Geselecteerd paneel</div>
           <div className="card selected" style={{cursor:"default"}}>
@@ -3180,8 +2522,6 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
           </div>
           <button className="btn sec full" style={{marginTop:6}} onClick={()=>setActiveTab("panelen")}>Paneel wijzigen →</button>
         </div>
-
-        {/* Omvormer */}
         <div>
           <div className="sl">AlphaESS Omvormer</div>
           {selInv?<div className="inv-card selected" style={{cursor:"default"}}>
@@ -3191,8 +2531,6 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
           </div>:<div className="info-box" style={{fontSize:11}}>Geen omvormer geselecteerd</div>}
           <button className="btn alpha full" style={{marginTop:6}} onClick={()=>setActiveTab("omvormers")}>{selInv?"Omvormer wijzigen →":"AlphaESS kiezen →"}</button>
         </div>
-
-        {/* Aantal */}
         <div>
           <div className="sl">Aantal panelen</div>
           <div style={{display:"flex",gap:5,marginBottom:6}}>
@@ -3221,8 +2559,6 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
             </div>
           </div>
         </div>
-
-        {/* Batterij */}
         <div>
           <div className="sl">Thuisbatterij</div>
           <div className="toggle-row" style={{marginBottom:5}}>
@@ -3233,6 +2569,7 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
         </div>
 
         <div className="divider"/>
+
         <button className="btn sec full" style={{marginBottom:5}} onClick={()=>{
           if(!coords||!buildingCoords||!selPanel) return;
           if(panelDataRef) panelDataRef.current=null;
@@ -3241,16 +2578,11 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
             const L=window.L,map=leafRef.current;
             if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
             let _sf=detectedFaces?.[selFaceIdx];
-            if(_sf&&!_sf.polygon&&buildingCoords){
-              const wp=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);
-              setDetectedFaces(wp);_sf=wp?.[selFaceIdx]||_sf;
-            }
+            if(_sf&&!_sf.polygon&&buildingCoords){const wp=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);setDetectedFaces(wp);_sf=wp?.[selFaceIdx]||_sf;}
             const _ridge=ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0;
-            // Als geen face-polygon: clip GRB op geselecteerde oriëntatie
             const _fp=_sf?.polygon||(buildingCoords?makeFacePoly(buildingCoords,orientation,_ridge):buildingCoords)||buildingCoords;
-            const _ra=panelRotOffset; // na BUG-11: alleen offset, nok-detectie gebeurt in packPanels
             console.info("[ZonneDak] Toon panelen: auto_ridge="+_ridge+"° offset="+panelRotOffset+"° orient="+orientation+" fp_pts="+_fp.length);
-            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,false);
+            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,panelDataRef,false);
             setPanelsDrawn(true);
           }
           setActiveTab("configuratie");
@@ -3258,23 +2590,21 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
         }} disabled={!coords||!buildingCoords||isLoading}>
           🏠 Toon {panelCount} panelen op dak
         </button>
-        {/* Foto opslaan voor PDF rapport — robuuste manier om panelen
-            in het rapport te krijgen, zonder timing-issues bij capture. */}
+
         {panelsDrawn&&<button className="btn green full" style={{marginTop:6}}
           onClick={handleSnapshot} disabled={snapshotLoading||!coords}>
           {snapshotLoading?"📸 Foto maken...":mapSnapshot?"✅ Foto opgeslagen · Opnieuw":"📸 Foto opslaan voor rapport"}
         </button>}
         {mapSnapshot&&<div style={{fontSize:9,color:"var(--green)",marginTop:3,padding:"4px 8px",background:"var(--bg2)",borderRadius:4,border:"1px solid var(--border)"}}>
           ✓ Foto klaar voor PDF · {new Date(mapSnapshot.timestamp).toLocaleTimeString("nl-BE",{hour:"2-digit",minute:"2-digit"})}
-          {" "}
-          <span onClick={()=>setMapSnapshot(null)} style={{cursor:"pointer",color:"var(--muted)",marginLeft:4}}>✕ wissen</span>
+          {" "}<span onClick={()=>setMapSnapshot(null)} style={{cursor:"pointer",color:"var(--muted)",marginLeft:4}}>✕ wissen</span>
         </div>}
-        {/* Rotatie-offset slider */}
-        {<div style={{marginBottom:6}}>
+
+        <div style={{marginBottom:6}}>
           <div style={{display:"flex",justifyContent:"space-between",fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"var(--muted)",marginBottom:3}}>
             <span>↺ Rotatie aanpassing</span>
             <span style={{color:panelRotOffset!==0?"var(--amber)":"var(--muted)",fontWeight:700}}>{panelRotOffset>0?"+":""}{panelRotOffset}°
-              {panelRotOffset!==0&&<span onClick={()=>{setPanelRotOffset(0);if(panelsDrawn)setPanelsDrawn(false);setTimeout(()=>setPanelsDrawn(true),10);}} style={{marginLeft:4,cursor:"pointer",color:"var(--amber)"}}>↩</span>}
+              {panelRotOffset!==0&&<span onClick={()=>setPanelRotOffset(0)} style={{marginLeft:4,cursor:"pointer",color:"var(--amber)"}}>↩</span>}
             </span>
           </div>
           <input type="range" min="-30" max="30" step="2" value={panelRotOffset}
@@ -3288,30 +2618,27 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
                   if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
                   const _sf=detectedFaces?.[selFaceIdx];
                   const _fp=_sf?.polygon||buildingCoords;
-                  const _ra=(+e.target.value); // na BUG-11: alleen offset doorgeven
-                  panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,false);
+                  panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,+e.target.value,panelOrient,panelDataRef,false);
                 }
               }
             }}/>
-        </div>}
+        </div>
+
         {panelsDrawn&&<button className={"btn full "+(panelMoveMode?"green":"")} style={{marginBottom:5}} onClick={()=>{
           const nm=!panelMoveMode;setPanelMoveMode(nm);
           if(leafRef.current&&window.L){
             const L=window.L,map=leafRef.current;
             if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
             let _sf2=detectedFaces?.[selFaceIdx];
-            if(_sf2&&!_sf2.polygon&&buildingCoords){
-              const wp2=generateFacePolygons(buildingCoords,detectedFaces,_sf2.ridgeAngleDeg);
-              setDetectedFaces(wp2);_sf2=wp2?.[selFaceIdx]||_sf2;
-            }
+            if(_sf2&&!_sf2.polygon&&buildingCoords){const wp2=generateFacePolygons(buildingCoords,detectedFaces,_sf2.ridgeAngleDeg);setDetectedFaces(wp2);_sf2=wp2?.[selFaceIdx]||_sf2;}
             const _fp=_sf2?.polygon||buildingCoords;
-            const _ra=panelRotOffset; // na BUG-11: alleen offset; nokrichting via edge-voting in packPanels
-            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,_ra,panelOrient,panelDataRef,nm);
+            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,panelDataRef,nm);
           }
           if(nm){setActiveTab("configuratie");setTimeout(()=>{if(leafRef.current) leafRef.current.invalidateSize();},50);}
         }}>
-          {panelMoveMode?"✅ Klaar · klik paneel=select · dubbelklik=rij · sleep=verplaats":"↔️ Verplaats panelen"}
+          {panelMoveMode?"✅ Klaar · klik=select · dubbelklik=rij · sleep=verplaats":"↔️ Verplaats panelen"}
         </button>}
+
         <button className="btn full" onClick={calculate} disabled={!coords||aiLoading||!buildingCoords||isLoading}>
           {aiLoading?<><div className="spinner"/>Analyseren...</>:dhmStatus==="loading"?<><div className="spinner cyan"/>LiDAR verwerken...</>:grbStatus==="loading"?<><div className="spinner"/>Laden...</>:"☀️ Bereken resultaten"}
         </button>
@@ -3320,20 +2647,14 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
         </div>
       </aside>
 
-      {/* ── Content ── */}
       <div className="content-area">
-
-        {/* CONFIGURATIE = kaart */}
         <div className="map-area" style={{display:activeTab==="configuratie"?"flex":"none",flex:1,position:"relative",minHeight:0}}>
           <div id="leaflet-map" style={{height:"100%"}}/>
-          {/* Laagkiezer */}
           <div className="map-btns">
             <button className={`map-btn ${activeLayer==="luchtfoto"?"active":""}`} onClick={()=>setActiveLayer("luchtfoto")}>🛰️ Esri</button>
-            <button className={`map-btn ${activeLayer==="ortho"?"active":""}`} onClick={()=>setActiveLayer("ortho")}>📷 Ortho VL</button>
             <button className={`map-btn ${activeLayer==="kaart"?"active":""}`} onClick={()=>setActiveLayer("kaart")}>🗺️ Kaart</button>
             <button className={`map-btn ${activeLayer==="dsm"?"active":""}`} onClick={()=>setActiveLayer("dsm")}>📡 DSM Hoogte</button>
           </div>
-          {/* Status pill */}
           {coords&&<div className="status-pill">
             {grbStatus==="ok"&&<span style={{color:"var(--green)"}}>GRB ✅</span>}
             {grbStatus==="fallback"&&<span style={{color:"#92400e"}}>GRB ⚠️</span>}
@@ -3342,7 +2663,6 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
             {dhmStatus==="error"&&<span style={{color:"var(--red)"}}>LiDAR ⚠️</span>}
             {grbStatus==="ok"&&<span style={{color:"var(--muted)"}}>{detectedArea} m²</span>}
           </div>}
-          {/* Legende met klikbare genummerde vlakken */}
           {coords&&<div className="map-legend" style={{maxWidth:185}}>
             <div className="legend-title">Dakpotentieel</div>
             {dhmStatus==="ok"&&detectedFaces?.length>0?(
@@ -3374,7 +2694,6 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
           </div>}
         </div>
 
-        {/* KLANT TAB — nu eerste in flow: TL login → contact zoeken → adres+deal kiezen */}
         {activeTab==="klant"&&<div className="section">
           <ProjectPanel customer={customer} projectList={projectList} lastSavedAt={lastSavedAt}
             isLoadingProject={isLoadingProject} showProjectMenu={showProjectMenu}
@@ -3398,35 +2717,24 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
             creatingDeal={creatingDeal}
             onOpenNewDeal={handleOpenNewDeal} onCancelNewDeal={handleCancelNewDeal}
             onCreateDeal={handleCreateDeal}/>
-          {/* Manuele override / aanvulling — gebruiker kan altijd de waarden bewerken
-              ook al kwamen ze uit TL. Bv. tijdelijke afwijking in adres voor dit project. */}
           <div className="customer-section">
             <div className="sl">2️⃣ Klantgegevens</div>
-            <div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>
-              Velden worden automatisch gevuld na keuze in Teamleader.<br/>
-              <strong>Niet gevonden in TL?</strong> Vul hier handmatig in.
-            </div>
+            <div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>Velden worden automatisch gevuld na keuze in Teamleader.<br/><strong>Niet gevonden in TL?</strong> Vul hier handmatig in.</div>
             <div className="inp-label" style={{fontSize:9,fontWeight:600}}>Naam <span style={{color:"var(--red)"}}>*</span></div>
-            <input className="inp" value={customer.name} onChange={e=>setCustomer({...customer,name:e.target.value})}
-                   placeholder="bv. Jan Janssens"/>
+            <input className="inp" value={customer.name} onChange={e=>setCustomer({...customer,name:e.target.value})} placeholder="bv. Jan Janssens"/>
             <div className="inp-label" style={{fontSize:8,marginTop:6}}>Adres</div>
-            <input className="inp" value={customer.address} onChange={e=>setCustomer({...customer,address:e.target.value})}
-                   placeholder="Straat huisnr, postcode gemeente"/>
+            <input className="inp" value={customer.address} onChange={e=>setCustomer({...customer,address:e.target.value})} placeholder="Straat huisnr, postcode gemeente"/>
             <div className="inp-label" style={{fontSize:8,marginTop:6}}>Email</div>
-            <input className="inp" type="email" value={customer.email} onChange={e=>setCustomer({...customer,email:e.target.value})}
-                   placeholder="naam@voorbeeld.be"/>
+            <input className="inp" type="email" value={customer.email} onChange={e=>setCustomer({...customer,email:e.target.value})} placeholder="naam@voorbeeld.be"/>
             <div className="inp-label" style={{fontSize:8,marginTop:6}}>Jaarlijks elektriciteitsverbruik (kWh)</div>
             <input className="inp" type="number" min="500" max="50000" step="100"
                    value={annualConsumption}
                    onChange={e=>setAnnualConsumption(parseInt(e.target.value)||3500)}
                    placeholder="bv. 3500"/>
-            <div style={{fontSize:8,color:"var(--muted)",marginTop:2}}>
-              Te vinden op de eindafrekening van de leverancier (kWh/jaar). Vlaams gemiddelde gezin: 3500 kWh.
-            </div>
+            <div style={{fontSize:8,color:"var(--muted)",marginTop:2}}>Vlaams gemiddelde gezin: 3500 kWh/jaar.</div>
           </div>
         </div>}
 
-        {/* PANELEN TAB */}
         {activeTab==="panelen"&&<div className="section">
           <div className="sl">Panelenlijst</div>
           <div className="info-box" style={{fontSize:8}}><strong>⭐ Standaard:</strong> Qcells 440W en Trina 500W zijn uw meest gebruikte panelen.</div>
@@ -3434,7 +2742,6 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
           <NewPanelForm onAdd={p=>setPanels(ps=>[...ps,p])}/>
         </div>}
 
-        {/* OMVORMERS TAB */}
         {activeTab==="omvormers"&&<div className="section">
           <div className="sl">AlphaESS SMILE-G3</div>
           <div className="info-box alpha-info"><strong>🔆 AlphaESS SMILE-G3</strong> · LiFePO4 · 10j · IP65 · 97%+ eff. · Fluvius · Jabba · AlphaCloud</div>
@@ -3443,7 +2750,6 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
           <div className="list">{filteredInv.map(inv=><InverterCard key={inv.id} inv={inv} selected={inv.id===selInvId} onSelect={setSelInvId}/>)}</div>
         </div>}
 
-        {/* BATTERIJ TAB */}
         {activeTab==="batterij"&&<div className="section">
           <div className="sl">Thuisbatterijen</div>
           <div className="toggle-row"><span className="toggle-lbl" style={{fontSize:10}}>Batterij opnemen in berekening</span><label className="toggle"><input type="checkbox" checked={battEnabled} onChange={e=>setBattEnabled(e.target.checked)}/><span className="tslider"/></label></div>
@@ -3453,14 +2759,11 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
           <NewBattForm onAdd={b=>setBatteries(bs=>[...bs,b])}/>
         </div>}
 
-        {/* TECHNISCH TAB — string-design validatie */}
         {activeTab==="technisch"&&<div className="section">
           <div className="sl">Configuratie van de omvormer</div>
           {!selPanel?.voc&&<div className="info-box warn"><strong>⚠️ Onvolledige paneel-data</strong><br/>Het geselecteerde paneel heeft geen elektrische specs (Voc/Vmp/Isc).</div>}
           {!selInv&&<div className="info-box warn"><strong>⚠️ Geen omvormer geselecteerd</strong><br/>Kies eerst een omvormer in het AlphaESS-tabblad.</div>}
-          {!selInv?.maxDcVoltage&&selInv&&<div className="info-box warn"><strong>⚠️ Onvolledige omvormer-data</strong><br/>De geselecteerde omvormer heeft geen DC-specs.</div>}
           {stringDesign&&<>
-            {/* Header met project-info + omgevingstemperatuur */}
             <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10,display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
               <div>
                 <div style={{fontSize:11,marginBottom:6}}><strong>Project:</strong> {customer.name||"—"}</div>
@@ -3469,126 +2772,57 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
               </div>
               <div>
                 <div style={{fontSize:11,fontWeight:600,marginBottom:4}}>Omgevingstemperatuur</div>
-                <div style={{fontSize:11,color:"var(--muted)"}}>Minimale temperatuur: <strong style={{color:"var(--text)"}}>{stringDesign.config.tempMin} °C</strong></div>
-                <div style={{fontSize:11,color:"var(--muted)"}}>Configuratietemperatuur: <strong style={{color:"var(--text)"}}>{stringDesign.config.tempConfig} °C</strong></div>
-                <div style={{fontSize:11,color:"var(--muted)"}}>Maximale temperatuur: <strong style={{color:"var(--text)"}}>{stringDesign.config.tempMax} °C</strong></div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Min: <strong style={{color:"var(--text)"}}>{stringDesign.config.tempMin} °C</strong></div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Config: <strong style={{color:"var(--text)"}}>{stringDesign.config.tempConfig} °C</strong></div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Max: <strong style={{color:"var(--text)"}}>{stringDesign.config.tempMax} °C</strong></div>
               </div>
             </div>
-
-            {/* Omvormer-overzicht */}
-            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10}}>
-              <div className="sl" style={{marginBottom:8}}>1× {selInv.brand} {selInv.model}</div>
-              <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
-                <tbody>
-                  <tr style={{borderBottom:"1px solid var(--border)"}}>
-                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Piekvermogen (kWp DC)</td>
-                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{(stringDesign.totalPower/1000).toFixed(2)} kWp</td>
-                  </tr>
-                  <tr style={{borderBottom:"1px solid var(--border)"}}>
-                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Totaal aantal PV-panelen</td>
-                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{panelCount}</td>
-                  </tr>
-                  <tr style={{borderBottom:"1px solid var(--border)"}}>
-                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Aantal PV-omvormers</td>
-                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>1</td>
-                  </tr>
-                  <tr style={{borderBottom:"1px solid var(--border)"}}>
-                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Max. DC-vermogen omvormer</td>
-                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{(stringDesign.config.inverterMaxDcPower/1000).toFixed(2)} kW</td>
-                  </tr>
-                  <tr style={{borderBottom:"1px solid var(--border)"}}>
-                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Maximaal werkelijk AC-vermogen</td>
-                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{(stringDesign.config.inverterMaxAc/1000).toFixed(2)} kW</td>
-                  </tr>
-                  <tr style={{borderBottom:"1px solid var(--border)"}}>
-                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Netspanning</td>
-                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600}}>{selInv.fase==="3-fase"?"400V (driefase)":"230V (eenfase)"}</td>
-                  </tr>
-                  {stringDesign.config.sizingFactor!==null&&<tr>
-                    <td style={{padding:"5px 0",color:"var(--muted)"}}>Dimensioneringsfactor</td>
-                    <td style={{padding:"5px 0",textAlign:"right",fontWeight:600,color:stringDesign.config.sizingFactor>150?"var(--red)":stringDesign.config.sizingFactor<70?"var(--amber)":"var(--green)"}}>
-                      {stringDesign.config.sizingFactor.toFixed(1)} %
-                    </td>
-                  </tr>}
-                </tbody>
-              </table>
-            </div>
-
-            {/* PV-configuratiegegevens — overzicht per ingang/MPPT */}
-            <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10}}>
-              <div className="sl" style={{marginBottom:8}}>PV-configuratiegegevens</div>
-              {stringDesign.mppts.map((m,i)=>(
-                <div key={i} style={{fontSize:11,marginBottom:6,paddingBottom:6,borderBottom:i<stringDesign.mppts.length-1?"1px solid var(--border)":"none"}}>
-                  <strong>Ingang {String.fromCharCode(65+i)}: MPPT {i+1}</strong>
-                  <span style={{color:"var(--muted)"}}> · {m.totalPanels} × {selPanel.brand} {selPanel.model}</span>
-                  <span style={{color:"var(--muted)"}}> · Azimut: {orientation}</span>
-                  <span style={{color:"var(--muted)"}}> · Helling: {slope}°</span>
-                </div>
-              ))}
-            </div>
-
-            {/* Detailtabel per ingang — SMA-stijl met groene vinkjes */}
             <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10,overflowX:"auto"}}>
               <div className="sl" style={{marginBottom:8}}>Detailwaarden per MPPT-ingang</div>
               <table style={{width:"100%",fontSize:11,borderCollapse:"collapse",minWidth:500}}>
                 <thead>
                   <tr style={{borderBottom:"2px solid var(--border)"}}>
                     <th style={{textAlign:"left",padding:"6px 4px",color:"var(--muted)",fontWeight:500}}></th>
-                    {stringDesign.mppts.map((m,i)=>(
-                      <th key={i} style={{textAlign:"right",padding:"6px 4px",fontWeight:600}}>Ingang {String.fromCharCode(65+i)}</th>
-                    ))}
+                    {stringDesign.mppts.map((m,i)=>(<th key={i} style={{textAlign:"right",padding:"6px 4px",fontWeight:600}}>Ingang {String.fromCharCode(65+i)}</th>))}
                   </tr>
                 </thead>
                 <tbody>
                   <TechRow label="Aantal strings" mppts={stringDesign.mppts} val={m=>m.stringCount}/>
                   <TechRow label="PV-panelen" mppts={stringDesign.mppts} val={m=>m.totalPanels}/>
-                  <TechRow label="Piekvermogen (ingang)" mppts={stringDesign.mppts} val={m=>(m.powerStc/1000).toFixed(2)+" kWp"}/>
-                  <TechRow label={`Min. DC-spanning WR (Netspanning ${selInv.fase==="3-fase"?"400V":"230V"})`} mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMpptMin+" V"}/>
-                  <TechRow label="Typische PV-spanning (config)" mppts={stringDesign.mppts} val={m=>m.vmpConfig.toFixed(0)+" V"} check={m=>m.checks.vmpConfigOk}/>
+                  <TechRow label="Piekvermogen" mppts={stringDesign.mppts} val={m=>(m.powerStc/1000).toFixed(2)+" kWp"}/>
+                  <TechRow label="Min. DC-spanning WR" mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMpptMin+" V"}/>
+                  <TechRow label={`Typ. PV-spanning (${stringDesign.config.tempConfig}°C)`} mppts={stringDesign.mppts} val={m=>m.vmpConfig.toFixed(0)+" V"} check={m=>m.checks.vmpConfigOk}/>
                   <TechRow label={`Min. PV-spanning (${stringDesign.config.tempMax}°C)`} mppts={stringDesign.mppts} val={m=>m.vmpHot.toFixed(0)+" V"} check={m=>m.checks.vmpHotOk}/>
-                  <TechRow label="Max. DC-spanning Omvormer" mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMaxDc+" V"}/>
+                  <TechRow label="Max. DC-spanning omvormer" mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMaxDc+" V"}/>
                   <TechRow label={`Max. PV-spanning (${stringDesign.config.tempMin}°C)`} mppts={stringDesign.mppts} val={m=>m.vocCold.toFixed(0)+" V"} check={m=>m.checks.vocColdOk}/>
-                  <TechRow label="Max. ingangsstroom per MPPT" mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMaxCurrent+" A"}/>
+                  <TechRow label="Max. ingangsstroom MPPT" mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMaxCurrent+" A"}/>
                   <TechRow label="Max. PV-generatorstroom (Imp)" mppts={stringDesign.mppts} val={m=>m.impTotal.toFixed(1)+" A"} check={m=>m.checks.impOk}/>
-                  <TechRow label="Max. kortsluitstroom per MPPT" mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMaxCurrent+" A"}/>
+                  <TechRow label="Max. kortsluitstroom MPPT" mppts={stringDesign.mppts} val={()=>stringDesign.config.inverterMaxCurrent+" A"}/>
                   <TechRow label="Max. kortsluitstroom PV (Isc)" mppts={stringDesign.mppts} val={m=>m.iscTotal.toFixed(1)+" A"} check={m=>m.checks.iscOk}/>
                 </tbody>
               </table>
             </div>
-
-            {/* Waarschuwingen */}
-            {stringDesign.warnings.length>0&&<div style={{display:"flex",flexDirection:"column",gap:6}}>
-              {stringDesign.warnings.map((w,i)=>(
-                <div key={i} className={`info-box ${w.severity==="critical"?"warn":w.severity==="warning"?"warn":"alpha-info"}`}
-                     style={{borderLeftWidth:4,borderLeftStyle:"solid",borderLeftColor:w.severity==="critical"?"var(--red)":w.severity==="warning"?"var(--amber)":"var(--blue)"}}>
-                  <strong>{w.severity==="critical"?"🚫":w.severity==="warning"?"⚠️":"ℹ️"} {w.title}</strong><br/>
-                  <span style={{fontSize:11}}>{w.detail}</span>
-                </div>
-              ))}
-            </div>}
-            {stringDesign.warnings.length===0&&<div className="info-box alpha-info">
-              <strong>✅ Configuratie OK</strong><br/>
-              <span style={{fontSize:11}}>Alle technische limieten worden gerespecteerd. Veilige werking tussen {stringDesign.config.tempMin}°C en {stringDesign.config.tempMax}°C.</span>
-            </div>}
+            {stringDesign.warnings.length===0
+              ?<div className="info-box alpha-info"><strong>✅ Configuratie OK</strong><br/><span style={{fontSize:11}}>Alle technische limieten worden gerespecteerd.</span></div>
+              :<div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {stringDesign.warnings.map((w,i)=>(
+                  <div key={i} className="info-box warn" style={{borderLeftWidth:4,borderLeftStyle:"solid",borderLeftColor:w.severity==="critical"?"var(--red)":"var(--amber)"}}>
+                    <strong>{w.severity==="critical"?"🚫":"⚠️"} {w.title}</strong><br/><span style={{fontSize:11}}>{w.detail}</span>
+                  </div>
+                ))}
+              </div>
+            }
           </>}
         </div>}
 
-        {/* RESULTATEN TAB */}
         {activeTab==="resultaten"&&(results?(
           <div className="results-wrap">
-            {/* Badges */}
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               {results.grbOk&&<div style={{padding:"4px 9px",background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:12,fontSize:8,color:"var(--green)",fontWeight:500}}>✅ GRB dakcontour · {results.detectedArea} m²</div>}
               {results.dhmOk&&<div style={{padding:"4px 9px",background:"var(--alpha-bg)",border:"1px solid var(--alpha-border)",borderRadius:12,fontSize:8,color:"var(--alpha)",fontWeight:500}}>✅ LiDAR · {results.orientation} {results.slope}°</div>}
               {customer.name&&<div style={{padding:"4px 9px",background:"var(--amber-light)",border:"1px solid #fde68a",borderRadius:12,fontSize:8,color:"var(--amber)",fontWeight:500}}>👤 {customer.name}</div>}
             </div>
-
-            {/* Kaart notitie */}
-            <div style={{padding:"7px 11px",background:"var(--blue-bg)",border:"1px solid var(--blue-border)",borderRadius:6,fontSize:9,color:"var(--blue)"}}>
-              🗺️ <strong>Configuratie tab</strong> — {results.panelCount} panelen zichtbaar op het dak. +/− past het aantal live aan.
-            </div>
-
-            {/* Systeemoverzicht */}
+            <div style={{padding:"7px 11px",background:"var(--blue-bg)",border:"1px solid var(--blue-border)",borderRadius:6,fontSize:9,color:"var(--blue)"}}>🗺️ <strong>Configuratie tab</strong> — {results.panelCount} panelen zichtbaar op het dak.</div>
             <div><div className="sl" style={{marginBottom:8}}>Systeemoverzicht</div>
               <div className="results-grid">
                 <div className="rc"><div className="rc-label">Paneel</div><div className="rc-num" style={{fontSize:12,lineHeight:1.3}}>{results.panel.model}</div><div className="rc-unit">{results.panel.brand} · {results.panel.watt}W</div></div>
@@ -3600,50 +2834,26 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
                 <div className="rc"><div className="rc-label">Dekkingsgraad</div><div className="rc-num">{results.coverage}%</div><div className="rc-unit">van gemiddeld verbruik</div></div>
               </div>
             </div>
-
-            {/* Maandelijkse grafiek */}
             <MonthlyChart annualKwh={results.annualKwh}/>
-
-            {/* INSTALLATIEKOSTEN — manueel invoerbaar uit offerte */}
-            <div style={{background:results.investPanels===null?"var(--amber-light)":"var(--bg2)",
-                          border:`2px solid ${results.investPanels===null?"var(--amber)":"var(--border)"}`,
-                          borderRadius:8,padding:14,boxShadow:"var(--shadow)"}}>
-              <div className="sl" style={{marginBottom:8}}>
-                {results.investPanels===null?"⚠️ ":""}💰 Totaalprijzen uit offerte
-                {results.investPanels===null&&<span style={{color:"var(--red)",fontWeight:600,marginLeft:8}}>(verplicht)</span>}
-              </div>
-              <div style={{fontSize:11,color:"var(--muted)",marginBottom:10}}>
-                Vul hier de werkelijke totaalprijzen uit jouw offerte in.{results.investPanels===null?" Zonder prijs kan de terugverdientijd niet worden berekend.":""}
-                <br/>Wijzigingen werken meteen door — klik dan opnieuw op "Bereken resultaten".
-              </div>
+            <div style={{background:results.investPanels===null?"var(--amber-light)":"var(--bg2)",border:`2px solid ${results.investPanels===null?"var(--amber)":"var(--border)"}`,borderRadius:8,padding:14,boxShadow:"var(--shadow)"}}>
+              <div className="sl" style={{marginBottom:8}}>{results.investPanels===null?"⚠️ ":""}💰 Totaalprijzen uit offerte{results.investPanels===null&&<span style={{color:"var(--red)",fontWeight:600,marginLeft:8}}>(verplicht)</span>}</div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
                 <div>
                   <div className="inp-label" style={{fontSize:11,fontWeight:600}}>🔆 Totaalprijs ZONDER batterij (€) <span style={{color:"var(--red)"}}>*</span></div>
-                  <input className="inp" type="number" min="0" step="50"
-                    placeholder="bv. 8000"
-                    value={manualPanelPrice} onChange={e=>setManualPanelPrice(e.target.value)}/>
+                  <input className="inp" type="number" min="0" step="50" placeholder="bv. 8000" value={manualPanelPrice} onChange={e=>setManualPanelPrice(e.target.value)}/>
                   <div style={{fontSize:9,color:"var(--muted)",marginTop:3}}>Panelen + installatie + omvormer</div>
                 </div>
                 <div>
                   <div className="inp-label" style={{fontSize:11,fontWeight:600}}>🔋 Totaalprijs MET batterij (€) {battEnabled&&<span style={{color:"var(--red)"}}>*</span>}</div>
-                  <input className="inp" type="number" min="0" step="50"
-                    placeholder={battEnabled?"bv. 14000":"Activeer batterij in tabblad 05"}
-                    value={manualBatteryPrice} onChange={e=>setManualBatteryPrice(e.target.value)}
-                    disabled={!battEnabled}/>
+                  <input className="inp" type="number" min="0" step="50" placeholder={battEnabled?"bv. 14000":"Activeer batterij in tabblad 05"} value={manualBatteryPrice} onChange={e=>setManualBatteryPrice(e.target.value)} disabled={!battEnabled}/>
                   <div style={{fontSize:9,color:"var(--muted)",marginTop:3}}>Volledig pakket incl. batterij</div>
                 </div>
               </div>
             </div>
-
-            {/* Terugverdientijd */}
             <div><div className="sl" style={{marginBottom:8}}>Terugverdientijd vergelijking</div>
               <div className="compare-grid">
                 <div className="compare-col">
                   <h4>🔆 Alleen zonnepanelen</h4>
-                  <div className="crow">Aantal panelen<span>{results.panelCount}× {results.panel.watt}W</span></div>
-                  <div className="crow">Omvormer<span>{results.inv?results.inv.model:"—"}</span></div>
-                  <div className="crow">Jaarverbruik klant<span>{results.consumption.toLocaleString()} kWh</span></div>
-                  <div className="crow">Opbrengst PV<span>{results.annualKwh.toLocaleString()} kWh</span></div>
                   <div className="crow">Zelfverbruik<span>~{Math.round(results.selfRatioBase*100)}% ({results.selfKwhBase.toLocaleString()} kWh)</span></div>
                   <div className="crow">Injectie naar net<span>{results.injectKwhBase.toLocaleString()} kWh</span></div>
                   <div className="crow">Besparing/jaar<span>€{results.annualBase}</span></div>
@@ -3654,12 +2864,7 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
                 {results.battResult?(
                   <div className={`compare-col batt ${results.batt?.isAlpha?"alpha-col":""}`}>
                     <h4>{results.batt?.isAlpha?"⚡🔋":"🔋"} Met {results.batt?.brand} {results.batt?.model}</h4>
-                    <div className="crow">PV-installatie<span>{results.investPanels!==null?"€"+results.investPanels.toLocaleString():"—"}</span></div>
-                    <div className="crow">Batterij ({results.batt?.kwh} kWh)<span>{results.battResult.battPrice!==null?"€"+results.battResult.battPrice.toLocaleString():<span style={{color:"var(--red)",fontStyle:"italic"}}>vul prijs in ↑</span>}</span></div>
-                    <div className="crow">Jaarverbruik klant<span>{results.consumption.toLocaleString()} kWh</span></div>
-                    <div className="crow">Opbrengst PV<span>{results.annualKwh.toLocaleString()} kWh</span></div>
                     <div className="crow">Zelfverbruik<span>~70% ({results.battResult.selfKwh.toLocaleString()} kWh)</span></div>
-                    <div className="crow">Injectie naar net<span>{results.battResult.injectKwh.toLocaleString()} kWh</span></div>
                     <div className="crow">Extra besparing<span style={{color:"var(--green)"}}>+€{results.battResult.extraSav}/j</span></div>
                     <div className="crow">Totale besparing<span>€{results.battResult.totSav}/j</span></div>
                     <div className="ctotal"><span>Investering</span><span style={{fontSize:13}}>{results.battResult.totInv!==null?"€"+results.battResult.totInv.toLocaleString():<span style={{color:"var(--red)",fontStyle:"italic"}}>vul prijzen in ↑</span>}</span></div>
@@ -3675,58 +2880,34 @@ Wees concreet en feitelijk. Geen verkooppraat. Geen verwijzingen naar afgeschaft
                 )}
               </div>
             </div>
-
-            {/* AI Advies — bewerkbaar voor PDF */}
             <div>
-              <div className="sl" style={{marginBottom:7}}>
-                AI Expert Advies
-                {!aiLoading&&aiText&&<span style={{fontSize:10,fontWeight:400,color:"var(--muted)",marginLeft:8}}>· Bewerkbaar voordat het in het rapport komt</span>}
-              </div>
-              {aiLoading?(
-                <div className="ai-box loading"><div className="spinner"/>Claude analyseert uw installatie...</div>
-              ):(
+              <div className="sl" style={{marginBottom:7}}>AI Expert Advies{!aiLoading&&aiText&&<span style={{fontSize:10,fontWeight:400,color:"var(--muted)",marginLeft:8}}>· Bewerkbaar</span>}</div>
+              {aiLoading?(<div className="ai-box loading"><div className="spinner"/>Claude analyseert uw installatie...</div>):(
                 <>
-                  <textarea
-                    value={editableAiText}
-                    onChange={e=>setEditableAiText(e.target.value)}
+                  <textarea value={editableAiText} onChange={e=>setEditableAiText(e.target.value)}
                     placeholder="Hier verschijnt het AI advies. Je kan dit bewerken voordat het in het PDF-rapport komt."
-                    style={{width:"100%",minHeight:240,padding:12,
-                      background:"var(--bg2)",border:"1px solid var(--border)",
-                      borderRadius:8,color:"var(--text)",fontSize:13,lineHeight:1.6,
-                      fontFamily:"inherit",resize:"vertical",boxShadow:"var(--shadow)"}}
-                  />
+                    style={{width:"100%",minHeight:240,padding:12,background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,color:"var(--text)",fontSize:13,lineHeight:1.6,fontFamily:"inherit",resize:"vertical",boxShadow:"var(--shadow)"}}/>
                   <div style={{display:"flex",gap:8,marginTop:6,fontSize:10,color:"var(--muted)"}}>
                     <span>{editableAiText.length} tekens</span>
-                    {aiText&&aiText!==editableAiText&&(
-                      <button className="btn sec sm" style={{fontSize:10}}
-                        onClick={()=>setEditableAiText(aiText)}>
-                        ↩ Origineel AI advies herstellen
-                      </button>
-                    )}
+                    {aiText&&aiText!==editableAiText&&(<button className="btn sec sm" style={{fontSize:10}} onClick={()=>setEditableAiText(aiText)}>↩ Origineel herstellen</button>)}
                   </div>
                 </>
               )}
             </div>
-
-            {/* PDF sectie */}
             <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,boxShadow:"var(--shadow)"}}>
               <div className="sl" style={{marginBottom:8}}>PDF Rapport genereren</div>
               {!customer.name&&<div className="info-box warn" style={{marginBottom:8}}><strong>⚠️</strong> Voeg klantnaam toe in de "Klant" tab voor het rapport.</div>}
               <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:8}}>
                 <button className="btn green" onClick={handlePDF} disabled={pdfLoading||!results}>
-                  {pdfLoading?<><div className="spinner"/>PDF genereren + datasheets samenvoegen...</>:"📄 Download PDF rapport"}
+                  {pdfLoading?<><div className="spinner"/>PDF genereren...</>:"📄 Download PDF rapport"}
                 </button>
               </div>
               <div style={{fontSize:8,color:"var(--muted)",lineHeight:1.7}}>
                 <strong>Rapport bevat:</strong> klantgegevens · systeemoverzicht · maandgrafiek · terugverdienberekening<br/>
                 <strong style={{color:"var(--green)"}}>+ Datasheets bijgevoegd:</strong>{" "}
-                {results?.panel?.datasheet
-                  ?<span style={{color:"var(--green)"}}>✅ {results.panel.brand} {results.panel.watt}W</span>
-                  :<span style={{color:"var(--muted2)"}}>— paneel (geen datasheet beschikbaar)</span>}
+                {results?.panel?.datasheet?<span style={{color:"var(--green)"}}>✅ {results.panel.brand} {results.panel.watt}W</span>:<span style={{color:"var(--muted2)"}}>— geen datasheet</span>}
                 {" · "}
-                {results?.inv?.datasheet
-                  ?<span style={{color:"var(--green)"}}>✅ AlphaESS SMILE-G3</span>
-                  :<span style={{color:"var(--muted2)"}}>— omvormer (geen datasheet)</span>}
+                {results?.inv?.datasheet?<span style={{color:"var(--green)"}}>✅ AlphaESS SMILE-G3</span>:<span style={{color:"var(--muted2)"}}>— geen datasheet</span>}
               </div>
             </div>
           </div>
