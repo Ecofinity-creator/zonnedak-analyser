@@ -1677,8 +1677,7 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
   onLogin,onLogout,onSelectContact,onSelectAddress,
   showNewDealForm,newDealTitle,setNewDealTitle,newDealValue,setNewDealValue,
   dealOptions,newDealPipelineId,setNewDealPipelineId,creatingDeal,
-  onOpenNewDeal,onCancelNewDeal,onCreateDeal}){
-  if(tlAuth===null) return <div className="customer-section"><div style={{fontSize:9,color:"var(--muted)"}}>Teamleader status laden...</div></div>;
+  onOpenNewDeal,onCancelNewDeal,onCreateDeal,onConfirm,pendingGeo}){\n  if(tlAuth===null) return <div className="customer-section"><div style={{fontSize:9,color:"var(--muted)"}}>Teamleader status laden...</div></div>;
   if(tlAuth===false||!tlAuth.logged_in){
     return(
       <div className="customer-section">
@@ -1702,16 +1701,30 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
         <input className="inp" type="text" placeholder="Typ minstens 2 letters..."
                value={tlQuery} onChange={e=>setTlQuery(e.target.value)} autoComplete="off"/>
         {tlSearching&&<div style={{fontSize:8,color:"var(--muted)",marginTop:2}}>Zoeken...</div>}
-        {tlResults.length>0&&!tlContact&&<div style={{position:"absolute",top:"100%",left:0,right:0,
-              background:"var(--bg1)",border:"1px solid var(--border)",borderRadius:4,zIndex:50,
-              maxHeight:240,overflowY:"auto",marginTop:2,boxShadow:"0 4px 12px rgba(0,0,0,0.1)"}}>
+        {tlResults.length>0&&!tlContact&&<div style={{
+              position:"absolute",top:"100%",left:0,right:0,
+              background:"#ffffff",
+              border:"2px solid var(--amber)",
+              borderRadius:6,
+              zIndex:99999,
+              maxHeight:280,overflowY:"auto",
+              marginTop:3,
+              boxShadow:"0 8px 24px rgba(0,0,0,0.18)",
+            }}>
           {tlResults.map(r=>(
-            <div key={r.type+r.id} onClick={()=>onSelectContact(r)} style={{padding:"6px 10px",cursor:"pointer",
-                  borderBottom:"1px solid var(--border)",fontSize:10}}
-                 onMouseEnter={e=>e.currentTarget.style.background="var(--bg2)"}
-                 onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-              <div><strong>{r.name}</strong> <span style={{fontSize:8,color:"var(--muted)"}}>· {r.type==="company"?"Bedrijf":"Persoon"}</span></div>
-              {r.primary_email&&<div style={{fontSize:8,color:"var(--muted)"}}>{r.primary_email}</div>}
+            <div key={r.type+r.id} onClick={()=>onSelectContact(r)} style={{
+                  padding:"10px 14px",cursor:"pointer",
+                  borderBottom:"1px solid #e2e8f0",
+                  background:"#ffffff",
+                  fontSize:12,lineHeight:1.4,
+                }}
+                 onMouseEnter={e=>{e.currentTarget.style.background="#fef3c7";e.currentTarget.style.borderLeft="3px solid #e07b00";}}
+                 onMouseLeave={e=>{e.currentTarget.style.background="#ffffff";e.currentTarget.style.borderLeft="none";}}>
+              <div style={{fontWeight:700,color:"#0f172a",fontSize:13}}>{r.name}</div>
+              <div style={{fontSize:10,color:"#64748b",marginTop:2}}>
+                {r.type==="company"?"🏢 Bedrijf":"👤 Persoon"}
+                {r.primary_email&&<span style={{marginLeft:8}}>· {r.primary_email}</span>}
+              </div>
             </div>
           ))}
         </div>}
@@ -1765,6 +1778,21 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
             <button className="btn sec" onClick={onCancelNewDeal} disabled={creatingDeal} style={{flex:1,fontSize:9}}>Annuleren</button>
             <button className="btn full" onClick={onCreateDeal} disabled={creatingDeal||!newDealTitle.trim()||!newDealPipelineId} style={{flex:2,fontSize:9}}>{creatingDeal?"Aanmaken...":"✓ Aanmaken in Teamleader"}</button>
           </div>
+        </div>}
+
+        {/* ── Bevestigingsknop: laad adres + ga naar kaart ── */}
+        {!showNewDealForm&&<div style={{marginTop:12,borderTop:"2px solid var(--amber)",paddingTop:10}}>
+          {!tlSelectedDealId&&<div style={{fontSize:9,color:"var(--amber)",marginBottom:6,textAlign:"center",fontWeight:600}}>
+            ⚠️ Kies eerst een deal hierboven (of maak er een aan)
+          </div>}
+          <button className="btn full" style={{fontSize:11,fontWeight:700}}
+            onClick={onConfirm}
+            disabled={!pendingGeo||!tlSelectedDealId}>
+            {!pendingGeo?"📍 Adres niet gevonden":!tlSelectedDealId?"🤝 Deal vereist":"✅ Bevestig klant + laad kaart →"}
+          </button>
+          {pendingGeo&&<div style={{fontSize:8,color:"var(--muted)",marginTop:4,textAlign:"center"}}>
+            {pendingGeo.display_name?.split(",").slice(0,3).join(", ")}
+          </div>}
         </div>}
       </>}
     </div>
@@ -1892,6 +1920,7 @@ export default function App(){
   const[tlLoadingDetails,setTlLoadingDetails]=useState(false);
   const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
   const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
+  const[tlPendingGeo,setTlPendingGeo]=useState(null); // geocode resultaat wachtend op bevestiging
   const[showNewDealForm,setShowNewDealForm]=useState(false);
   const[newDealTitle,setNewDealTitle]=useState("");
   const[newDealValue,setNewDealValue]=useState("");
@@ -1929,26 +1958,35 @@ export default function App(){
     setTlContact(details);setTlSelectedAddressIdx(0);setTlSelectedDealId(null);
     const primaryEmail=details.emails?.[0]?.email||"";
     const primaryAddress=details.addresses?.[0];
+    // Vul klantdata in maar navigeer NIET automatisch — wacht op deal + bevestiging
     setCustomer({name:details.name||"",address:primaryAddress?.full||"",email:primaryEmail});
+    // Sla geocode-resultaat op voor later gebruik bij bevestiging
     if(primaryAddress){
       const geo=await TL.geocodeAddress(primaryAddress);
-      if(geo){await selectAddr({lat:String(geo.lat),lon:String(geo.lng),display_name:geo.displayName});}
-      else{alert("Adres niet gevonden in OpenStreetMap. Voer het adres handmatig in op het Configuratie-tabblad.");}
+      if(geo) setTlPendingGeo({lat:String(geo.lat),lon:String(geo.lng),display_name:geo.displayName});
     }
-  },[mapReady]);
+  },[]);
 
   const handleSelectAddress=useCallback(async(idx)=>{
     setTlSelectedAddressIdx(idx);
     if(!tlContact?.addresses?.[idx]) return;
     const addr=tlContact.addresses[idx];
     setCustomer(c=>({...c,address:addr.full||""}));
+    // Geocode het nieuwe adres maar navigeer nog niet
     const geo=await TL.geocodeAddress(addr);
-    if(geo){await selectAddr({lat:String(geo.lat),lon:String(geo.lng),display_name:geo.displayName});}
-    else{alert("Adres niet gevonden in OpenStreetMap. Voer handmatig in.");}
+    if(geo) setTlPendingGeo({lat:String(geo.lat),lon:String(geo.lng),display_name:geo.displayName});
   },[tlContact]);
 
   const handleTlLogin=useCallback(()=>{TL.startTeamleaderLogin();},[]);
-  const handleTlLogout=useCallback(()=>{TL.clearUserId();setTlAuth(false);setTlContact(null);setTlResults([]);setTlQuery("");},[]);
+  const handleTlLogout=useCallback(()=>{TL.clearUserId();setTlAuth(false);setTlContact(null);setTlResults([]);setTlQuery("");setTlPendingGeo(null);},[]);
+
+  // Bevestig klant: geocode was al gedaan bij contact/adres selectie,
+  // nu pas navigeren naar de kaart + GRB laden
+  const handleTlConfirm=useCallback(async()=>{
+    if(!tlPendingGeo) return;
+    await selectAddr({lat:tlPendingGeo.lat,lon:tlPendingGeo.lon,display_name:tlPendingGeo.display_name});
+    setTlPendingGeo(null);
+  },[tlPendingGeo]);
 
   const handleOpenNewDeal=useCallback(async()=>{
     setShowNewDealForm(true);setNewDealTitle("Zonnepanelen");setNewDealValue("");
@@ -2055,7 +2093,7 @@ export default function App(){
     setCustomCount(10);setPanelRotOffset(0);setManualPanelPrice("");setManualBatteryPrice("");
     setAnnualConsumption(3500);setResults(null);setAiText("");setEditableAiText("");
     setMapSnapshot(null);setPanelsDrawn(false);
-    setTlContact(null);setTlQuery("");setTlResults([]);setTlSelectedDealId(null);
+    setTlContact(null);setTlQuery("");setTlResults([]);setTlSelectedDealId(null);setTlPendingGeo(null);
     setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");
     setTimeout(()=>{suppressAutoSaveRef.current=false;setShowProjectMenu(false);},100);
   },[]);
@@ -2439,6 +2477,23 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
 
       const mapEl=document.getElementById("leaflet-map");
       if(!mapEl) throw new Error("Kaart-element niet gevonden");
+
+      // ── Zoom in op gebouw vóór capture ──────────────────────────────────
+      // Dit garandeert dat snapBounds correct is t.o.v. de paneel-coördinaten.
+      // Zonder fitBounds kan de gebruiker uitgezoomed zijn waardoor panelen
+      // in de PDF microscopisch klein worden.
+      if(buildingCoords&&buildingCoords.length>=3){
+        const latLngs=buildingCoords.map(([la,ln])=>L.latLng(la,ln));
+        const bldBounds=L.latLngBounds(latLngs);
+        map.fitBounds(bldBounds,{padding:[60,60],maxZoom:20});
+        // Wacht op tiles én animatie
+        await new Promise(resolve=>{
+          let done=false;
+          const finish=()=>{if(!done){done=true;resolve();}};
+          map.once("moveend",finish);
+          setTimeout(finish,800);
+        });
+      }
 
       // Tijdelijk OSM tiles (CORS-enabled) — Esri heeft geen CORS headers
       // waardoor canvas.toDataURL() een SecurityError gooit op Esri tiles
@@ -2874,7 +2929,8 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
             newDealPipelineId={newDealPipelineId} setNewDealPipelineId={setNewDealPipelineId}
             creatingDeal={creatingDeal}
             onOpenNewDeal={handleOpenNewDeal} onCancelNewDeal={handleCancelNewDeal}
-            onCreateDeal={handleCreateDeal}/>
+            onCreateDeal={handleCreateDeal}
+            onConfirm={handleTlConfirm} pendingGeo={tlPendingGeo}/>
           <div className="customer-section">
             <div className="sl">2️⃣ Klantgegevens</div>
             <div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>Velden worden automatisch gevuld na keuze in Teamleader.<br/><strong>Niet gevonden in TL?</strong> Vul hier handmatig in.</div>
