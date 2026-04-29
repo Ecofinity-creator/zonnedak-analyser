@@ -3053,7 +3053,7 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
               <strong>📍 Geen adres geselecteerd</strong> — ga naar het Locatie-veld in de sidebar om te starten.
             </div>}
           </div>
-        </>)}
+        </>))}
       </div>
     </div>
   </div>
