@@ -1400,39 +1400,101 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     y+=5;
   }
 
-  // ── Luchtfoto met panelen ──
+  // ── Luchtfoto met panelen — vectoren direct op PDF tekenen ──
+  // Strategie:
+  //   1. Luchtfoto als achtergrond (JPEG van mapSnapshot)
+  //   2. Panelen als vectoren direct getekend met jsPDF polygons
+  //      → volledig onafhankelijk van html2canvas SVG-capture beperkingen
   try{
     let imgData=null,imgRatio=1;
     if(mapSnapshot?.dataUrl){
       imgData=mapSnapshot.dataUrl;
       imgRatio=mapSnapshot.height/mapSnapshot.width;
-    }else{
-      const mapEl=document.getElementById("leaflet-map");
-      if(mapEl&&window.html2canvas){
-        const canvas=await window.html2canvas(mapEl,{
-          useCORS:true,allowTaint:false,scale:1.5,
-          logging:false,backgroundColor:"#f1f5f9",
-          foreignObjectRendering:false
-        });
-        imgData=canvas.toDataURL("image/jpeg",0.85);
-        imgRatio=canvas.height/canvas.width;
-      }
     }
+
+    doc.addPage();
+    doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
+    sf(11,"bold");sc(WHT);doc.text("EcoFinity BV",M,9);
+    sf(11,"normal");doc.text("Project: "+(customer.name||"—"),M+38,9);
+    sf(10,"normal");doc.text("Luchtfoto + Paneelplaatsing",W-M,9,{align:"right"});
+    y=22;
+    y=secTitle("Paneelplaatsing op het dak",y);
+
+    const imgW=W-2*M;
+    const imgH=imgData?Math.min(150,imgW*imgRatio):120;
+    const imgX=M, imgY=y;
+
     if(imgData){
-      doc.addPage();
-      doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
-      sf(11,"bold");sc(WHT);doc.text("EcoFinity BV",M,9);
-      sf(11,"normal");doc.text("Project: "+(customer.name||"—"),M+38,9);
-      sf(10,"normal");doc.text("Luchtfoto",W-M,9,{align:"right"});
-      y=22;
-      y=secTitle("Paneelplaatsing op het dak",y);
-      const imgW=W-2*M,imgH=Math.min(180,imgW*imgRatio);
-      doc.addImage(imgData,"JPEG",M,y,imgW,imgH);
-      y+=imgH+5;
-      sf(9,"normal");sc(MUT);
-      doc.text("Kaartachtergrond: OpenStreetMap · Paneelplaatsing is een schatting.",M,y);
-      y+=8;
+      doc.addImage(imgData,"JPEG",imgX,imgY,imgW,imgH);
+    } else {
+      doc.setFillColor(220,230,240);
+      doc.rect(imgX,imgY,imgW,imgH,"F");
+      sf(9,"italic");sc(MUT);
+      doc.text("Gebruik '📸 Foto opslaan voor rapport' voor luchtfoto",imgX+imgW/2,imgY+imgH/2,{align:"center"});
     }
+
+    // Teken panelen als vectoren over de foto heen
+    // Bereken bounding box van het dakpolygoon om te normaliseren naar PDF-coördinaten
+    const panelData = results._panelData; // meegegeven als extra veld
+    if(panelData&&panelData.length>0&&results._facePoly&&results._facePoly.length>0){
+      const allPts=[...results._facePoly,...panelData.flatMap(p=>p.corners)];
+      const minLat=Math.min(...allPts.map(p=>p[0]));
+      const maxLat=Math.max(...allPts.map(p=>p[0]));
+      const minLng=Math.min(...allPts.map(p=>p[1]));
+      const maxLng=Math.max(...allPts.map(p=>p[1]));
+      const rangeLatGeo=maxLat-minLat||0.0001;
+      const rangeLngGeo=maxLng-minLng||0.0001;
+
+      // Padding zodat dakrand ook zichtbaar is
+      const pad=0.15;
+      const effW=imgW*(1-2*pad), effH=imgH*(1-2*pad);
+      const scale=Math.min(effW/rangeLngGeo, effH/rangeLatGeo);
+      const offX=imgX+imgW*pad+(rangeLngGeo*scale<effW?(effW-rangeLngGeo*scale)/2:0);
+      const offY=imgY+imgH*pad+(rangeLatGeo*scale<effH?(effH-rangeLatGeo*scale)/2:0);
+
+      const toX=lng=>offX+(lng-minLng)*scale;
+      const toY=lat=>offY+(maxLat-lat)*scale; // Y geïnverteerd
+
+      // Teken dakcontour als stippellijn
+      if(results._buildingCoords&&results._buildingCoords.length>=3){
+        doc.setDrawColor(...OR);doc.setLineWidth(0.5);
+        const bc=results._buildingCoords;
+        doc.lines(
+          bc.slice(1).map((pt,i)=>[toX(pt[1])-toX(bc[i][1]),toY(pt[0])-toY(bc[i][0])]),
+          toX(bc[0][1]),toY(bc[0][0]),
+          [1,1],"S",true
+        );
+      }
+
+      // Teken elk paneel als gevuld blauw polygon (echte rotatie behouden)
+      doc.setFillColor(37,99,235);
+      doc.setDrawColor(15,35,80);
+      doc.setLineWidth(0.15);
+      panelData.forEach(panel=>{
+        const pts=panel.corners.map(([la,ln])=>({x:toX(ln),y:toY(la)}));
+        if(pts.length<3) return;
+        doc.setFillColor(37,99,235);
+        // jsPDF polygon: array van {x,y} punten
+        try{
+          doc.polygon(pts.map(p=>[p.x,p.y]),"FD");
+        }catch{
+          // Fallback naar rect als polygon niet beschikbaar
+          const xs=pts.map(p=>p.x), ys=pts.map(p=>p.y);
+          const px=Math.min(...xs), py=Math.min(...ys);
+          const pw=Math.max(...xs)-px, ph2=Math.max(...ys)-py;
+          if(pw>0.2&&ph2>0.2) doc.rect(px,py,pw,ph2,"FD");
+        }
+      });
+
+      // Statistieken label
+      sf(8,"bold");sc([37,99,235]);
+      doc.text(`${panelData.length} panelen · ${((panelData.length*results.panel.watt)/1000).toFixed(1)} kWp`,imgX,imgY+imgH+6);
+    }
+
+    sf(7,"italic");sc(MUT);
+    doc.text("Luchtfoto: "+(imgData?"OpenStreetMap (snapshot)":"niet beschikbaar")+" · Paneelplaatsing is een schatting.",imgX,imgY+imgH+(panelData?.length>0?12:6));
+    y=imgY+imgH+18;
+
   }catch(mapErr){console.warn("Kaartfoto mislukt:",mapErr);}
 
   const pgC=doc.getNumberOfPages();
@@ -1443,30 +1505,57 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     sf(7,"normal");sc(MUT);
     doc.text("Pagina "+i+" / "+pgC,W-M,292,{align:"right"});
     doc.text("EcoFinity BV · www.ecofinity.eu · info@ecofinity.eu · +32 55 495865",M,292);
-    doc.text("Berekeningen zijn schattingen gebaseerd op een gemiddelde zonne-instraling in uw woonplaats.",M,288,{maxWidth:W-2*M-20});
+    doc.text("Berekeningen zijn schattingen op basis van gemiddelde zonnestraling in Vlaanderen.",M,288,{maxWidth:W-2*M-20});
   }
 
   const mainPdfBytes=doc.output("arraybuffer");
   const mergedPdf=await PDFDocument.load(new Uint8Array(mainPdfBytes));
 
-  const dsFiles=new Set();
-  if(results.panel?.datasheet) dsFiles.add(results.panel.datasheet);
-  if(results.inv?.datasheet)   dsFiles.add(results.inv.datasheet);
+  const dsFiles=[];
+  if(results.panel?.datasheet) dsFiles.push({file:results.panel.datasheet,label:`${results.panel.brand} ${results.panel.model}`,type:"Paneel datasheet"});
+  if(results.inv?.datasheet&&results.inv.datasheet!==results.panel?.datasheet)
+    dsFiles.push({file:results.inv.datasheet,label:`${results.inv.brand} ${results.inv.model}`,type:"Omvormer datasheet"});
 
   let dsCount=0;
-  for(const dsFile of dsFiles){
-    const bytes=await fetchPdfBytes(DS_BASE+dsFile);
+  for(const ds of dsFiles){
+    const bytes=await fetchPdfBytes(DS_BASE+ds.file);
     if(!bytes) continue;
     try{
       const dsPdf=await PDFDocument.load(bytes,{ignoreEncryption:true});
-      const pages=await mergedPdf.copyPages(dsPdf,dsPdf.getPageIndices());
-      const sepPage=mergedPdf.addPage([595,842]);
-      const {rgb}=window.PDFLib;
-      sepPage.drawRectangle({x:0,y:0,width:595,height:842,color:rgb(0.95,0.96,0.98)});
-      sepPage.drawText(`Datasheet: ${dsFile.replace(/-/g," ").replace(".pdf","").toUpperCase()}`,{x:50,y:420,size:18,color:rgb(0.88,0.48,0)});
-      pages.forEach(p=>mergedPdf.addPage(p));
+      const dsPages=await mergedPdf.copyPages(dsPdf,dsPdf.getPageIndices());
+      if(dsPages.length===0) continue;
+
+      // Nette scheidingspagina — EcoFinity huisstijl
+      const {rgb,StandardFonts}=window.PDFLib;
+      const sepPg=mergedPdf.addPage([595,842]);
+      // Oranje header band
+      sepPg.drawRectangle({x:0,y:808,width:595,height:34,color:rgb(0.878,0.482,0)});
+      // Titel in header
+      const boldFont=await mergedPdf.embedFont(StandardFonts.HelveticaBold);
+      const regFont=await mergedPdf.embedFont(StandardFonts.Helvetica);
+      sepPg.drawText("EcoFinity BV",{x:20,y:820,size:11,font:boldFont,color:rgb(1,1,1)});
+      sepPg.drawText("Project: "+(customer.name||"—"),{x:160,y:820,size:10,font:regFont,color:rgb(1,1,1)});
+      // Oranje zijbalk links
+      sepPg.drawRectangle({x:20,y:100,width:4,height:600,color:rgb(0.878,0.482,0)});
+      // Type label
+      sepPg.drawText(ds.type.toUpperCase(),{x:35,y:680,size:10,font:regFont,color:rgb(0.4,0.45,0.5)});
+      // Grote productnaam
+      sepPg.drawText(ds.label,{x:35,y:640,size:22,font:boldFont,color:rgb(0.06,0.09,0.16)});
+      // Subtitel
+      sepPg.drawText("Technische specificaties — bijlage bij uw ZonneDak rapport",{x:35,y:610,size:10,font:regFont,color:rgb(0.4,0.45,0.5)});
+      // Lijn
+      sepPg.drawLine({start:{x:35,y:595},end:{x:560,y:595},thickness:1,color:rgb(0.878,0.482,0)});
+      // Info tekst
+      sepPg.drawText("Dit document is automatisch bijgevoegd door ZonneDak Analyzer.",{x:35,y:570,size:9,font:regFont,color:rgb(0.4,0.45,0.5)});
+      sepPg.drawText(`Datum rapport: ${new Date().toLocaleDateString("nl-BE")}`,{x:35,y:555,size:9,font:regFont,color:rgb(0.4,0.45,0.5)});
+      // Footer
+      sepPg.drawRectangle({x:0,y:0,width:595,height:30,color:rgb(0.97,0.98,0.99)});
+      sepPg.drawLine({start:{x:0,y:30},end:{x:595,y:30},thickness:0.5,color:rgb(0.878,0.482,0)});
+      sepPg.drawText("EcoFinity BV · www.ecofinity.eu · info@ecofinity.eu · +32 55 495865",{x:20,y:12,size:7,font:regFont,color:rgb(0.4,0.45,0.5)});
+
+      dsPages.forEach(p=>mergedPdf.addPage(p));
       dsCount++;
-    }catch(e){console.warn("Datasheet merge fout:",dsFile,e.message);}
+    }catch(e){console.warn("Datasheet merge fout:",ds.file,e.message);}
   }
 
   const finalBytes=await mergedPdf.save();
@@ -2132,6 +2221,9 @@ export default function App(){
     setCustomer(p=>p.address?p:{...p,address:item.display_name.split(",").slice(0,3).join(",")});
     setPanelsDrawn(false);setBuildingCoords(null);setDetectedArea(null);
     setDetectedFaces(null);setDhmStatus("idle");setDhmError("");setGrbStatus("loading");
+    // Auto-navigate to map tab so user sees the building being loaded
+    setActiveTab("configuratie");
+    setTimeout(()=>{if(leafRef.current) leafRef.current.invalidateSize?.();},80);
 
     if(leafRef.current&&mapReady){
       const L=window.L,map=leafRef.current;map.setView([lat,lng],19);
@@ -2210,7 +2302,12 @@ export default function App(){
       detectedArea,grbOk:grbStatus==="ok",dhmOk:dhmStatus==="ok",orientation,slope,
       stringDesign:stringDesign||null,consumption:Math.round(consumption),
       selfKwhBase:Math.round(selfKwhBase),injectKwhBase:Math.round(injectKwhBase),
-      selfRatioBase,priceBuy:PRIJS_AANKOOP,priceInject:PRIJS_INJECTIE});
+      selfRatioBase,priceBuy:PRIJS_AANKOOP,priceInject:PRIJS_INJECTIE,
+      // Paneel- en polygoondata voor vectortekening in PDF
+      _panelData: panelDataRef.current||null,
+      _facePoly: detectedFaces?.[selFaceIdx]?.polygon||buildingCoords||null,
+      _buildingCoords: buildingCoords||null,
+    });
     if(leafRef.current&&window.L){
       const L=window.L,map=leafRef.current;
       if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
@@ -2272,10 +2369,6 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
     if(!leafRef.current){
       alert("Kaart nog niet geladen. Probeer opnieuw."); return;
     }
-    if(!panelsDrawn){
-      alert("Klik eerst op 'Toon X panelen op dak' zodat de panelen zichtbaar zijn.");
-      return;
-    }
 
     setSnapshotLoading(true);
     const map=leafRef.current;
@@ -2288,10 +2381,26 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
       }
 
+      // Auto-teken panelen als ze nog niet zichtbaar zijn
+      if(!panelsDrawn&&buildingCoords&&selPanel){
+        if(panelDataRef) panelDataRef.current=null;
+        if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
+        let _sf=detectedFaces?.[selFaceIdx];
+        if(_sf&&!_sf.polygon&&buildingCoords){
+          const wp=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);
+          setDetectedFaces(wp);_sf=wp?.[selFaceIdx]||_sf;
+        }
+        const _fp=_sf?.polygon||buildingCoords;
+        panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,panelDataRef,false);
+        setPanelsDrawn(true);
+        await new Promise(r=>setTimeout(r,400));
+      }
+
       const mapEl=document.getElementById("leaflet-map");
       if(!mapEl) throw new Error("Kaart-element niet gevonden");
 
-      // Tijdelijk OSM tiles (CORS-enabled) vervangen Esri tiles
+      // Tijdelijk OSM tiles (CORS-enabled) — Esri heeft geen CORS headers
+      // waardoor canvas.toDataURL() een SecurityError gooit op Esri tiles
       osmLayer=L.tileLayer(
         "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
         {attribution:"© OpenStreetMap contributors",maxZoom:21,crossOrigin:""}
@@ -2299,7 +2408,6 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
       if(origTile) map.removeLayer(origTile);
       osmLayer.addTo(map);
 
-      // Wacht tot OSM tiles geladen zijn (max 3s)
       await new Promise(resolve=>{
         let done=false;
         const finish=()=>{if(!done){done=true;resolve();}};
@@ -2308,18 +2416,17 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
       });
 
       map.invalidateSize(true);
-      await new Promise(r=>setTimeout(r,250));
+      await new Promise(r=>setTimeout(r,300));
 
       const canvas=await window.html2canvas(mapEl,{
         useCORS:              true,
-        allowTaint:           false,   // false + OSM CORS tiles = toDataURL() werkt
+        allowTaint:           false,
         scale:                1.5,
         logging:              false,
         backgroundColor:      "#e8e8e8",
         foreignObjectRendering:false,
         imageTimeout:         15000,
         onclone:(clonedDoc)=>{
-          // Zorg dat Leaflet SVG overlay (panelen, dakpolygonen) volledig zichtbaar is
           clonedDoc.querySelectorAll(".leaflet-overlay-pane svg").forEach(svg=>{
             svg.style.overflow="visible";
           });
@@ -2339,36 +2446,27 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
 
     }catch(e){
       console.error("[ZonneDak] Snapshot fout:",e);
-      alert("Foto maken mislukt: "+(e.message||"onbekende fout")+
-            "\n\nTip: zorg dat panelen zichtbaar zijn en probeer opnieuw.");
+      alert("Foto maken mislukt: "+(e.message||"onbekende fout"));
     }finally{
-      // Altijd originele tiles herstellen — ook bij fout
       if(osmLayer){try{map.removeLayer(osmLayer);}catch{}}
-      if(origTile) {try{origTile.addTo(map);       }catch{}}
+      if(origTile) {try{origTile.addTo(map);}catch{}}
       setSnapshotLoading(false);
     }
-  },[panelsDrawn]);
+  },[panelsDrawn,buildingCoords,selPanel,detectedFaces,selFaceIdx,panelCount,panelRotOffset,panelOrient]);
 
   const handlePDF=async()=>{
     if(!results) return;
     setPdfLoading(true);
-    let previousTab=null;
-    if(!mapSnapshot){
-      previousTab=activeTab;setActiveTab("configuratie");
-      await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
-      await new Promise(r=>setTimeout(r,300));
-      if(leafRef.current?.invalidateSize) leafRef.current.invalidateSize(true);
-      await new Promise(resolve=>{
-        let done=false;const finish=()=>{if(!done){done=true;resolve();}};
-        if(leafRef.current){leafRef.current.once("load",finish);setTimeout(finish,1500);}
-        else{setTimeout(finish,800);}
-      });
-      await new Promise(r=>setTimeout(r,400));
-    }
-    try{await generatePDF(results,customer,displayName,slope,orientation,mapSnapshot,editableAiText);}
+    // Update results met meest recente panelData (kan gewijzigd zijn na drag)
+    const latestResults={
+      ...results,
+      _panelData: panelDataRef.current||results._panelData||null,
+      _facePoly: detectedFaces?.[selFaceIdx]?.polygon||buildingCoords||results._facePoly||null,
+      _buildingCoords: buildingCoords||results._buildingCoords||null,
+    };
+    try{await generatePDF(latestResults,customer,displayName,slope,orientation,mapSnapshot,editableAiText);}
     catch(e){alert(`PDF fout: ${e.message}`);}
     setPdfLoading(false);
-    if(previousTab) setActiveTab(previousTab);
   };
 
   const filteredInv=invFilter==="alle"?inverters:inverters.filter(i=>i.fase===invFilter);
@@ -2591,7 +2689,7 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
           🏠 Toon {panelCount} panelen op dak
         </button>
 
-        {panelsDrawn&&<button className="btn green full" style={{marginTop:6}}
+        {coords&&buildingCoords&&<button className="btn green full" style={{marginTop:6}}
           onClick={handleSnapshot} disabled={snapshotLoading||!coords}>
           {snapshotLoading?"📸 Foto maken...":mapSnapshot?"✅ Foto opgeslagen · Opnieuw":"📸 Foto opslaan voor rapport"}
         </button>}
@@ -2639,8 +2737,18 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
           {panelMoveMode?"✅ Klaar · klik=select · dubbelklik=rij · sleep=verplaats":"↔️ Verplaats panelen"}
         </button>}
 
-        <button className="btn full" onClick={calculate} disabled={!coords||aiLoading||!buildingCoords||isLoading}>
-          {aiLoading?<><div className="spinner"/>Analyseren...</>:dhmStatus==="loading"?<><div className="spinner cyan"/>LiDAR verwerken...</>:grbStatus==="loading"?<><div className="spinner"/>Laden...</>:"☀️ Bereken resultaten"}
+        {!manualPanelPrice&&coords&&buildingCoords&&!isLoading&&<div className="info-box warn" style={{fontSize:9,padding:"6px 10px"}}>
+          <strong>💰 Vul eerst de installatieprijs in</strong> op tab 07 Resultaten
+        </div>}
+        <button className="btn full" onClick={()=>{
+          if(!manualPanelPrice||parseFloat(manualPanelPrice)<=0){
+            setActiveTab("resultaten");
+            setTimeout(()=>document.querySelector('input[placeholder="bv. 8000"]')?.focus(),200);
+            return;
+          }
+          calculate();
+        }} disabled={!coords||aiLoading||!buildingCoords||isLoading}>
+          {aiLoading?<><div className="spinner"/>Analyseren...</>:dhmStatus==="loading"?<><div className="spinner cyan"/>LiDAR verwerken...</>:grbStatus==="loading"?<><div className="spinner"/>Laden...</>:(!manualPanelPrice||parseFloat(manualPanelPrice)<=0)?"💰 Prijs invullen → Bereken":"☀️ Bereken resultaten"}
         </button>
         <div className="info-box">
           <strong>📡 Databronnen</strong><br/>GRB · GRB Gebouwcontouren · 1m<br/>DHM WCS · DSM+DTM · Horn's methode<br/>Lambert72 · Helmert 7-parameter<br/>© Agentschap Digitaal Vlaanderen
