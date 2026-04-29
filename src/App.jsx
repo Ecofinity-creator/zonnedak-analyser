@@ -1400,16 +1400,17 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     y+=5;
   }
 
-  // ── Luchtfoto met panelen — vectoren direct op PDF tekenen ──
-  // Strategie:
-  //   1. Luchtfoto als achtergrond (JPEG van mapSnapshot)
-  //   2. Panelen als vectoren direct getekend met jsPDF polygons
-  //      → volledig onafhankelijk van html2canvas SVG-capture beperkingen
+  // ── Luchtfoto met panelen ──────────────────────────────────────────────────
+  // Aanpak:
+  //   Achtergrond = OSM-snapshot (JPEG).
+  //   Paneel-vectoren worden EXACT uitgelijnd via de opgeslagen Leaflet-bounds.
+  //   Bounds worden opgeslagen bij snapshot → zelfde viewport → perfecte overlap.
   try{
-    let imgData=null,imgRatio=1;
+    let imgData=null,imgRatio=1,snapBounds=null;
     if(mapSnapshot?.dataUrl){
-      imgData=mapSnapshot.dataUrl;
-      imgRatio=mapSnapshot.height/mapSnapshot.width;
+      imgData    = mapSnapshot.dataUrl;
+      imgRatio   = mapSnapshot.height/mapSnapshot.width;
+      snapBounds = mapSnapshot.bounds||null; // {north,south,east,west}
     }
 
     doc.addPage();
@@ -1421,7 +1422,7 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     y=secTitle("Paneelplaatsing op het dak",y);
 
     const imgW=W-2*M;
-    const imgH=imgData?Math.min(150,imgW*imgRatio):120;
+    const imgH=imgData?Math.min(150,imgW*imgRatio):100;
     const imgX=M, imgY=y;
 
     if(imgData){
@@ -1433,81 +1434,78 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
       doc.text("Gebruik '📸 Foto opslaan voor rapport' voor luchtfoto",imgX+imgW/2,imgY+imgH/2,{align:"center"});
     }
 
-    // Teken panelen als vectoren over de foto heen
-    // Gebruik building coords voor bounding box (breder dan face poly → beter overzicht)
-    const panelData = results._panelData;
-    const bboxSrc = results._buildingCoords||results._facePoly;
-    if(panelData&&panelData.length>0&&bboxSrc&&bboxSrc.length>0){
-      const allPts=[...bboxSrc,...panelData.flatMap(p=>p.corners)];
-      const minLat=Math.min(...allPts.map(p=>p[0]));
-      const maxLat=Math.max(...allPts.map(p=>p[0]));
-      const minLng=Math.min(...allPts.map(p=>p[1]));
-      const maxLng=Math.max(...allPts.map(p=>p[1]));
+    // ── Paneel vector overlay ────────────────────────────────────────────────
+    const panelData=results._panelData;
+    if(panelData&&panelData.length>0){
 
-      // ── Aspect-ratio correctie ──────────────────────────────────────────
-      // Bij lat 51° (België): 1° lng ≈ 0.629 × 1° lat in afstand.
-      // Zonder correctie worden panelen uitgerekt of samengedrukt.
-      const centerLat=(minLat+maxLat)/2;
-      const MLAT=111320;                                  // m / ° lat
-      const MLNG=111320*Math.cos(centerLat*Math.PI/180); // m / ° lng
+      let toX,toY;
 
-      const rangeM_x=(maxLng-minLng)*MLNG||0.1; // breedte in meters
-      const rangeM_y=(maxLat-minLat)*MLAT||0.1; // hoogte in meters
+      if(snapBounds){
+        // ✅ EXACTE uitlijning: gebruik dezelfde bounds als de snapshot
+        // Leaflet Y-as: north = boven, south = onder → in PDF ook north = kleine y
+        const {north,south,east,west}=snapBounds;
+        const lngRange=east-west||0.0001;
+        const latRange=north-south||0.0001;
+        toX=lng=>imgX+(lng-west)/lngRange*imgW;
+        toY=lat=>imgY+(north-lat)/latRange*imgH;
+      } else {
+        // Fallback: bereken bounds vanuit de data zelf (minder nauwkeurig)
+        const bc=results._buildingCoords||results._facePoly||[];
+        const allPts=[...bc,...panelData.flatMap(p=>p.corners)];
+        if(allPts.length===0) throw new Error("geen punten");
+        const minLat=Math.min(...allPts.map(p=>p[0]));
+        const maxLat=Math.max(...allPts.map(p=>p[0]));
+        const minLng=Math.min(...allPts.map(p=>p[1]));
+        const maxLng=Math.max(...allPts.map(p=>p[1]));
+        const cLat=(minLat+maxLat)/2;
+        const MLAT=111320,MLNG=111320*Math.cos(cLat*Math.PI/180);
+        const rngX=(maxLng-minLng)*MLNG||0.1;
+        const rngY=(maxLat-minLat)*MLAT||0.1;
+        const pad=0.15;
+        const eW=imgW*(1-2*pad),eH=imgH*(1-2*pad);
+        const sc2=Math.min(eW/rngX,eH/rngY);
+        const oX=imgX+imgW*pad+(eW-rngX*sc2)/2;
+        const oY=imgY+imgH*pad+(eH-rngY*sc2)/2;
+        toX=lng=>oX+(lng-minLng)*MLNG*sc2;
+        toY=lat=>oY+(maxLat-lat)*MLAT*sc2;
+      }
 
-      // Voeg 20% padding toe zodat dakrand volledig zichtbaar is
-      const padFrac=0.18;
-      const effW=imgW*(1-2*padFrac), effH=imgH*(1-2*padFrac);
-      const scale=Math.min(effW/rangeM_x, effH/rangeM_y); // mm / m
-
-      // Centreer de kaart in het beschikbare vlak
-      const drawW=rangeM_x*scale, drawH=rangeM_y*scale;
-      const offX=imgX+imgW*padFrac+(effW-drawW)/2;
-      const offY=imgY+imgH*padFrac+(effH-drawH)/2;
-
-      // Geo → PDF (mm)
-      const toX=lng=>offX+(lng-minLng)*MLNG*scale;
-      const toY=lat=>offY+(maxLat-lat)*MLAT*scale; // Y omgekeerd: noorden = boven
-
-      // Dakcontour (oranje stippellijn)
-      if(results._buildingCoords&&results._buildingCoords.length>=3){
-        doc.setDrawColor(...OR);doc.setLineWidth(0.6);
-        const bc=results._buildingCoords;
+      // Dakcontour (oranje lijn, semi-transparant via lage opacity)
+      const bc=results._buildingCoords;
+      if(bc&&bc.length>=3){
+        doc.setDrawColor(...OR);doc.setLineWidth(0.7);
         const bcPts=bc.map(([la,ln])=>[toX(ln),toY(la)]);
-        // Teken gesloten polygon via lines-methode
         const moves=bcPts.slice(1).map(([x,y],i)=>[x-bcPts[i][0],y-bcPts[i][1]]);
         doc.lines(moves,bcPts[0][0],bcPts[0][1],[1,1],"S",true);
       }
 
-      // Panelen als gevulde blauwe polygons
+      // Panelen: blauw gevuld
       doc.setFillColor(37,99,235);
       doc.setDrawColor(10,30,80);
-      doc.setLineWidth(0.12);
+      doc.setLineWidth(0.1);
       panelData.forEach(panel=>{
         const pts=panel.corners.map(([la,ln])=>[toX(ln),toY(la)]);
         if(pts.length<3) return;
         doc.setFillColor(37,99,235);
-        try{
-          // jsPDF 2.x: polygon accepteert array van [x,y] paren
-          doc.polygon(pts,"FD");
-        }catch{
-          // Fallback: axis-aligned rect via min/max
-          const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
-          const rx=Math.min(...xs), ry=Math.min(...ys);
-          const rw=Math.max(...xs)-rx, rh=Math.max(...ys)-ry;
-          if(rw>0.15&&rh>0.15) doc.rect(rx,ry,rw,rh,"FD");
+        try{ doc.polygon(pts,"FD"); }
+        catch{
+          const xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]);
+          const rx=Math.min(...xs),ry=Math.min(...ys);
+          const rw=Math.max(...xs)-rx,rh=Math.max(...ys)-ry;
+          if(rw>0.1&&rh>0.1) doc.rect(rx,ry,rw,rh,"FD");
         }
       });
 
-      // Statistieken label
       sf(8,"bold");sc([37,99,235]);
       doc.text(`${panelData.length} panelen · ${((panelData.length*results.panel.watt)/1000).toFixed(1)} kWp`,imgX,imgY+imgH+6);
     }
 
     sf(7,"italic");sc(MUT);
-    doc.text("Luchtfoto: "+(imgData?"OpenStreetMap (snapshot)":"niet beschikbaar")+" · Paneelplaatsing is een schatting.",imgX,imgY+imgH+(panelData?.length>0?12:6));
+    doc.text("Luchtfoto: "+(imgData?"OpenStreetMap":"niet beschikbaar")+" · Paneelplaatsing is een schatting.",imgX,imgY+imgH+(panelData?.length>0?12:6));
     y=imgY+imgH+18;
 
-  }catch(mapErr){console.warn("Kaartfoto mislukt:",mapErr);}
+  }catch(mapErr){console.warn("Luchtfoto sectie mislukt:",mapErr);}
+
 
   const pgC=doc.getNumberOfPages();
   for(let i=1;i<=pgC;i++){
@@ -1528,56 +1526,76 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
   if(results.inv?.datasheet&&results.inv.datasheet!==results.panel?.datasheet)
     dsFiles.push({file:results.inv.datasheet,label:`${results.inv.brand} ${results.inv.model}`,type:"Omvormer datasheet"});
 
+  // ── Datasheets via pdf.js rasterisatie ──────────────────────────────────────
+  // pdf-lib copyPages faalt op encrypted datasheets (Qcells, Trina, AlphaESS).
+  // pdf.js rendert elke pagina naar canvas → JPEG → jsPDF → mergedPdf.
   let dsCount=0;
+
+  const loadPdfJs=async()=>{
+    if(window.pdfjsLib) return;
+    await loadScript("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js");
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc=
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  };
+
   for(const ds of dsFiles){
     const bytes=await fetchPdfBytes(DS_BASE+ds.file);
     if(!bytes) continue;
     try{
-      // throwOnInvalidObject:false → tolereer ontbrekende/externe PDF-objecten
-      const dsPdf=await PDFDocument.load(bytes,{
-        ignoreEncryption:true,
-        throwOnInvalidObject:false,
-      });
-      const pageCount=dsPdf.getPageCount();
-      if(pageCount===0) continue;
-
-      // Separator EERST toevoegen, dan pas pagina's kopiëren
+      await loadPdfJs();
       const {rgb,StandardFonts}=window.PDFLib;
+
+      // Separator pagina (EcoFinity huisstijl)
       const sepPg=mergedPdf.addPage([595,842]);
       sepPg.drawRectangle({x:0,y:808,width:595,height:34,color:rgb(0.878,0.482,0)});
       const boldFont=await mergedPdf.embedFont(StandardFonts.HelveticaBold);
-      const regFont=await mergedPdf.embedFont(StandardFonts.Helvetica);
+      const regFont =await mergedPdf.embedFont(StandardFonts.Helvetica);
       sepPg.drawText("EcoFinity BV",{x:20,y:820,size:11,font:boldFont,color:rgb(1,1,1)});
       sepPg.drawText("Project: "+(customer.name||"—"),{x:160,y:820,size:10,font:regFont,color:rgb(1,1,1)});
       sepPg.drawRectangle({x:20,y:100,width:4,height:600,color:rgb(0.878,0.482,0)});
       sepPg.drawText(ds.type.toUpperCase(),{x:35,y:680,size:10,font:regFont,color:rgb(0.4,0.45,0.5)});
-      sepPg.drawText(ds.label,{x:35,y:640,size:22,font:boldFont,color:rgb(0.06,0.09,0.16)});
+      sepPg.drawText(ds.label,{x:35,y:640,size:20,font:boldFont,color:rgb(0.06,0.09,0.16)});
       sepPg.drawText("Technische specificaties — bijlage bij uw ZonneDak rapport",{x:35,y:610,size:10,font:regFont,color:rgb(0.4,0.45,0.5)});
       sepPg.drawLine({start:{x:35,y:595},end:{x:560,y:595},thickness:1,color:rgb(0.878,0.482,0)});
       sepPg.drawText("Dit document is automatisch bijgevoegd door ZonneDak Analyzer.",{x:35,y:570,size:9,font:regFont,color:rgb(0.4,0.45,0.5)});
-      sepPg.drawText(`Datum rapport: ${new Date().toLocaleDateString("nl-BE")}`,{x:35,y:555,size:9,font:regFont,color:rgb(0.4,0.45,0.5)});
+      sepPg.drawText("Datum rapport: "+new Date().toLocaleDateString("nl-BE"),{x:35,y:555,size:9,font:regFont,color:rgb(0.4,0.45,0.5)});
       sepPg.drawRectangle({x:0,y:0,width:595,height:30,color:rgb(0.97,0.98,0.99)});
       sepPg.drawLine({start:{x:0,y:30},end:{x:595,y:30},thickness:0.5,color:rgb(0.878,0.482,0)});
       sepPg.drawText("EcoFinity BV · www.ecofinity.eu · info@ecofinity.eu · +32 55 495865",{x:20,y:12,size:7,font:regFont,color:rgb(0.4,0.45,0.5)});
 
-      // Pagina's kopiëren — indices expliciet als array
-      const indices=Array.from({length:pageCount},(_,i)=>i);
-      const dsPages=await mergedPdf.copyPages(dsPdf,indices);
-      dsPages.forEach(p=>mergedPdf.addPage(p));
+      // Render elke pagina via pdf.js → canvas → JPEG → jsPDF pagina → mergedPdf
+      const pdfTask=window.pdfjsLib.getDocument({data:new Uint8Array(bytes).buffer});
+      const pdfDoc2=await pdfTask.promise;
+      const numPages=pdfDoc2.numPages;
+
+      for(let pi=1;pi<=numPages;pi++){
+        const pg=await pdfDoc2.getPage(pi);
+        const vp=pg.getViewport({scale:2.0});
+        const cvs=document.createElement("canvas");
+        cvs.width=vp.width;cvs.height=vp.height;
+        const ctx2=cvs.getContext("2d");
+        ctx2.fillStyle="#ffffff";
+        ctx2.fillRect(0,0,cvs.width,cvs.height);
+        await pg.render({canvasContext:ctx2,viewport:vp}).promise;
+        const jpegUrl=cvs.toDataURL("image/jpeg",0.88);
+        const ratio=cvs.height/cvs.width;
+        // Fit in A4 met 10mm marge
+        const pgM=10,pgW2=210-2*pgM,pgH2=297-2*pgM;
+        const fitH=Math.min(pgH2,pgW2*ratio);
+        const fitW=fitH/ratio;
+        const orient=ratio>1?"portrait":"landscape";
+        const dPage=new jsPDF({orientation:orient,unit:"mm",format:"a4"});
+        const dW=dPage.internal.pageSize.getWidth();
+        const dH=dPage.internal.pageSize.getHeight();
+        dPage.addImage(jpegUrl,"JPEG",(dW-fitW)/2,(dH-fitH)/2,fitW,fitH);
+        const dBuf=dPage.output("arraybuffer");
+        const dPdf=await PDFDocument.load(new Uint8Array(dBuf));
+        const[dPg]=await mergedPdf.copyPages(dPdf,[0]);
+        mergedPdf.addPage(dPg);
+      }
       dsCount++;
     }catch(e){
-      console.warn("Datasheet merge fout:",ds.file,e.message);
-      // Foutpagina zodat gebruiker weet wat er misging
-      try{
-        const {rgb,StandardFonts}=window.PDFLib;
-        const errPg=mergedPdf.addPage([595,842]);
-        errPg.drawRectangle({x:0,y:808,width:595,height:34,color:rgb(0.878,0.482,0)});
-        const bf=await mergedPdf.embedFont(StandardFonts.HelveticaBold);
-        const rf=await mergedPdf.embedFont(StandardFonts.Helvetica);
-        errPg.drawText("EcoFinity BV",{x:20,y:820,size:11,font:bf,color:rgb(1,1,1)});
-        errPg.drawText(ds.type+" — kon niet worden ingeladen",{x:35,y:500,size:14,font:bf,color:rgb(0.878,0.482,0)});
-        errPg.drawText("Raadpleeg het originele datasheet op de website van de fabrikant.",{x:35,y:475,size:11,font:rf,color:rgb(0.3,0.3,0.3)});
-      }catch{}
+      console.warn("Datasheet mislukt:",ds.file,e.message);
     }
   }
 
@@ -2460,11 +2478,20 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
       });
 
       const dataUrl=canvas.toDataURL("image/jpeg",0.85);
+      // Sla de exacte kaartgrenzen op — nodig voor pixel-perfecte vector overlay in PDF
+      const mapBounds=map.getBounds();
       setMapSnapshot({
         dataUrl,
         width:  canvas.width,
         height: canvas.height,
         timestamp: Date.now(),
+        // Geografische grenzen van de screenshot (Leaflet viewport)
+        bounds:{
+          north: mapBounds.getNorth(),
+          south: mapBounds.getSouth(),
+          east:  mapBounds.getEast(),
+          west:  mapBounds.getWest(),
+        },
       });
 
     }catch(e){
