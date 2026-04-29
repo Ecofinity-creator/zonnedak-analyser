@@ -1434,55 +1434,67 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     }
 
     // Teken panelen als vectoren over de foto heen
-    // Bereken bounding box van het dakpolygoon om te normaliseren naar PDF-coördinaten
-    const panelData = results._panelData; // meegegeven als extra veld
-    if(panelData&&panelData.length>0&&results._facePoly&&results._facePoly.length>0){
-      const allPts=[...results._facePoly,...panelData.flatMap(p=>p.corners)];
+    // Gebruik building coords voor bounding box (breder dan face poly → beter overzicht)
+    const panelData = results._panelData;
+    const bboxSrc = results._buildingCoords||results._facePoly;
+    if(panelData&&panelData.length>0&&bboxSrc&&bboxSrc.length>0){
+      const allPts=[...bboxSrc,...panelData.flatMap(p=>p.corners)];
       const minLat=Math.min(...allPts.map(p=>p[0]));
       const maxLat=Math.max(...allPts.map(p=>p[0]));
       const minLng=Math.min(...allPts.map(p=>p[1]));
       const maxLng=Math.max(...allPts.map(p=>p[1]));
-      const rangeLatGeo=maxLat-minLat||0.0001;
-      const rangeLngGeo=maxLng-minLng||0.0001;
 
-      // Padding zodat dakrand ook zichtbaar is
-      const pad=0.15;
-      const effW=imgW*(1-2*pad), effH=imgH*(1-2*pad);
-      const scale=Math.min(effW/rangeLngGeo, effH/rangeLatGeo);
-      const offX=imgX+imgW*pad+(rangeLngGeo*scale<effW?(effW-rangeLngGeo*scale)/2:0);
-      const offY=imgY+imgH*pad+(rangeLatGeo*scale<effH?(effH-rangeLatGeo*scale)/2:0);
+      // ── Aspect-ratio correctie ──────────────────────────────────────────
+      // Bij lat 51° (België): 1° lng ≈ 0.629 × 1° lat in afstand.
+      // Zonder correctie worden panelen uitgerekt of samengedrukt.
+      const centerLat=(minLat+maxLat)/2;
+      const MLAT=111320;                                  // m / ° lat
+      const MLNG=111320*Math.cos(centerLat*Math.PI/180); // m / ° lng
 
-      const toX=lng=>offX+(lng-minLng)*scale;
-      const toY=lat=>offY+(maxLat-lat)*scale; // Y geïnverteerd
+      const rangeM_x=(maxLng-minLng)*MLNG||0.1; // breedte in meters
+      const rangeM_y=(maxLat-minLat)*MLAT||0.1; // hoogte in meters
 
-      // Teken dakcontour als stippellijn
+      // Voeg 20% padding toe zodat dakrand volledig zichtbaar is
+      const padFrac=0.18;
+      const effW=imgW*(1-2*padFrac), effH=imgH*(1-2*padFrac);
+      const scale=Math.min(effW/rangeM_x, effH/rangeM_y); // mm / m
+
+      // Centreer de kaart in het beschikbare vlak
+      const drawW=rangeM_x*scale, drawH=rangeM_y*scale;
+      const offX=imgX+imgW*padFrac+(effW-drawW)/2;
+      const offY=imgY+imgH*padFrac+(effH-drawH)/2;
+
+      // Geo → PDF (mm)
+      const toX=lng=>offX+(lng-minLng)*MLNG*scale;
+      const toY=lat=>offY+(maxLat-lat)*MLAT*scale; // Y omgekeerd: noorden = boven
+
+      // Dakcontour (oranje stippellijn)
       if(results._buildingCoords&&results._buildingCoords.length>=3){
-        doc.setDrawColor(...OR);doc.setLineWidth(0.5);
+        doc.setDrawColor(...OR);doc.setLineWidth(0.6);
         const bc=results._buildingCoords;
-        doc.lines(
-          bc.slice(1).map((pt,i)=>[toX(pt[1])-toX(bc[i][1]),toY(pt[0])-toY(bc[i][0])]),
-          toX(bc[0][1]),toY(bc[0][0]),
-          [1,1],"S",true
-        );
+        const bcPts=bc.map(([la,ln])=>[toX(ln),toY(la)]);
+        // Teken gesloten polygon via lines-methode
+        const moves=bcPts.slice(1).map(([x,y],i)=>[x-bcPts[i][0],y-bcPts[i][1]]);
+        doc.lines(moves,bcPts[0][0],bcPts[0][1],[1,1],"S",true);
       }
 
-      // Teken elk paneel als gevuld blauw polygon (echte rotatie behouden)
+      // Panelen als gevulde blauwe polygons
       doc.setFillColor(37,99,235);
-      doc.setDrawColor(15,35,80);
-      doc.setLineWidth(0.15);
+      doc.setDrawColor(10,30,80);
+      doc.setLineWidth(0.12);
       panelData.forEach(panel=>{
-        const pts=panel.corners.map(([la,ln])=>({x:toX(ln),y:toY(la)}));
+        const pts=panel.corners.map(([la,ln])=>[toX(ln),toY(la)]);
         if(pts.length<3) return;
         doc.setFillColor(37,99,235);
-        // jsPDF polygon: array van {x,y} punten
         try{
-          doc.polygon(pts.map(p=>[p.x,p.y]),"FD");
+          // jsPDF 2.x: polygon accepteert array van [x,y] paren
+          doc.polygon(pts,"FD");
         }catch{
-          // Fallback naar rect als polygon niet beschikbaar
-          const xs=pts.map(p=>p.x), ys=pts.map(p=>p.y);
-          const px=Math.min(...xs), py=Math.min(...ys);
-          const pw=Math.max(...xs)-px, ph2=Math.max(...ys)-py;
-          if(pw>0.2&&ph2>0.2) doc.rect(px,py,pw,ph2,"FD");
+          // Fallback: axis-aligned rect via min/max
+          const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
+          const rx=Math.min(...xs), ry=Math.min(...ys);
+          const rw=Math.max(...xs)-rx, rh=Math.max(...ys)-ry;
+          if(rw>0.15&&rh>0.15) doc.rect(rx,ry,rw,rh,"FD");
         }
       });
 
@@ -1521,41 +1533,52 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     const bytes=await fetchPdfBytes(DS_BASE+ds.file);
     if(!bytes) continue;
     try{
-      const dsPdf=await PDFDocument.load(bytes,{ignoreEncryption:true});
-      const dsPages=await mergedPdf.copyPages(dsPdf,dsPdf.getPageIndices());
-      if(dsPages.length===0) continue;
+      // throwOnInvalidObject:false → tolereer ontbrekende/externe PDF-objecten
+      const dsPdf=await PDFDocument.load(bytes,{
+        ignoreEncryption:true,
+        throwOnInvalidObject:false,
+      });
+      const pageCount=dsPdf.getPageCount();
+      if(pageCount===0) continue;
 
-      // Nette scheidingspagina — EcoFinity huisstijl
+      // Separator EERST toevoegen, dan pas pagina's kopiëren
       const {rgb,StandardFonts}=window.PDFLib;
       const sepPg=mergedPdf.addPage([595,842]);
-      // Oranje header band
       sepPg.drawRectangle({x:0,y:808,width:595,height:34,color:rgb(0.878,0.482,0)});
-      // Titel in header
       const boldFont=await mergedPdf.embedFont(StandardFonts.HelveticaBold);
       const regFont=await mergedPdf.embedFont(StandardFonts.Helvetica);
       sepPg.drawText("EcoFinity BV",{x:20,y:820,size:11,font:boldFont,color:rgb(1,1,1)});
       sepPg.drawText("Project: "+(customer.name||"—"),{x:160,y:820,size:10,font:regFont,color:rgb(1,1,1)});
-      // Oranje zijbalk links
       sepPg.drawRectangle({x:20,y:100,width:4,height:600,color:rgb(0.878,0.482,0)});
-      // Type label
       sepPg.drawText(ds.type.toUpperCase(),{x:35,y:680,size:10,font:regFont,color:rgb(0.4,0.45,0.5)});
-      // Grote productnaam
       sepPg.drawText(ds.label,{x:35,y:640,size:22,font:boldFont,color:rgb(0.06,0.09,0.16)});
-      // Subtitel
       sepPg.drawText("Technische specificaties — bijlage bij uw ZonneDak rapport",{x:35,y:610,size:10,font:regFont,color:rgb(0.4,0.45,0.5)});
-      // Lijn
       sepPg.drawLine({start:{x:35,y:595},end:{x:560,y:595},thickness:1,color:rgb(0.878,0.482,0)});
-      // Info tekst
       sepPg.drawText("Dit document is automatisch bijgevoegd door ZonneDak Analyzer.",{x:35,y:570,size:9,font:regFont,color:rgb(0.4,0.45,0.5)});
       sepPg.drawText(`Datum rapport: ${new Date().toLocaleDateString("nl-BE")}`,{x:35,y:555,size:9,font:regFont,color:rgb(0.4,0.45,0.5)});
-      // Footer
       sepPg.drawRectangle({x:0,y:0,width:595,height:30,color:rgb(0.97,0.98,0.99)});
       sepPg.drawLine({start:{x:0,y:30},end:{x:595,y:30},thickness:0.5,color:rgb(0.878,0.482,0)});
       sepPg.drawText("EcoFinity BV · www.ecofinity.eu · info@ecofinity.eu · +32 55 495865",{x:20,y:12,size:7,font:regFont,color:rgb(0.4,0.45,0.5)});
 
+      // Pagina's kopiëren — indices expliciet als array
+      const indices=Array.from({length:pageCount},(_,i)=>i);
+      const dsPages=await mergedPdf.copyPages(dsPdf,indices);
       dsPages.forEach(p=>mergedPdf.addPage(p));
       dsCount++;
-    }catch(e){console.warn("Datasheet merge fout:",ds.file,e.message);}
+    }catch(e){
+      console.warn("Datasheet merge fout:",ds.file,e.message);
+      // Foutpagina zodat gebruiker weet wat er misging
+      try{
+        const {rgb,StandardFonts}=window.PDFLib;
+        const errPg=mergedPdf.addPage([595,842]);
+        errPg.drawRectangle({x:0,y:808,width:595,height:34,color:rgb(0.878,0.482,0)});
+        const bf=await mergedPdf.embedFont(StandardFonts.HelveticaBold);
+        const rf=await mergedPdf.embedFont(StandardFonts.Helvetica);
+        errPg.drawText("EcoFinity BV",{x:20,y:820,size:11,font:bf,color:rgb(1,1,1)});
+        errPg.drawText(ds.type+" — kon niet worden ingeladen",{x:35,y:500,size:14,font:bf,color:rgb(0.878,0.482,0)});
+        errPg.drawText("Raadpleeg het originele datasheet op de website van de fabrikant.",{x:35,y:475,size:11,font:rf,color:rgb(0.3,0.3,0.3)});
+      }catch{}
+    }
   }
 
   const finalBytes=await mergedPdf.save();
