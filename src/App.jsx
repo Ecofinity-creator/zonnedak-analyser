@@ -1820,7 +1820,7 @@ export default function App(){
   const selPanel=panels.find(p=>p.id===selPanelId)||panels[0];
 
   const[inverters]=useState(DEFAULT_INVERTERS);
-  const[selInvId,setSelInvId]=useState(null);
+  const[selInvId,setSelInvId]=useState(2); // standaard: SMILE-G3-S5
   const selInv=inverters.find(i=>i.id===selInvId)||null;
   const[invFilter,setInvFilter]=useState("alle");
 
@@ -1830,8 +1830,8 @@ export default function App(){
   const panelCount=customCount!==null?customCount:autoPanels;
 
   const[batteries,setBatteries]=useState(DEFAULT_BATTERIES);
-  const[battEnabled,setBattEnabled]=useState(false);
-  const[selBattId,setSelBattId]=useState(4);
+  const[battEnabled,setBattEnabled]=useState(true); // standaard aan
+  const[selBattId,setSelBattId]=useState(2); // standaard: BAT-G3-9.3S
   const selBatt=batteries.find(b=>b.id===selBattId)||batteries[0];
   const[battFilter,setBattFilter]=useState("alle");
 
@@ -3019,12 +3019,41 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
               </div>
             </div>
           </div>
-        ):(
-          <div className="empty-state">
-            <div className="icon">☀️</div>
-            <p>Voer een adres in, configureer uw installatie, en klik op "Bereken" voor een volledig rapport met PDF-export.</p>
+        ):(<>
+          {/* Prijsinvoer altijd zichtbaar — ook vóór eerste berekening */}
+          <div className="results-wrap">
+            <div style={{background:"var(--amber-light)",border:"2px solid var(--amber)",borderRadius:10,padding:20,textAlign:"center",marginBottom:4}}>
+              <div style={{fontSize:22,marginBottom:8}}>💰</div>
+              <div style={{fontFamily:"'Syne',sans-serif",fontSize:16,fontWeight:800,color:"var(--text)",marginBottom:6}}>Vul de installatieprijs in</div>
+              <div style={{fontSize:12,color:"var(--muted)",marginBottom:16,lineHeight:1.6}}>Zonder prijs kan de terugverdientijd niet worden berekend.<br/>Vul de offertebedragen in en klik daarna op Bereken.</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16,textAlign:"left"}}>
+                <div>
+                  <div className="inp-label" style={{fontSize:11,fontWeight:600}}>🔆 Totaalprijs ZONDER batterij (€) <span style={{color:"var(--red)"}}>*</span></div>
+                  <input className="inp" type="number" min="0" step="50"
+                    placeholder="bv. 8000"
+                    value={manualPanelPrice} onChange={e=>setManualPanelPrice(e.target.value)}
+                    autoFocus/>
+                  <div style={{fontSize:9,color:"var(--muted)",marginTop:3}}>Panelen + omvormer + installatie</div>
+                </div>
+                <div>
+                  <div className="inp-label" style={{fontSize:11,fontWeight:600}}>🔋 Totaalprijs MET batterij (€)</div>
+                  <input className="inp" type="number" min="0" step="50"
+                    placeholder="bv. 14000"
+                    value={manualBatteryPrice} onChange={e=>setManualBatteryPrice(e.target.value)}/>
+                  <div style={{fontSize:9,color:"var(--muted)",marginTop:3}}>Volledig pakket incl. batterij</div>
+                </div>
+              </div>
+              <button className="btn full" style={{maxWidth:280,margin:"0 auto"}}
+                onClick={()=>{if(manualPanelPrice&&parseFloat(manualPanelPrice)>0) calculate();}}
+                disabled={!coords||!buildingCoords||!manualPanelPrice||parseFloat(manualPanelPrice)<=0||isLoading}>
+                {!coords?"📍 Voer eerst een adres in":!manualPanelPrice||parseFloat(manualPanelPrice)<=0?"Vul prijs in om te berekenen":"☀️ Bereken resultaten"}
+              </button>
+            </div>
+            {!coords&&<div className="info-box warn" style={{textAlign:"center"}}>
+              <strong>📍 Geen adres geselecteerd</strong> — ga naar het Locatie-veld in de sidebar om te starten.
+            </div>}
           </div>
-        ))}
+        </>)}
       </div>
     </div>
   </div>
