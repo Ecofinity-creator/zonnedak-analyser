@@ -482,13 +482,16 @@ function applyDaktypeOverride(building,daktype){
              polygon:coords,confidence:1,slopeStd:0,n:100,ridgeAngleDeg:ridge}];
   }
   if(daktype==="zadeldak"){
-    // Splits langs noklijn in Lambert72 (meter) — zelfde fix als generateFacePolygons
+    // Splits langs noklijn in Lambert72 — met gecentreerde splitlijn (midpoint van loodrechte uitstrekking)
     const coordsM=coords.map(([la,ln])=>wgs84ToLambert72(la,ln));
     const cMx=coordsM.reduce((s,p)=>s+p[0],0)/coordsM.length;
     const cMy=coordsM.reduce((s,p)=>s+p[1],0)/coordsM.length;
     const ridgeRad=ridge*Math.PI/180;
     const rDx=Math.sin(ridgeRad), rDy=Math.cos(ridgeRad);
-    const sideM=(mx,my)=>(mx-cMx)*rDy-(my-cMy)*rDx>=0?0:1;
+    // Centreer de splitlijn op het geometrische midden van de breedte
+    const perps=coordsM.map(([x,y])=>(x-cMx)*rDy-(y-cMy)*rDx);
+    const splitOffset=(Math.min(...perps)+Math.max(...perps))/2;
+    const sideM=(mx,my)=>(mx-cMx)*rDy-(my-cMy)*rDx>=splitOffset?0:1;
     const polys=[[],[]];
     const n=coords.length;
     for(let i=0;i<n;i++){
@@ -499,7 +502,7 @@ function applyDaktypeOverride(building,daktype){
         const dxE=bM[0]-aM[0],dyN=bM[1]-aM[1];
         const denom=dxE*rDy-dyN*rDx;
         if(Math.abs(denom)>1e-9){
-          const t=((cMx-aM[0])*rDy-(cMy-aM[1])*rDx)/denom;
+          const t=(splitOffset-(aM[0]-cMx)*rDy+(aM[1]-cMy)*rDx)/denom;
           if(t>1e-6&&t<1-1e-6){
             const cutLat=coords[i][0]+t*(coords[(i+1)%n][0]-coords[i][0]);
             const cutLng=coords[i][1]+t*(coords[(i+1)%n][1]-coords[i][1]);
@@ -873,42 +876,44 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
   if(faces.length===1){ return [{...faces[0],polygon:lc}]; }
 
   if(faces.length===2){
-    // ── Split in Lambert72 (meter) — NIET in geografische graden ─────────
-    // ridgeAngleDeg is berekend in Lambert72 → moet ook in Lambert72 gesplitst worden.
-    // In geografische graden (lat/lng) is 1°lng ≠ 1°lat, waardoor de splitlijn
-    // anders uitvalt dan bedoeld (aspect-ratio fout op 51°N ≈ 37%).
-    const lcM=lc.map(([la,ln])=>wgs84ToLambert72(la,ln)); // [x_oost, y_noord] in m
+    // ── Split in Lambert72 (meter) ─────────────────────────────────────
+    const lcM=lc.map(([la,ln])=>wgs84ToLambert72(la,ln));
+
+    // Nokrichting als richtingsvector
+    const ridgeRad=(ridgeAngleDeg||0)*Math.PI/180;
+    const rDx=Math.sin(ridgeRad);  // Oost-component
+    const rDy=Math.cos(ridgeRad);  // Noord-component
+
+    // ── Centrer de splitlijn op het geometrische midden ──────────────
+    // Gebruik niet het vertex-zwaartepunt (= scheef bij L-vormige gebouwen),
+    // maar het MIDDELPUNT VAN DE LOODRECHTE UITSTREKKING:
+    //   perp_i = component loodrecht op de nok voor elk hoekpunt
+    //   splitOffset = (min(perp_i) + max(perp_i)) / 2
+    // Dit plaatst de nok exact in het midden van de breedte, ongeacht de vorm.
     const cMx=lcM.reduce((s,p)=>s+p[0],0)/lcM.length;
     const cMy=lcM.reduce((s,p)=>s+p[1],0)/lcM.length;
 
-    // Nokrichting in Lambert72: azimut → richtingsvector (x=Oost, y=Noord)
-    const ridgeRad=(ridgeAngleDeg||0)*Math.PI/180;
-    const rDx=Math.sin(ridgeRad);  // Oost-component van nokrichting
-    const rDy=Math.cos(ridgeRad);  // Noord-component van nokrichting
+    // Loodrechte component van elk punt t.o.v. het vertex-zwaartepunt
+    const perps=lcM.map(([x,y])=>(x-cMx)*rDy-(y-cMy)*rDx);
+    const perpMin=Math.min(...perps),perpMax=Math.max(...perps);
+    const splitOffset=(perpMin+perpMax)/2; // verschuiving van het vertex-zwaartepunt
 
-    // Zijde bepaling: loodrecht op de noklijn (cross product in 2D)
-    // Punten links van de nokrichting → side 0, rechts → side 1
-    const sideM=(mx,my)=>{
-      const dx=mx-cMx, dy=my-cMy;
-      return (dx*rDy - dy*rDx)>=0 ? 0 : 1;
-    };
+    // Zijde-functie: welke kant van de gecentreerde splitlijn?
+    const sideM=(mx,my)=>(mx-cMx)*rDy-(my-cMy)*rDx>=splitOffset?0:1;
 
     const polysM=[[],[]];
     const nm=lcM.length;
     for(let i=0;i<nm;i++){
       const aM=lcM[i], bM=lcM[(i+1)%nm];
       const sA=sideM(aM[0],aM[1]), sB=sideM(bM[0],bM[1]);
-      polysM[sA].push(lc[i]); // originele lat/lng bewaren
+      polysM[sA].push(lc[i]);
       if(sA!==sB){
-        // Snijpunt met de noklijn berekenen in Lambert72
+        // Snijpunt: (aM + t*(bM-aM)) · perp = splitOffset (in relatieve coördinaten)
         const dxE=bM[0]-aM[0], dyN=bM[1]-aM[1];
-        // Parametrisch: aM + t*(bM-aM) snijdt de noklijn door (cMx,cMy) met richting (rDx,rDy)
-        // Cross product = 0: (aM+t*dE - cMx)*rDy - (aM+t*dN - cMy)*rDx = 0
-        const denom=(dxE)*rDy - (dyN)*rDx;
+        const denom=dxE*rDy-dyN*rDx;
         if(Math.abs(denom)>1e-9){
-          const t=((cMx-aM[0])*rDy - (cMy-aM[1])*rDx)/denom;
+          const t=(splitOffset-(aM[0]-cMx)*rDy+(aM[1]-cMy)*rDx)/denom;
           if(t>1e-6&&t<1-1e-6){
-            // Interpoleer het snijpunt in geografische coördinaten
             const cutLat=lc[i][0]+t*(lc[(i+1)%nm][0]-lc[i][0]);
             const cutLng=lc[i][1]+t*(lc[(i+1)%nm][1]-lc[i][1]);
             polysM[sA].push([cutLat,cutLng]);
@@ -918,13 +923,10 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
       }
     }
 
-    // Validatie: beide helften moeten minstens 3 punten hebben
     if(polysM[0].length<3||polysM[1].length<3){
-      // Split mislukt → geef volledige polygoon aan beide vlakken
       return faces.map(f=>({...f,polygon:lc}));
     }
 
-    // Wijs toe: grootste oppervlakte (in Lambert72 m²) → grootste face
     const areaM=poly=>{
       const pts=poly.map(([la,ln])=>wgs84ToLambert72(la,ln));
       let s=0;
@@ -935,12 +937,11 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
       return Math.abs(s)/2;
     };
     const a0=areaM(polysM[0]),a1=areaM(polysM[1]);
-    // faces zijn gesorteerd op grootte (groot eerst)
     const sortedPolys=a0>=a1?[polysM[0],polysM[1]]:[polysM[1],polysM[0]];
     return faces.map((f,fi)=>({...f,polygon:sortedPolys[fi]}));
   }
 
-  // ── 3+ vlakken: schilddak/mansardedak ──────────────────────────────────
+  // ── 3+ vlakken: schilddak ──────────────────────────────────────────
   const lats=lc.map(p=>p[0]),lngs=lc.map(p=>p[1]);
   const cLat=(Math.min(...lats)+Math.max(...lats))/2;
   const cLng=(Math.min(...lngs)+Math.max(...lngs))/2;
@@ -965,6 +966,7 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
   }
   return faces.map((f,i)=>({...f,polygon:polys[i]&&polys[i].length>=3?polys[i]:lc}));
 }
+
 
 
 function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVertexDrag,onVertexDragEnd){
