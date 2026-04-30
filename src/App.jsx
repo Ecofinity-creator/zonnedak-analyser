@@ -2515,17 +2515,37 @@ export default function App(){
     if(!draggedPolygonsRef.current) return;
     const newPolygons=draggedPolygonsRef.current;
     draggedPolygonsRef.current=null;
+
+    // Update detectedFaces (legacy + kaartweergave)
+    const newFacesFinal=[];
     setDetectedFaces(prev=>{
       if(!prev) return prev;
-      return prev.map((f,fi)=>{
+      const updated=prev.map((f,fi)=>{
         const newPoly=newPolygons[fi];
         if(!newPoly) return f;
         const area2d=Math.round(polyAreaLambert72(newPoly));
         const area3d=+compute3dArea(area2d,f.slope).toFixed(1);
         return {...f,polygon:newPoly,area2d_manual:area2d,area3d_manual:area3d,status:"manual"};
       });
+      updated.forEach(f=>newFacesFinal.push(f));
+      return updated;
     });
-  },[]);
+
+    // Update buildings state — anders leest redrawRoof b.faces (old) en snapt terug
+    if(selBuildingId){
+      setBuildings(prev=>prev.map(b=>{
+        if(b.id!==selBuildingId||!b.faces) return b;
+        const newFaces=b.faces.map((f,fi)=>{
+          const newPoly=newPolygons[fi];
+          if(!newPoly) return f;
+          const area2d=Math.round(polyAreaLambert72(newPoly));
+          const area3d=+compute3dArea(area2d,f.slope).toFixed(1);
+          return {...f,polygon:newPoly,area2d_manual:area2d,area3d_manual:area3d,status:"manual"};
+        });
+        return {...b,faces:newFaces};
+      }));
+    }
+  },[selBuildingId]);
 
   const redrawRoofRef=useRef(null);
 
@@ -2549,6 +2569,9 @@ export default function App(){
       buildings.forEach(b=>{
         const isSelected=b.selected;
         const isActive=b.id===selBuildingId;
+        // Actief gebouw: gebruik detectedFaces (live, incl. vertex-drag updates)
+        // Andere gebouwen: gebruik b.faces (opgeslagen staat)
+        const facesToDraw=isActive?(detectedFaces||b.faces):b.faces;
 
         // Gebouw-outline
         const outlineColor=isSelected?"#e07b00":"#94a3b8";
@@ -2574,8 +2597,7 @@ export default function App(){
           .addTo(masterGroup);
 
         // Dakvlak-polygonen voor geselecteerde gebouwen
-        if(isSelected&&b.faces&&b.faces.length>0){
-          const facesToDraw=b.faces;
+        if(isSelected&&facesToDraw&&facesToDraw.length>0){
           const ridgeRad=(b.ridgeAngleDeg||0)*Math.PI/180;
           const cosR=Math.cos(ridgeRad),sinR=Math.sin(ridgeRad);
           const mLat111=111320;
@@ -2608,13 +2630,16 @@ export default function App(){
             }
           });
 
+        // Actief gebouw: gebruik globale selFaceIdx; andere gebouwen: hun eigen opgeslagen index
+        const faceSel=isActive?selFaceIdx:(b.selFaceIdx||0);
+
           // Actief gebouw: editeerbare vlakken via drawFacePolygons
           // BELANGRIJK: return-waarde opvangen voor cleanup — anders stapelen lagen op
           const fg=isActive
-            ?drawFacePolygons(map,L,facesToDraw,selFaceIdx,
+            ?drawFacePolygons(map,L,facesToDraw,faceSel,
                 (idx)=>{setSelFaceIdx(idx);setOrientation(facesToDraw[idx].orientation);setSlope(facesToDraw[idx].slope);},
-                editMode,selFaceIdx,onVertexDrag,onVertexDragEnd)
-            :drawFacePolygons(map,L,facesToDraw,selFaceIdx,()=>{activateBuilding(b.id);},false,-1,null,null);
+                editMode,faceSel,onVertexDrag,onVertexDragEnd)
+            :drawFacePolygons(map,L,facesToDraw,faceSel,()=>{activateBuilding(b.id);},false,-1,null,null);
           if(fg) faceGroups.push(fg);
         }
       });
