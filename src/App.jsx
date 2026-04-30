@@ -483,24 +483,30 @@ function applyDaktypeOverride(building,daktype){
              polygon:coords,confidence:1,slopeStd:0,n:100,ridgeAngleDeg:ridge}];
   }
   if(daktype==="zadeldak"){
-    // Splits langs noklijn: 2 vlakken
+    // Splits langs noklijn in Lambert72 (meter) — zelfde fix als generateFacePolygons
+    const coordsM=coords.map(([la,ln])=>wgs84ToLambert72(la,ln));
+    const cMx=coordsM.reduce((s,p)=>s+p[0],0)/coordsM.length;
+    const cMy=coordsM.reduce((s,p)=>s+p[1],0)/coordsM.length;
     const ridgeRad=ridge*Math.PI/180;
-    const cosR=Math.cos(ridgeRad),sinR=Math.sin(ridgeRad);
-    const cLat=coords.reduce((s,p)=>s+p[0],0)/coords.length;
-    const cLng=coords.reduce((s,p)=>s+p[1],0)/coords.length;
-    const side=(lat,lng)=>(lng-cLng)*cosR-(lat-cLat)*sinR>=0?0:1;
+    const rDx=Math.sin(ridgeRad), rDy=Math.cos(ridgeRad);
+    const sideM=(mx,my)=>(mx-cMx)*rDy-(my-cMy)*rDx>=0?0:1;
     const polys=[[],[]];
     const n=coords.length;
     for(let i=0;i<n;i++){
-      const a=coords[i],b=coords[(i+1)%n];
-      const sA=side(a[0],a[1]),sB=side(b[0],b[1]);
-      polys[sA].push(a);
+      const aM=coordsM[i],bM=coordsM[(i+1)%n];
+      const sA=sideM(aM[0],aM[1]),sB=sideM(bM[0],bM[1]);
+      polys[sA].push(coords[i]);
       if(sA!==sB){
-        const dlat=b[0]-a[0],dlng=b[1]-a[1];
-        const denom=dlng*cosR-dlat*sinR;
-        if(Math.abs(denom)>1e-12){
-          const t=((cLng-a[1])*cosR-(cLat-a[0])*sinR)/denom;
-          if(t>0&&t<1){const cut=[a[0]+t*dlat,a[1]+t*dlng];polys[sA].push(cut);polys[sB].push(cut);}
+        const dxE=bM[0]-aM[0],dyN=bM[1]-aM[1];
+        const denom=dxE*rDy-dyN*rDx;
+        if(Math.abs(denom)>1e-9){
+          const t=((cMx-aM[0])*rDy-(cMy-aM[1])*rDx)/denom;
+          if(t>1e-6&&t<1-1e-6){
+            const cutLat=coords[i][0]+t*(coords[(i+1)%n][0]-coords[i][0]);
+            const cutLng=coords[i][1]+t*(coords[(i+1)%n][1]-coords[i][1]);
+            polys[sA].push([cutLat,cutLng]);
+            polys[sB].push([cutLat,cutLng]);
+          }
         }
       }
     }
@@ -865,52 +871,80 @@ function clipPolyToSector(lc,cLat,cLng,aspDeg,halfW){
 
 function generateFacePolygons(lc, faces, ridgeAngleDeg){
   if(!lc||!faces||!faces.length) return faces.map(f=>({...f,polygon:lc}));
-  const lats=lc.map(p=>p[0]), lngs=lc.map(p=>p[1]);
-  const cLat=(Math.min(...lats)+Math.max(...lats))/2;
-  const cLng=(Math.min(...lngs)+Math.max(...lngs))/2;
   if(faces.length===1){ return [{...faces[0],polygon:lc}]; }
+
   if(faces.length===2){
+    // ── Split in Lambert72 (meter) — NIET in geografische graden ─────────
+    // ridgeAngleDeg is berekend in Lambert72 → moet ook in Lambert72 gesplitst worden.
+    // In geografische graden (lat/lng) is 1°lng ≠ 1°lat, waardoor de splitlijn
+    // anders uitvalt dan bedoeld (aspect-ratio fout op 51°N ≈ 37%).
+    const lcM=lc.map(([la,ln])=>wgs84ToLambert72(la,ln)); // [x_oost, y_noord] in m
+    const cMx=lcM.reduce((s,p)=>s+p[0],0)/lcM.length;
+    const cMy=lcM.reduce((s,p)=>s+p[1],0)/lcM.length;
+
+    // Nokrichting in Lambert72: azimut → richtingsvector (x=Oost, y=Noord)
     const ridgeRad=(ridgeAngleDeg||0)*Math.PI/180;
-    const cosR=Math.cos(ridgeRad),sinR=Math.sin(ridgeRad);
-    const side=(lat,lng)=>{
-      const dx=lng-cLng, dy=lat-cLat;
-      return dx*cosR-dy*sinR>=0?0:1;
+    const rDx=Math.sin(ridgeRad);  // Oost-component van nokrichting
+    const rDy=Math.cos(ridgeRad);  // Noord-component van nokrichting
+
+    // Zijde bepaling: loodrecht op de noklijn (cross product in 2D)
+    // Punten links van de nokrichting → side 0, rechts → side 1
+    const sideM=(mx,my)=>{
+      const dx=mx-cMx, dy=my-cMy;
+      return (dx*rDy - dy*rDx)>=0 ? 0 : 1;
     };
-    const polys=[[],[]];
-    const n=lc.length;
-    for(let i=0;i<n;i++){
-      const a=lc[i], b=lc[(i+1)%n];
-      const sA=side(a[0],a[1]), sB=side(b[0],b[1]);
-      polys[sA].push(a);
+
+    const polysM=[[],[]];
+    const nm=lcM.length;
+    for(let i=0;i<nm;i++){
+      const aM=lcM[i], bM=lcM[(i+1)%nm];
+      const sA=sideM(aM[0],aM[1]), sB=sideM(bM[0],bM[1]);
+      polysM[sA].push(lc[i]); // originele lat/lng bewaren
       if(sA!==sB){
-        const dlat=b[0]-a[0],dlng=b[1]-a[1];
-        const denom=dlng*cosR-dlat*sinR;
-        if(Math.abs(denom)>1e-12){
-          const t=((cLng-a[1])*cosR-(cLat-a[0])*sinR)/denom;
-          if(t>0&&t<1){
-            const cut=[a[0]+t*dlat, a[1]+t*dlng];
-            polys[sA].push(cut);
-            polys[sB].push(cut);
+        // Snijpunt met de noklijn berekenen in Lambert72
+        const dxE=bM[0]-aM[0], dyN=bM[1]-aM[1];
+        // Parametrisch: aM + t*(bM-aM) snijdt de noklijn door (cMx,cMy) met richting (rDx,rDy)
+        // Cross product = 0: (aM+t*dE - cMx)*rDy - (aM+t*dN - cMy)*rDx = 0
+        const denom=(dxE)*rDy - (dyN)*rDx;
+        if(Math.abs(denom)>1e-9){
+          const t=((cMx-aM[0])*rDy - (cMy-aM[1])*rDx)/denom;
+          if(t>1e-6&&t<1-1e-6){
+            // Interpoleer het snijpunt in geografische coördinaten
+            const cutLat=lc[i][0]+t*(lc[(i+1)%nm][0]-lc[i][0]);
+            const cutLng=lc[i][1]+t*(lc[(i+1)%nm][1]-lc[i][1]);
+            polysM[sA].push([cutLat,cutLng]);
+            polysM[sB].push([cutLat,cutLng]);
           }
         }
       }
     }
-    const shoelaceArea=poly=>{
-      if(!poly||poly.length<3) return 0;
+
+    // Validatie: beide helften moeten minstens 3 punten hebben
+    if(polysM[0].length<3||polysM[1].length<3){
+      // Split mislukt → geef volledige polygoon aan beide vlakken
+      return faces.map(f=>({...f,polygon:lc}));
+    }
+
+    // Wijs toe: grootste oppervlakte (in Lambert72 m²) → grootste face
+    const areaM=poly=>{
+      const pts=poly.map(([la,ln])=>wgs84ToLambert72(la,ln));
       let s=0;
-      for(let i=0;i<poly.length;i++){
-        const[x1,y1]=poly[i],[x2,y2]=poly[(i+1)%poly.length];
+      for(let i=0;i<pts.length;i++){
+        const[x1,y1]=pts[i],[x2,y2]=pts[(i+1)%pts.length];
         s+=x1*y2-x2*y1;
       }
       return Math.abs(s)/2;
     };
-    const a0=shoelaceArea(polys[0]),a1=shoelaceArea(polys[1]);
-    const sortedPolys=a0>=a1?[polys[0],polys[1]]:[polys[1],polys[0]];
-    return faces.map((f,fi)=>{
-      const poly=sortedPolys[fi];
-      return{...f,polygon:poly&&poly.length>=3?poly:lc};
-    });
+    const a0=areaM(polysM[0]),a1=areaM(polysM[1]);
+    // faces zijn gesorteerd op grootte (groot eerst)
+    const sortedPolys=a0>=a1?[polysM[0],polysM[1]]:[polysM[1],polysM[0]];
+    return faces.map((f,fi)=>({...f,polygon:sortedPolys[fi]}));
   }
+
+  // ── 3+ vlakken: schilddak/mansardedak ──────────────────────────────────
+  const lats=lc.map(p=>p[0]),lngs=lc.map(p=>p[1]);
+  const cLat=(Math.min(...lats)+Math.max(...lats))/2;
+  const cLng=(Math.min(...lngs)+Math.max(...lngs))/2;
   const n=lc.length;
   const edgeFace=[];
   for(let i=0;i<n;i++){
@@ -932,6 +966,7 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
   }
   return faces.map((f,i)=>({...f,polygon:polys[i]&&polys[i].length>=3?polys[i]:lc}));
 }
+
 
 function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVertexDrag,onVertexDragEnd){
   if(!faces||!faces.length) return null;
