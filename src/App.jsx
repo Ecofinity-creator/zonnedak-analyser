@@ -1677,7 +1677,8 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
   onLogin,onLogout,onSelectContact,onSelectAddress,
   showNewDealForm,newDealTitle,setNewDealTitle,newDealValue,setNewDealValue,
   dealOptions,newDealPipelineId,setNewDealPipelineId,creatingDeal,
-  onOpenNewDeal,onCancelNewDeal,onCreateDeal,onConfirm,pendingGeo}){\n  if(tlAuth===null) return <div className="customer-section"><div style={{fontSize:9,color:"var(--muted)"}}>Teamleader status laden...</div></div>;
+  onOpenNewDeal,onCancelNewDeal,onCreateDeal,onConfirm,pendingGeo}){
+  if(tlAuth===null) return <div className="customer-section"><div style={{fontSize:9,color:"var(--muted)"}}>Teamleader status laden...</div></div>;
   if(tlAuth===false||!tlAuth.logged_in){
     return(
       <div className="customer-section">
