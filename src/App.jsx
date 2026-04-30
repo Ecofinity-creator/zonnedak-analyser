@@ -364,6 +364,122 @@ async function fetchGRBBuilding(lat,lng){
   const d=0.0015,p=new URLSearchParams({SERVICE:"WFS",VERSION:"2.0.0",REQUEST:"GetFeature",TYPENAMES:"GRB:GBG",OUTPUTFORMAT:"application/json",SRSNAME:"EPSG:4326",BBOX:`${lng-d},${lat-d},${lng+d},${lat+d},EPSG:4326`,COUNT:"50"});
   const r=await fetch(`${GRB_WFS}?${p}`);if(!r.ok) throw new Error(`GRB HTTP ${r.status}`);return r.json();
 }
+function findAllBuildings(geojson){
+  // Geeft ALLE gebouwen terug uit de GRB-response, gesorteerd op oppervlakte
+  if(!geojson?.features?.length) return [];
+  const out=[];
+  for(const f of geojson.features){
+    if(!f.geometry?.coordinates) continue;
+    const rings=f.geometry.type==="Polygon"
+      ?[f.geometry.coordinates[0]]
+      :f.geometry.coordinates.map(p=>p[0]);
+    for(const ring of rings){
+      const lc=geoToLeaflet(ring);
+      if(lc.length<3) continue;
+      const area=Math.round(polyAreaLambert72(lc));
+      if(area<5) continue; // slivers negeren
+      // Auto-label op basis van oppervlakte (wordt later hernoemenbaar)
+      const label=area>80?"Woning":area>30?"Garage/bijgebouw":"Tuinhuis/schuur";
+      out.push({id:`grb-${out.length}`,coords:lc,area,label,selected:false,
+        dhmStatus:"idle",dhmError:"",ridgeAngleDeg:0,
+        faces:null,selFaceIdx:0,
+        panelCount:10,panelOrient:"portrait",panelRotOffset:0,
+        daktype:"auto"});
+    }
+  }
+  out.sort((a,b)=>b.area-a.area);
+  return out;
+}
+
+// Berekent PCA-nokrichting voor een gebouw polygon
+function computeBuildingRidge(coords){
+  const lamPts=coords.map(([la,ln])=>wgs84ToLambert72(la,ln));
+  const cx=lamPts.reduce((s,p)=>s+p[0],0)/lamPts.length;
+  const cy=lamPts.reduce((s,p)=>s+p[1],0)/lamPts.length;
+  let cxx=0,cxy=0,cyy=0;
+  lamPts.forEach(([x,y])=>{const dx=x-cx,dy=y-cy;cxx+=dx*dx;cxy+=dx*dy;cyy+=dy*dy;});
+  cxx/=lamPts.length;cxy/=lamPts.length;cyy/=lamPts.length;
+  const pca=Math.atan2(2*cxy,cxx-cyy)/2;
+  return((90-pca*180/Math.PI)+360)%180;
+}
+
+// Past daktype-override toe op de faces van een gebouw
+function applyDaktypeOverride(building,daktype){
+  if(daktype==="auto"||!building.faces) return building.faces;
+  const coords=building.coords;
+  const ridge=building.ridgeAngleDeg||computeBuildingRidge(coords);
+  const slope=building.faces?.[0]?.slope||30;
+  const avgH=building.faces?.[0]?.avgH||5;
+
+  if(daktype==="platdak"){
+    return [{orientation:"Z",slope:3,avgH,pct:100,status:"manual",daktype:"platdak",
+             polygon:coords,confidence:1,slopeStd:0,n:100}];
+  }
+  if(daktype==="lessenaarsdak"){
+    // Oriëntatie = helling in 1 richting (huidige oriëntatie behouden)
+    const or=building.faces?.[0]?.orientation||"Z";
+    return [{orientation:or,slope,avgH,pct:100,status:"manual",daktype:"lessenaarsdak",
+             polygon:coords,confidence:1,slopeStd:0,n:100,ridgeAngleDeg:ridge}];
+  }
+  if(daktype==="zadeldak"){
+    // Splits langs noklijn: 2 vlakken
+    const ridgeRad=ridge*Math.PI/180;
+    const cosR=Math.cos(ridgeRad),sinR=Math.sin(ridgeRad);
+    const cLat=coords.reduce((s,p)=>s+p[0],0)/coords.length;
+    const cLng=coords.reduce((s,p)=>s+p[1],0)/coords.length;
+    const side=(lat,lng)=>(lng-cLng)*cosR-(lat-cLat)*sinR>=0?0:1;
+    const polys=[[],[]];
+    const n=coords.length;
+    for(let i=0;i<n;i++){
+      const a=coords[i],b=coords[(i+1)%n];
+      const sA=side(a[0],a[1]),sB=side(b[0],b[1]);
+      polys[sA].push(a);
+      if(sA!==sB){
+        const dlat=b[0]-a[0],dlng=b[1]-a[1];
+        const denom=dlng*cosR-dlat*sinR;
+        if(Math.abs(denom)>1e-12){
+          const t=((cLng-a[1])*cosR-(cLat-a[0])*sinR)/denom;
+          if(t>0&&t<1){const cut=[a[0]+t*dlat,a[1]+t*dlng];polys[sA].push(cut);polys[sB].push(cut);}
+        }
+      }
+    }
+    const rightAsp=((ridge+90)%360+360)%360;
+    const leftAsp=((ridge-90)%360+360)%360;
+    const makeF=(pol,asp,pct)=>({
+      orientation:DIRS8[Math.round(asp/45)%8],slope,avgH,pct,
+      status:"manual",daktype:"zadeldak",polygon:pol.length>=3?pol:coords,
+      confidence:1,slopeStd:0,n:Math.round(pct),ridgeAngleDeg:ridge,aspectDeg:asp
+    });
+    const a0=polyAreaM2(polys[0]||[]),a1=polyAreaM2(polys[1]||[]);
+    const tot=a0+a1||1;
+    return [makeF(polys[0],rightAsp,Math.round(a0/tot*100)),makeF(polys[1],leftAsp,Math.round(a1/tot*100))];
+  }
+  if(daktype==="schilddak"){
+    // 4 driehoeken vanuit centroïde
+    const cLat=coords.reduce((s,p)=>s+p[0],0)/coords.length;
+    const cLng=coords.reduce((s,p)=>s+p[1],0)/coords.length;
+    const n=coords.length;
+    const triangles=[[],[],[],[]]; // N,O,Z,W
+    for(let i=0;i<n;i++){
+      const a=coords[i],b=coords[(i+1)%n];
+      const eLat=(a[0]+b[0])/2-cLat,eLng=(a[1]+b[1])/2-cLng;
+      const eAsp=((Math.atan2(eLng,eLat)*180/Math.PI)+360)%360;
+      // N=0°,O=90°,Z=180°,W=270° — kies dichtstbijzijnde kwadrant
+      const qi=Math.round(eAsp/90)%4;
+      triangles[qi].push(a,b,[cLat,cLng]);
+    }
+    const dirs=["N","O","Z","W"];
+    const asps=[0,90,180,270];
+    return triangles.map((tri,i)=>({
+      orientation:dirs[i],slope,avgH,pct:25,
+      status:"manual",daktype:"schilddak",
+      polygon:tri.length>=3?tri:coords,
+      confidence:1,slopeStd:0,n:25,ridgeAngleDeg:ridge,aspectDeg:asps[i]
+    })).filter(f=>f.polygon.length>=3);
+  }
+  return building.faces;
+}
+
 function findBuilding(geojson,lat,lng){
   if(!geojson?.features?.length) return null;
   const cands=[];
@@ -1057,6 +1173,31 @@ function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDat
   }
 
   g.addTo(map);return g;
+}
+
+// ── Daktype picker component ──────────────────────────────────────────────
+const DAKTYPE_OPTIONS=[
+  {id:"auto",    icon:"🔍", label:"Auto (LiDAR)"},
+  {id:"zadeldak",icon:"🏠", label:"Zadeldak"},
+  {id:"schilddak",icon:"⛺",label:"Schilddak"},
+  {id:"lessenaarsdak",icon:"📐",label:"Lessenaar"},
+  {id:"platdak", icon:"⬜", label:"Plat dak"},
+];
+function DakTypePicker({value,onChange}){
+  return(
+    <div style={{display:"flex",gap:3,flexWrap:"wrap",marginTop:5}}>
+      {DAKTYPE_OPTIONS.map(o=>(
+        <button key={o.id} onClick={()=>onChange(o.id)}
+          style={{padding:"4px 6px",fontFamily:"'IBM Plex Mono',monospace",fontSize:9,
+            cursor:"pointer",borderRadius:5,whiteSpace:"nowrap",
+            background:value===o.id?"var(--amber-light)":"var(--bg3)",
+            border:value===o.id?"1px solid var(--amber)":"1px solid var(--border-dark)",
+            color:value===o.id?"var(--amber)":"var(--muted)"}}>
+          {o.icon} {o.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function MonthlyChart({annualKwh}){
@@ -1867,6 +2008,10 @@ export default function App(){
   const[grbStatus,setGrbStatus]=useState("idle");
   const[buildingCoords,setBuildingCoords]=useState(null);
   const[detectedArea,setDetectedArea]=useState(null);
+  // Multi-building state
+  const[buildings,setBuildings]=useState([]); // alle GRB-gebouwen op het perceel
+  const[selBuildingId,setSelBuildingId]=useState(null); // actief gebouw in sidebar
+  const buildingLayersRef=useRef({}); // map: id → Leaflet layerGroup
 
   const[dhmStatus,setDhmStatus]=useState("idle");const[dhmError,setDhmError]=useState("");
   const[detectedFaces,setDetectedFaces]=useState(null);const[selFaceIdx,setSelFaceIdx]=useState(0);
@@ -2095,6 +2240,7 @@ export default function App(){
     setAnnualConsumption(3500);setResults(null);setAiText("");setEditableAiText("");
     setMapSnapshot(null);setPanelsDrawn(false);
     setTlContact(null);setTlQuery("");setTlResults([]);setTlSelectedDealId(null);setTlPendingGeo(null);
+    setBuildings([]);setSelBuildingId(null);
     setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");
     setTimeout(()=>{suppressAutoSaveRef.current=false;setShowProjectMenu(false);},100);
   },[]);
@@ -2127,6 +2273,83 @@ export default function App(){
     setSelFaceIdx(idx);setOrientation(f.orientation);setSlope(f.slope);
     if(f.ridgeAngleDeg!=null) ridgeAngleDegRef.current=f.ridgeAngleDeg;
   },[detectedFaces]);
+
+  // ── Building management ──────────────────────────────────────────────
+  // Activeer een gebouw in de sidebar (toont zijn vlakken en controls)
+  const activateBuilding=useCallback((id)=>{
+    setSelBuildingId(id);
+    const b=buildings.find(x=>x.id===id);
+    if(!b) return;
+    setBuildingCoords(b.coords);
+    setDetectedArea(b.area);
+    if(b.faces){
+      setDetectedFaces(b.faces);
+      setSelFaceIdx(b.selFaceIdx||0);
+      if(b.faces[b.selFaceIdx||0]){
+        setOrientation(b.faces[b.selFaceIdx||0].orientation);
+        setSlope(b.faces[b.selFaceIdx||0].slope);
+      }
+    } else {
+      setDetectedFaces(null);setSelFaceIdx(0);
+    }
+    ridgeAngleDegRef.current=b.ridgeAngleDeg||0;
+    setCustomCount(b.panelCount||10);
+    setPanelOrient(b.panelOrient||"portrait");
+    setPanelRotOffset(b.panelRotOffset||0);
+  },[buildings]);
+
+  // Toggle selectie (oranje = meedoen in berekening, grijs = niet)
+  const toggleBuildingSelection=useCallback(async(id)=>{
+    setBuildings(prev=>{
+      const updated=prev.map(b=>b.id===id?{...b,selected:!b.selected}:b);
+      return updated;
+    });
+    // Als nog niet geanalyseerd: LiDAR starten
+    const b=buildings.find(x=>x.id===id);
+    if(b&&!b.faces&&!b.selected){
+      // wordt geselecteerd → LiDAR starten
+      setBuildings(prev=>prev.map(x=>x.id===id?{...x,dhmStatus:"loading"}:x));
+      try{
+        const faces=await analyzeDHM(b.coords);
+        if(faces?.length>0){
+          const withPolys=generateFacePolygons(b.coords,faces,b.ridgeAngleDeg);
+          setBuildings(prev=>prev.map(x=>x.id===id
+            ?{...x,dhmStatus:"ok",faces:withPolys,selFaceIdx:0}:x));
+        } else {
+          setBuildings(prev=>prev.map(x=>x.id===id?{...x,dhmStatus:"error",dhmError:"Geen vlakken"}:x));
+        }
+      }catch(e){
+        setBuildings(prev=>prev.map(x=>x.id===id?{...x,dhmStatus:"error",dhmError:e.message}:x));
+      }
+    }
+  },[buildings]);
+
+  // Daktype override voor actief gebouw
+  const updateBuildingDaktype=useCallback((id,daktype)=>{
+    setBuildings(prev=>prev.map(b=>{
+      if(b.id!==id) return b;
+      const newFaces=applyDaktypeOverride(b,daktype);
+      // Sync naar legacy state als dit het actieve gebouw is
+      if(id===selBuildingId&&newFaces){
+        setDetectedFaces(newFaces);
+        setSelFaceIdx(0);
+        if(newFaces[0]){setOrientation(newFaces[0].orientation);setSlope(newFaces[0].slope);}
+      }
+      return {...b,daktype,faces:newFaces||b.faces};
+    }));
+  },[selBuildingId]);
+
+  // Sla paneel-instellingen van actief gebouw op
+  const saveBuildingPanelSettings=useCallback(()=>{
+    if(!selBuildingId) return;
+    setBuildings(prev=>prev.map(b=>b.id===selBuildingId
+      ?{...b,panelCount:customCount,panelOrient,panelRotOffset,selFaceIdx}:b));
+  },[selBuildingId,customCount,panelOrient,panelRotOffset,selFaceIdx]);
+
+  // Hernoem een gebouw
+  const renameBuildingLabel=useCallback((id,label)=>{
+    setBuildings(prev=>prev.map(b=>b.id===id?{...b,label}:b));
+  },[]);
 
   useEffect(()=>{
     const f=detectedFaces?.[selFaceIdx];
@@ -2164,14 +2387,101 @@ export default function App(){
   const redrawRoofRef=useRef(null);
 
   const redrawRoof=useCallback(()=>{
-    if(!leafRef.current||!buildingCoords||!window.L) return;
+    if(!leafRef.current||!window.L) return;
     const L=window.L,map=leafRef.current;
+
+    // Verwijder bestaande lagen
     if(roofLayerRef.current){
       if(typeof roofLayerRef.current.remove==="function") roofLayerRef.current.remove();
       else map.removeLayer(roofLayerRef.current);
       roofLayerRef.current=null;
     }
     if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;setPanelsDrawn(false);}
+
+    // ── Teken ALLE gebouwen op kaart ──────────────────────────────────
+    if(buildings.length>0){
+      const masterGroup=L.layerGroup().addTo(map);
+
+      buildings.forEach(b=>{
+        const isSelected=b.selected;
+        const isActive=b.id===selBuildingId;
+
+        // Gebouw-outline
+        const outlineColor=isSelected?"#e07b00":"#94a3b8";
+        const outlineWeight=isSelected?2.5:1.5;
+        const fillOpacity=isSelected?0:0;
+        const outline=L.polygon(b.coords,{
+          color:outlineColor,weight:outlineWeight,
+          fillOpacity,dashArray:isSelected?null:"4,3",
+          opacity:isSelected?0.9:0.6
+        }).addTo(masterGroup);
+
+        // Klikbaar om te togglen
+        outline.on("click",()=>toggleBuildingSelection(b.id));
+
+        // Label met oppervlakte + gebouw naam
+        const lats=b.coords.map(p=>p[0]),lngs=b.coords.map(p=>p[1]);
+        const cLat=(Math.min(...lats)+Math.max(...lats))/2;
+        const cLng=(Math.min(...lngs)+Math.max(...lngs))/2;
+        const bgColor=isSelected?"rgba(224,123,0,0.9)":"rgba(148,163,184,0.85)";
+        const labelHtml=`<div onclick="void(0)" style="background:${bgColor};color:#fff;padding:2px 7px;border-radius:4px;font-size:9px;font-family:IBM Plex Mono,monospace;white-space:nowrap;cursor:pointer;transform:translate(-50%,-50%);border:1.5px solid rgba(255,255,255,0.6)">${b.label} · ${b.area}m²${b.dhmStatus==="loading"?" ⏳":b.dhmStatus==="ok"?" ✅":""}</div>`;
+        L.marker([cLat,cLng],{icon:L.divIcon({html:labelHtml,className:""})})
+          .on("click",()=>{toggleBuildingSelection(b.id);activateBuilding(b.id);})
+          .addTo(masterGroup);
+
+        // Dakvlak-polygonen voor geselecteerde gebouwen
+        if(isSelected&&b.faces&&b.faces.length>0){
+          const facesToDraw=b.faces;
+          const ridgeRad=(b.ridgeAngleDeg||0)*Math.PI/180;
+          const cosR=Math.cos(ridgeRad),sinR=Math.sin(ridgeRad);
+          const mLat111=111320;
+
+          // Afmetings-labels
+          facesToDraw.forEach(f=>{
+            if(!f.polygon||f.polygon.length<3) return;
+            const np=f.polygon.length;
+            const shown=new Set();
+            for(let ei=0;ei<np;ei++){
+              const a=f.polygon[ei],bb2=f.polygon[(ei+1)%np];
+              const dLat=bb2[0]-a[0],dLng=bb2[1]-a[1];
+              const mLng111=111320*Math.cos(a[0]*Math.PI/180);
+              const dE=dLng*mLng111,dN=dLat*mLat111;
+              const len2d=Math.sqrt(dE*dE+dN*dN);
+              if(len2d<2) continue;
+              const dotNok=Math.abs(dE*sinR+dN*cosR)/len2d;
+              const slope3d=dotNok>0.5?len2d:len2d/Math.cos((f.slope||0)*Math.PI/180);
+              const lKey=slope3d.toFixed(0);
+              if(shown.has(lKey)&&dotNok>0.5) continue;
+              shown.add(lKey);
+              const midLat=(a[0]+bb2[0])/2,midLng=(a[1]+bb2[1])/2;
+              const cL=f.polygon.reduce((s,p)=>s+p[0],0)/f.polygon.length;
+              const cLn=f.polygon.reduce((s,p)=>s+p[1],0)/f.polygon.length;
+              const offLat=(midLat-cL)*0.18,offLng=(midLng-cLn)*0.18;
+              L.marker([midLat+offLat,midLng+offLng],{icon:L.divIcon({
+                html:"<div style='background:rgba(0,0,0,.75);color:#fff;padding:1px 5px;border-radius:3px;font-size:8px;font-family:IBM Plex Mono,monospace;white-space:nowrap;transform:translate(-50%,-50%)'>"+slope3d.toFixed(1)+"m</div>",
+                className:""
+              }),interactive:false}).addTo(masterGroup);
+            }
+          });
+
+          // Actief gebouw: editeerbare vlakken via drawFacePolygons
+          if(isActive){
+            drawFacePolygons(map,L,facesToDraw,selFaceIdx,
+              (idx)=>{setSelFaceIdx(idx);setOrientation(facesToDraw[idx].orientation);setSlope(facesToDraw[idx].slope);},
+              editMode,selFaceIdx,onVertexDrag,onVertexDragEnd);
+          } else {
+            // Niet-actief geselecteerd: toon vlakken zonder edit-modus
+            drawFacePolygons(map,L,facesToDraw,selFaceIdx,()=>{activateBuilding(b.id);},false,-1,null,null);
+          }
+        }
+      });
+
+      roofLayerRef.current={remove:()=>{if(masterGroup) map.removeLayer(masterGroup);}};
+      return; // multi-building pad klaar
+    }
+
+    // ── Legacy single-building pad (fallback als buildings leeg is) ──
+    if(!buildingCoords) return;
 
     if(detectedFaces&&detectedFaces.length>0){
       const ridgeAngle=detectedFaces[0]?.ridgeAngleDeg;
@@ -2219,10 +2529,10 @@ export default function App(){
     } else {
       roofLayerRef.current=drawRealRoof(map,L,buildingCoords,orientation);
     }
-  },[buildingCoords,orientation,detectedFaces,selFaceIdx,editMode]);
+  },[buildings,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,selBuildingId]);
 
   redrawRoofRef.current=redrawRoof;
-  useEffect(()=>{if(mapReady&&buildingCoords) redrawRoof();},[mapReady,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode]);
+  useEffect(()=>{if(mapReady&&(buildings.length>0||buildingCoords)) redrawRoof();},[mapReady,buildings,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,selBuildingId]);
   useEffect(()=>{if(activeTab==="configuratie"&&leafRef.current&&mapReady){setTimeout(()=>leafRef.current?.invalidateSize?.(),50);}},[activeTab,mapReady]);
 
   useEffect(()=>{
@@ -2312,47 +2622,80 @@ export default function App(){
       markerRef.current=L.marker([lat,lng],{icon}).addTo(map);
     }
 
-    let lCoords=null;
+    // ── Multi-building GRB fetch ────────────────────────────────────────
+    let allBlds=[];
     try{
-      const geo=await fetchGRBBuilding(lat,lng);const bld=findBuilding(geo,lat,lng);
-      if(bld){
-        const ring=bld.geometry.type==="Polygon"?bld.geometry.coordinates[0]:bld.geometry.coordinates[0][0];
-        lCoords=geoToLeaflet(ring);
-        setDetectedArea(Math.round(polyAreaLambert72(lCoords)));setBuildingCoords(lCoords);setCustomCount(10);setGrbStatus("ok");
-        try{
-          const lamPts2=lCoords.map(([la,ln])=>wgs84ToLambert72(la,ln));
-          const cx3=lamPts2.reduce((s,p)=>s+p[0],0)/lamPts2.length;
-          const cy3=lamPts2.reduce((s,p)=>s+p[1],0)/lamPts2.length;
-          let cxx3=0,cxy3=0,cyy3=0;
-          lamPts2.forEach(([x,y])=>{const dx=x-cx3,dy=y-cy3;cxx3+=dx*dx;cxy3+=dx*dy;cyy3+=dy*dy;});
-          cxx3/=lamPts2.length;cxy3/=lamPts2.length;cyy3/=lamPts2.length;
-          const pca3=Math.atan2(2*cxy3,cxx3-cyy3)/2;
-          const ridge3=((90-pca3*180/Math.PI)+360)%180;
-          ridgeAngleDegRef.current=ridge3;
-          console.info("[ZonneDak] GRB PCA nokrichting="+ridge3.toFixed(1)+"° (fallback voor LiDAR-fout)");
-        }catch(e){console.warn("[ZonneDak] GRB PCA fout:",e);}
-      } else setGrbStatus("fallback");
+      const geo=await fetchGRBBuilding(lat,lng);
+      allBlds=findAllBuildings(geo);
+      if(allBlds.length>0){
+        // Bereken PCA-nokrichting voor elk gebouw
+        allBlds=allBlds.map(b=>({...b,ridgeAngleDeg:computeBuildingRidge(b.coords)}));
+        // Auto-selecteer het grootste gebouw (= de woning)
+        allBlds[0]={...allBlds[0],selected:true};
+        setBuildings(allBlds);
+        setSelBuildingId(allBlds[0].id);
+        // Sync legacy state voor backward-compat
+        const main=allBlds[0];
+        setBuildingCoords(main.coords);
+        setDetectedArea(main.area);
+        setCustomCount(10);
+        ridgeAngleDegRef.current=main.ridgeAngleDeg;
+        setGrbStatus("ok");
+      } else {
+        setGrbStatus("fallback");
+      }
     }catch(e){console.warn("GRB:",e);setGrbStatus("fallback");}
 
-    const bc=lCoords||(()=>{
+    // Fallback: synthetisch gebouw als GRB faalt
+    if(allBlds.length===0){
       const mLat=111320,mLng=111320*Math.cos(lat*Math.PI/180);
       const w=Math.sqrt(80*1.6),d=80/w,dLat=(d/2)/mLat,dLng=(w/2)/mLng;
-      return[[lat+dLat,lng-dLng],[lat+dLat,lng+dLng],[lat-dLat,lng+dLng],[lat-dLat,lng-dLng]];
-    })();
-    if(!lCoords){setBuildingCoords(bc);setDetectedArea(80);}
+      const fb=[[lat+dLat,lng-dLng],[lat+dLat,lng+dLng],[lat-dLat,lng+dLng],[lat-dLat,lng-dLng]];
+      setBuildingCoords(fb);setDetectedArea(80);
+      setDhmStatus("loading");
+      try{
+        const faces=await analyzeDHM(fb);
+        if(faces?.length>0){setDetectedFaces(faces);setSelFaceIdx(0);setOrientation(faces[0].orientation);setSlope(faces[0].slope);setDhmStatus("ok");}
+        else{setDhmStatus("error");setDhmError("Geen dakvlakken gevonden.");}
+      }catch(e){setDhmStatus("error");setDhmError(e.message||"WCS niet bereikbaar");}
+      return;
+    }
 
+    // ── LiDAR voor elk geselecteerd gebouw ─────────────────────────────
+    // Start direct met het hoofdgebouw, andere gebouwen op aanvraag
+    const mainBld=allBlds[0];
     setDhmStatus("loading");
     try{
-      const faces=await analyzeDHM(bc);
-      if(faces?.length>0){setDetectedFaces(faces);setSelFaceIdx(0);setOrientation(faces[0].orientation);setSlope(faces[0].slope);setDhmStatus("ok");}
-      else{setDhmStatus("error");setDhmError("Geen dakvlakken gevonden in LiDAR data.");}
-    }catch(e){console.error("DHM:",e);setDhmStatus("error");setDhmError(e.message||"WCS endpoint niet bereikbaar");}
+      const faces=await analyzeDHM(mainBld.coords);
+      if(faces?.length>0){
+        const ridge=mainBld.ridgeAngleDeg;
+        const withPolys=generateFacePolygons(mainBld.coords,faces,ridge);
+        setBuildings(prev=>prev.map(b=>b.id===mainBld.id
+          ?{...b,dhmStatus:"ok",faces:withPolys,ridgeAngleDeg:ridge}:b));
+        setDetectedFaces(withPolys);setSelFaceIdx(0);
+        setOrientation(withPolys[0].orientation);setSlope(withPolys[0].slope);
+        setDhmStatus("ok");
+      } else {
+        setBuildings(prev=>prev.map(b=>b.id===mainBld.id?{...b,dhmStatus:"error",dhmError:"Geen vlakken gevonden"}:b));
+        setDhmStatus("error");setDhmError("Geen dakvlakken gevonden in LiDAR data.");
+      }
+    }catch(e){
+      setBuildings(prev=>prev.map(b=>b.id===mainBld.id?{...b,dhmStatus:"error",dhmError:e.message}:b));
+      setDhmStatus("error");setDhmError(e.message||"WCS niet bereikbaar");
+    }
   };
 
   const calculate=async()=>{
-    if(!coords||!selPanel||!buildingCoords) return;
+    if(!coords||!selPanel||(!buildingCoords&&buildings.length===0)) return;
+    // Multi-building: som panelCount van alle geselecteerde gebouwen
+    const totalPanelCount=buildings.length>0
+      ?buildings.filter(b=>b.selected).reduce((s,b)=>s+(b.panelCount||customCount||10),0)
+      :panelCount;
+    const effectivePanelCount=totalPanelCount||panelCount;
+    // Irradiantie op basis van actief geselecteerd vlak
     const irr=getSolarIrr(orientation,slope);
-    const actualArea=panelCount*selPanel.area,annualKwh=Math.round(actualArea*irr*(selPanel.eff/100));
+    const actualArea=effectivePanelCount*selPanel.area,annualKwh=Math.round(actualArea*irr*(selPanel.eff/100));
+    const panelCount2=effectivePanelCount; // alias
     const co2=Math.round(annualKwh*.202);
     const consumption=Math.max(annualConsumption||3500,1);
     const coverage=Math.round((annualKwh/consumption)*100);
@@ -2377,7 +2720,7 @@ export default function App(){
       battResult={extraSav,totSav,totInv:totInvBatt,payback,battPrice:battOnlyPrice,
         selfRatio:selfRatioBatt,selfKwh:Math.round(selfKwhBatt),injectKwh:Math.round(injectKwhBatt)};
     }
-    setResults({irr,panelCount,actualArea:Math.round(actualArea),annualKwh,co2,coverage,
+    setResults({irr,panelCount:effectivePanelCount,actualArea:Math.round(actualArea),annualKwh,co2,coverage,
       investPanels,annualBase,paybackBase,battResult,panel:selPanel,inv:selInv,batt:battEnabled?selBatt:null,
       detectedArea,grbOk:grbStatus==="ok",dhmOk:dhmStatus==="ok",orientation,slope,
       stringDesign:stringDesign||null,consumption:Math.round(consumption),
@@ -2641,7 +2984,67 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
           </div>
         </div>
 
-        {dhmStatus!=="idle"&&<div>
+        {/* ── Gebouwenlijst ────────────────────────────────────────────── */}
+        {buildings.length>0&&<div>
+          <div className="sl">Gebouwen op perceel</div>
+          <div style={{fontSize:9,color:"var(--muted)",marginBottom:5}}>
+            Klik om een gebouw te selecteren/deselecteren. Klik naam om te bewerken.
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:5}}>
+          {buildings.map(b=>{
+            const isActive=b.id===selBuildingId;
+            const isSelected=b.selected;
+            return(
+              <div key={b.id} style={{
+                background:isActive?"var(--amber-light)":isSelected?"var(--bg2)":"var(--bg3)",
+                border:`1.5px solid ${isActive?"var(--amber)":isSelected?"var(--border-dark)":"var(--border)"}`,
+                borderRadius:7,padding:"8px 10px",cursor:"pointer",
+                opacity:isSelected?1:0.65,
+              }}>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  {/* Toggle selectie checkbox-stijl */}
+                  <div onClick={()=>toggleBuildingSelection(b.id)}
+                    style={{width:18,height:18,borderRadius:4,flexShrink:0,
+                      background:isSelected?"var(--amber)":"var(--bg4)",
+                      border:`2px solid ${isSelected?"var(--amber)":"var(--border-dark)"}`,
+                      display:"flex",alignItems:"center",justifyContent:"center",
+                      fontSize:10,color:"#fff",cursor:"pointer"}}>
+                    {isSelected?"✓":""}
+                  </div>
+                  {/* Klikbare naam (activeer sidebar) */}
+                  <div onClick={()=>activateBuilding(b.id)} style={{flex:1}}>
+                    <div style={{fontWeight:700,fontSize:11,color:isActive?"var(--amber)":"var(--text)"}}>
+                      {b.label}
+                    </div>
+                    <div style={{fontSize:9,color:"var(--muted)"}}>{b.area} m²
+                      {b.dhmStatus==="loading"&&<span style={{color:"var(--alpha)",marginLeft:4}}>⏳ LiDAR...</span>}
+                      {b.dhmStatus==="ok"&&<span style={{color:"var(--green)",marginLeft:4}}>✅ {b.faces?.length||0} vlak(ken)</span>}
+                      {b.dhmStatus==="error"&&<span style={{color:"var(--red)",marginLeft:4}}>⚠️ Manueel</span>}
+                    </div>
+                  </div>
+                  {/* Hernoemen */}
+                  <input
+                    defaultValue={b.label}
+                    onBlur={e=>renameBuildingLabel(b.id,e.target.value||b.label)}
+                    onKeyDown={e=>e.key==="Enter"&&e.target.blur()}
+                    style={{width:90,fontSize:9,padding:"2px 5px",borderRadius:4,
+                      border:"1px solid var(--border-dark)",fontFamily:"inherit",
+                      background:"var(--bg3)",color:"var(--text)"}}
+                    onClick={e=>e.stopPropagation()}/>
+                </div>
+
+                {/* Daktype-picker — alleen voor geselecteerde gebouwen */}
+                {isSelected&&isActive&&<div style={{marginTop:7}}>
+                  <div style={{fontSize:8,color:"var(--muted)",marginBottom:3}}>Daktype</div>
+                  <DakTypePicker value={b.daktype||"auto"} onChange={dt=>updateBuildingDaktype(b.id,dt)}/>
+                </div>}
+              </div>
+            );
+          })}
+          </div>
+        </div>}
+
+        {dhmStatus!=="idle"&&buildings.length===0&&<div>
           <div className="sl">LiDAR Analyse</div>
           {dhmStatus==="loading"&&<div className="info-box" style={{flexDirection:"column",gap:4}}>
             <div style={{display:"flex",alignItems:"center",gap:7}}><div className="spinner cyan"/>WCS + TIFF parser + Horn's methode...</div>
