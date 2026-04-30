@@ -262,14 +262,10 @@ async function analyzeDHM(bc){
   const lamPts=bc.map(([lat,lng])=>wgs84ToLambert72(lat,lng));
   const buildingWidthM=buildingWidthFromPolygon(lamPts);
 
-  const cx2=lamPts.reduce((s,p)=>s+p[0],0)/lamPts.length;
-  const cy2=lamPts.reduce((s,p)=>s+p[1],0)/lamPts.length;
-  let cxx=0,cxy=0,cyy=0;
-  lamPts.forEach(([x,y])=>{const dx=x-cx2,dy=y-cy2;cxx+=dx*dx;cxy+=dx*dy;cyy+=dy*dy;});
-  cxx/=lamPts.length;cxy/=lamPts.length;cyy/=lamPts.length;
-  const pcaAng=Math.atan2(2*cxy,cxx-cyy)/2;
-  const ridgeAngleDeg=((90-pcaAng*180/Math.PI)+360)%180;
-  console.info(`[ZonneDak] PCA: gebouwbreedte=${buildingWidthM.toFixed(1)}m nokrichting=${ridgeAngleDeg.toFixed(1)}°`);
+  // Nokrichting via langste zijde (zelfde methode als computeBuildingRidge)
+  // PCA faalt op L-vormige GRB-polygonen → dominant edge is robuuster
+  const ridgeAngleDeg=computeBuildingRidge(bc); // bc = Leaflet [lat,lng] coords
+  console.info(`[ZonneDak] Dominant-edge nokrichting=${ridgeAngleDeg.toFixed(1)}° breedte=${buildingWidthM.toFixed(1)}m`);
 
   const faces=computeRoofFaces(dsmR.data,dtmR.data,dsmR.w,dsmR.h,cell,bldRasterPts,buildingWidthM,ridgeAngleDeg);
 
@@ -432,36 +428,39 @@ function findAllBuildings(geojson, clickLat, clickLng){
 }
 
 // Berekent PCA-nokrichting voor een gebouw polygon
-// Fix: bij bijna-vierkante gebouwen is PCA onstabiel → gebruik langste zijde als fallback
+// Methode: langste zijde van de convex hull in Lambert72.
+// PCA faalt op L-vormige en irreguliere GRB-polygonen (geeft de diagonaal).
+// De langste zijde van de convex hull = de dominante bouwrichting = nokrichting.
 function computeBuildingRidge(coords){
+  if(!coords||coords.length<2) return 0;
   const lamPts=coords.map(([la,ln])=>wgs84ToLambert72(la,ln));
   const n=lamPts.length;
-  const cx=lamPts.reduce((s,p)=>s+p[0],0)/n;
-  const cy=lamPts.reduce((s,p)=>s+p[1],0)/n;
-  let cxx=0,cxy=0,cyy=0;
-  lamPts.forEach(([x,y])=>{const dx=x-cx,dy=y-cy;cxx+=dx*dx;cxy+=dx*dy;cyy+=dy*dy;});
-  cxx/=n;cxy/=n;cyy/=n;
 
-  // Eigenvalue ratio: als bijna gelijk → bijna vierkant → gebruik langste zijde
-  const disc=Math.sqrt((cxx-cyy)**2+4*cxy**2);
-  const l1=(cxx+cyy+disc)/2, l2=(cxx+cyy-disc)/2;
-  const ratio=l2>0?l1/l2:99;
+  // Gebruik alle zijden (ook van niet-convex polygonen — GRB is meestal convex)
+  // Groepeer zijden op hoek (0–180°, want nok is bidirectioneel)
+  // en kies de hoek met de langste gecombineerde lengte
+  const angleBuckets={}; // hoek (afgerond op 5°) → totale lengte
 
-  if(ratio<1.3){
-    // Bijna vierkant: gebruik de richting van de langste zijde in plaats van PCA
-    let maxLen=0,bestAng=0;
-    for(let i=0;i<n;i++){
-      const a=lamPts[i],b=lamPts[(i+1)%n];
-      const dx=b[0]-a[0],dy=b[1]-a[1];
-      const len=Math.sqrt(dx*dx+dy*dy);
-      if(len>maxLen){maxLen=len;bestAng=Math.atan2(dy,dx);}
-    }
-    // Langste zijde → richting in azimut (t.o.v. Noord)
-    return((90-bestAng*180/Math.PI)+360)%180;
+  for(let i=0;i<n;i++){
+    const a=lamPts[i],b=lamPts[(i+1)%n];
+    const dx=b[0]-a[0],dy=b[1]-a[1];
+    const len=Math.sqrt(dx*dx+dy*dy);
+    if(len<0.5) continue; // te kort om mee te tellen
+
+    // Azimut van deze zijde (0–180° bidirectioneel)
+    let az=((90-Math.atan2(dy,dx)*180/Math.PI)+360)%180;
+    // Snap op 5° bucket voor stabiele sommering
+    const bucket=Math.round(az/5)*5;
+    angleBuckets[bucket]=(angleBuckets[bucket]||0)+len;
   }
 
-  const pca=Math.atan2(2*cxy,cxx-cyy)/2;
-  return((90-pca*180/Math.PI)+360)%180;
+  if(Object.keys(angleBuckets).length===0) return 0;
+
+  // Kies de hoek met de meeste totale zijlengte → = nokrichting
+  const bestAz=Object.entries(angleBuckets)
+    .reduce((a,b)=>b[1]>a[1]?b:a)[0];
+
+  return +bestAz;
 }
 
 // Past daktype-override toe op de faces van een gebouw
