@@ -427,40 +427,50 @@ function findAllBuildings(geojson, clickLat, clickLng){
   return out.slice(0,MAX_COUNT);
 }
 
-// Berekent PCA-nokrichting voor een gebouw polygon
-// Methode: langste zijde van de convex hull in Lambert72.
-// PCA faalt op L-vormige en irreguliere GRB-polygonen (geeft de diagonaal).
-// De langste zijde van de convex hull = de dominante bouwrichting = nokrichting.
+// Berekent nokrichting voor een gebouw polygon via Minimum Bounding Rectangle (MBR).
+// MBR = kleinste omsluitende rechthoek → lange as = nokrichting.
+// Dit is de meest robuuste methode voor alle polygoonvormen (rechthoek, L, T, U).
+// Algoritme: voor elke polygoonzijde als basisrichting → bereken omsluitende rechthoek →
+// kies de basisrichting die de kleinste rechthoek geeft (rotating calipers principle).
 function computeBuildingRidge(coords){
   if(!coords||coords.length<2) return 0;
-  const lamPts=coords.map(([la,ln])=>wgs84ToLambert72(la,ln));
-  const n=lamPts.length;
+  const pts=coords.map(([la,ln])=>wgs84ToLambert72(la,ln));
+  const n=pts.length;
 
-  // Gebruik alle zijden (ook van niet-convex polygonen — GRB is meestal convex)
-  // Groepeer zijden op hoek (0–180°, want nok is bidirectioneel)
-  // en kies de hoek met de langste gecombineerde lengte
-  const angleBuckets={}; // hoek (afgerond op 5°) → totale lengte
+  let bestAz=0, bestArea=Infinity;
 
   for(let i=0;i<n;i++){
-    const a=lamPts[i],b=lamPts[(i+1)%n];
-    const dx=b[0]-a[0],dy=b[1]-a[1];
-    const len=Math.sqrt(dx*dx+dy*dy);
-    if(len<0.5) continue; // te kort om mee te tellen
+    const a=pts[i],b=pts[(i+1)%n];
+    const edgeDx=b[0]-a[0], edgeDy=b[1]-a[1];
+    const edgeLen=Math.sqrt(edgeDx*edgeDx+edgeDy*edgeDy);
+    if(edgeLen<0.3) continue;
 
-    // Azimut van deze zijde (0–180° bidirectioneel)
-    let az=((90-Math.atan2(dy,dx)*180/Math.PI)+360)%180;
-    // Snap op 5° bucket voor stabiele sommering
-    const bucket=Math.round(az/5)*5;
-    angleBuckets[bucket]=(angleBuckets[bucket]||0)+len;
+    // Richtingsunitvector langs de zijde
+    const ux=edgeDx/edgeLen, uy=edgeDy/edgeLen;
+    // Loodrecht
+    const px=-uy, py=ux;
+
+    // Projecteer alle punten op beide assen
+    let minU=Infinity,maxU=-Infinity,minP=Infinity,maxP=-Infinity;
+    for(const [x,y] of pts){
+      const u=x*ux+y*uy, p=x*px+y*py;
+      if(u<minU)minU=u; if(u>maxU)maxU=u;
+      if(p<minP)minP=p; if(p>maxP)maxP=p;
+    }
+
+    const dimU=maxU-minU, dimP=maxP-minP;
+    const area=dimU*dimP;
+
+    if(area<bestArea){
+      bestArea=area;
+      // Azimut van de LANGE as van de MBR = nokrichting
+      // ux,uy = richting van de zijde. Als dimU > dimP: zijde-richting is de lange as
+      const edgeAz=((90-Math.atan2(edgeDy,edgeDx)*180/Math.PI)+360)%180;
+      bestAz=dimU>=dimP ? edgeAz : (edgeAz+90)%180;
+    }
   }
 
-  if(Object.keys(angleBuckets).length===0) return 0;
-
-  // Kies de hoek met de meeste totale zijlengte → = nokrichting
-  const bestAz=Object.entries(angleBuckets)
-    .reduce((a,b)=>b[1]>a[1]?b:a)[0];
-
-  return +bestAz;
+  return bestAz;
 }
 
 // Past daktype-override toe op de faces van een gebouw
