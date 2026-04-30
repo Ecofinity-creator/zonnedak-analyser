@@ -361,12 +361,20 @@ function convexHullPts(pts){
 function geoToLeaflet(ring){return ring.map(([lo,la])=>[la,lo]);}
 
 async function fetchGRBBuilding(lat,lng){
-  const d=0.0015,p=new URLSearchParams({SERVICE:"WFS",VERSION:"2.0.0",REQUEST:"GetFeature",TYPENAMES:"GRB:GBG",OUTPUTFORMAT:"application/json",SRSNAME:"EPSG:4326",BBOX:`${lng-d},${lat-d},${lng+d},${lat+d},EPSG:4326`,COUNT:"50"});
+  const d=0.0012,p=new URLSearchParams({SERVICE:"WFS",VERSION:"2.0.0",REQUEST:"GetFeature",TYPENAMES:"GRB:GBG",OUTPUTFORMAT:"application/json",SRSNAME:"EPSG:4326",BBOX:`${lng-d},${lat-d},${lng+d},${lat+d},EPSG:4326`,COUNT:"30"});
   const r=await fetch(`${GRB_WFS}?${p}`);if(!r.ok) throw new Error(`GRB HTTP ${r.status}`);return r.json();
 }
-function findAllBuildings(geojson){
-  // Geeft ALLE gebouwen terug uit de GRB-response, gesorteerd op oppervlakte
+function findAllBuildings(geojson, clickLat, clickLng){
+  // Geeft alleen gebouwen terug die DICHTBIJ de geklikte locatie liggen
+  // Max afstand: 80m (voorkomt buren op aangrenzende percelen)
+  // Max aantal: 6 (woning + garage + tuinhuis + eventuele aanbouwen)
   if(!geojson?.features?.length) return [];
+  const MAX_DIST_DEG=0.0008; // ≈80m
+  const MAX_COUNT=6;
+
+  const MLAT=111320;
+  const MLNG=111320*Math.cos((clickLat||51)*Math.PI/180);
+
   const out=[];
   for(const f of geojson.features){
     if(!f.geometry?.coordinates) continue;
@@ -377,28 +385,81 @@ function findAllBuildings(geojson){
       const lc=geoToLeaflet(ring);
       if(lc.length<3) continue;
       const area=Math.round(polyAreaLambert72(lc));
-      if(area<5) continue; // slivers negeren
-      // Auto-label op basis van oppervlakte (wordt later hernoemenbaar)
-      const label=area>80?"Woning":area>30?"Garage/bijgebouw":"Tuinhuis/schuur";
+      if(area<8) continue; // slivers negeren
+
+      // Centroïde van gebouw
+      const cLat=lc.reduce((s,p)=>s+p[0],0)/lc.length;
+      const cLng=lc.reduce((s,p)=>s+p[1],0)/lc.length;
+
+      // Afstand tot klikpunt in meters
+      const distM=Math.sqrt(
+        ((cLat-(clickLat||cLat))*MLAT)**2+
+        ((cLng-(clickLng||cLng))*MLNG)**2
+      );
+
+      // Sla naburige gebouwen op >80m over
+      if(clickLat&&distM>80) continue;
+
+      // Auto-label: rank op afstand én oppervlakte
+      // Dichtstbijzijnde grote gebouw = Woning, rest afhankelijk van grootte
+      const label=area>120?"Woning":area>50?"Garage/bijgebouw":area>20?"Tuinhuis/schuur":"Klein gebouw";
+
       out.push({id:`grb-${out.length}`,coords:lc,area,label,selected:false,
         dhmStatus:"idle",dhmError:"",ridgeAngleDeg:0,
         faces:null,selFaceIdx:0,
         panelCount:10,panelOrient:"portrait",panelRotOffset:0,
-        daktype:"auto"});
+        daktype:"auto",
+        _distM:distM, // tijdelijk voor sortering
+      });
     }
   }
-  out.sort((a,b)=>b.area-a.area);
-  return out;
+
+  // Sorteer: eerst op afstand tot klikpunt, dan op oppervlakte
+  out.sort((a,b)=>{
+    // Primair: afstand (dichtst bij = eerst)
+    const distDiff=a._distM-b._distM;
+    if(Math.abs(distDiff)>20) return distDiff; // >20m verschil = afstand wint
+    return b.area-a.area; // zelfde buurt: grootste eerst
+  });
+
+  // Hernoem het eerste (dichtstbijzijnde/grootste) gebouw altijd "Woning"
+  if(out.length>0) out[0].label="Woning";
+
+  // Verwijder tijdelijk sorteerveld
+  out.forEach(b=>delete b._distM);
+
+  return out.slice(0,MAX_COUNT);
 }
 
 // Berekent PCA-nokrichting voor een gebouw polygon
+// Fix: bij bijna-vierkante gebouwen is PCA onstabiel → gebruik langste zijde als fallback
 function computeBuildingRidge(coords){
   const lamPts=coords.map(([la,ln])=>wgs84ToLambert72(la,ln));
-  const cx=lamPts.reduce((s,p)=>s+p[0],0)/lamPts.length;
-  const cy=lamPts.reduce((s,p)=>s+p[1],0)/lamPts.length;
+  const n=lamPts.length;
+  const cx=lamPts.reduce((s,p)=>s+p[0],0)/n;
+  const cy=lamPts.reduce((s,p)=>s+p[1],0)/n;
   let cxx=0,cxy=0,cyy=0;
   lamPts.forEach(([x,y])=>{const dx=x-cx,dy=y-cy;cxx+=dx*dx;cxy+=dx*dy;cyy+=dy*dy;});
-  cxx/=lamPts.length;cxy/=lamPts.length;cyy/=lamPts.length;
+  cxx/=n;cxy/=n;cyy/=n;
+
+  // Eigenvalue ratio: als bijna gelijk → bijna vierkant → gebruik langste zijde
+  const disc=Math.sqrt((cxx-cyy)**2+4*cxy**2);
+  const l1=(cxx+cyy+disc)/2, l2=(cxx+cyy-disc)/2;
+  const ratio=l2>0?l1/l2:99;
+
+  if(ratio<1.3){
+    // Bijna vierkant: gebruik de richting van de langste zijde in plaats van PCA
+    let maxLen=0,bestAng=0;
+    for(let i=0;i<n;i++){
+      const a=lamPts[i],b=lamPts[(i+1)%n];
+      const dx=b[0]-a[0],dy=b[1]-a[1];
+      const len=Math.sqrt(dx*dx+dy*dy);
+      if(len>maxLen){maxLen=len;bestAng=Math.atan2(dy,dx);}
+    }
+    // Langste zijde → richting in azimut (t.o.v. Noord)
+    return((90-bestAng*180/Math.PI)+360)%180;
+  }
+
   const pca=Math.atan2(2*cxy,cxx-cyy)/2;
   return((90-pca*180/Math.PI)+360)%180;
 }
@@ -2307,20 +2368,56 @@ export default function App(){
     // Als nog niet geanalyseerd: LiDAR starten
     const b=buildings.find(x=>x.id===id);
     if(b&&!b.faces&&!b.selected){
-      // wordt geselecteerd → LiDAR starten
+      // wordt geselecteerd → activeer ook in sidebar
+      setSelBuildingId(id);
+      setBuildingCoords(b.coords);
+
+      // Kleine gebouwen (<25m²): direct plat dak — LiDAR is te onbetrouwbaar
+      if(b.area<25){
+        const flatFace=[{orientation:"Z",slope:3,avgH:3,pct:100,status:"manual",
+          daktype:"platdak",polygon:b.coords,confidence:1,slopeStd:0,n:100}];
+        setBuildings(prev=>prev.map(x=>x.id===id
+          ?{...x,dhmStatus:"ok",faces:flatFace,daktype:"platdak",selFaceIdx:0}:x));
+        setDetectedFaces(flatFace);setSelFaceIdx(0);
+        setOrientation("Z");setSlope(3);
+        return;
+      }
+
       setBuildings(prev=>prev.map(x=>x.id===id?{...x,dhmStatus:"loading"}:x));
       try{
         const faces=await analyzeDHM(b.coords);
+        // Herbereken correcte ridge voor dit specifieke gebouw
+        const ridge=computeBuildingRidge(b.coords);
         if(faces?.length>0){
-          const withPolys=generateFacePolygons(b.coords,faces,b.ridgeAngleDeg);
+          const withPolys=generateFacePolygons(b.coords,faces,ridge);
+          // Override ridge in elke face
+          const withRidge=withPolys.map(f=>({...f,ridgeAngleDeg:ridge}));
           setBuildings(prev=>prev.map(x=>x.id===id
-            ?{...x,dhmStatus:"ok",faces:withPolys,selFaceIdx:0}:x));
+            ?{...x,dhmStatus:"ok",faces:withRidge,ridgeAngleDeg:ridge,selFaceIdx:0}:x));
+          setDetectedFaces(withRidge);setSelFaceIdx(0);
+          setOrientation(withRidge[0].orientation);setSlope(withRidge[0].slope);
         } else {
-          setBuildings(prev=>prev.map(x=>x.id===id?{...x,dhmStatus:"error",dhmError:"Geen vlakken"}:x));
+          // LiDAR faalt → plat dak als fallback
+          const flatFace=[{orientation:"Z",slope:10,avgH:4,pct:100,status:"manual",
+            daktype:"platdak",polygon:b.coords,confidence:0.5,slopeStd:0,n:100,ridgeAngleDeg:ridge}];
+          setBuildings(prev=>prev.map(x=>x.id===id
+            ?{...x,dhmStatus:"error",dhmError:"LiDAR niet beschikbaar — plat dak gebruikt",
+              faces:flatFace,daktype:"platdak"}:x));
+          setDetectedFaces(flatFace);setSelFaceIdx(0);
         }
       }catch(e){
-        setBuildings(prev=>prev.map(x=>x.id===id?{...x,dhmStatus:"error",dhmError:e.message}:x));
+        const ridge2=computeBuildingRidge(b.coords);
+        const flatFace=[{orientation:"Z",slope:10,avgH:4,pct:100,status:"manual",
+          daktype:"platdak",polygon:b.coords,confidence:0.5,slopeStd:0,n:100,ridgeAngleDeg:ridge2}];
+        setBuildings(prev=>prev.map(x=>x.id===id
+          ?{...x,dhmStatus:"error",dhmError:e.message,faces:flatFace,daktype:"platdak"}:x));
+        setDetectedFaces(flatFace);setSelFaceIdx(0);
       }
+    } else if(b){
+      // Gebouw was al geanalyseerd: activeer gewoon
+      setSelBuildingId(id);
+      if(b.faces) setDetectedFaces(b.faces);
+      setBuildingCoords(b.coords);
     }
   },[buildings]);
 
@@ -2626,7 +2723,7 @@ export default function App(){
     let allBlds=[];
     try{
       const geo=await fetchGRBBuilding(lat,lng);
-      allBlds=findAllBuildings(geo);
+      allBlds=findAllBuildings(geo, lat, lng);
       if(allBlds.length>0){
         // Bereken PCA-nokrichting voor elk gebouw
         allBlds=allBlds.map(b=>({...b,ridgeAngleDeg:computeBuildingRidge(b.coords)}));
