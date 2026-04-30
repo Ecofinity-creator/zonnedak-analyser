@@ -2544,6 +2544,7 @@ export default function App(){
     // ── Teken ALLE gebouwen op kaart ──────────────────────────────────
     if(buildings.length>0){
       const masterGroup=L.layerGroup().addTo(map);
+      const faceGroups=[]; // track alle drawFacePolygons return-waarden voor cleanup
 
       buildings.forEach(b=>{
         const isSelected=b.selected;
@@ -2608,18 +2609,20 @@ export default function App(){
           });
 
           // Actief gebouw: editeerbare vlakken via drawFacePolygons
-          if(isActive){
-            drawFacePolygons(map,L,facesToDraw,selFaceIdx,
-              (idx)=>{setSelFaceIdx(idx);setOrientation(facesToDraw[idx].orientation);setSlope(facesToDraw[idx].slope);},
-              editMode,selFaceIdx,onVertexDrag,onVertexDragEnd);
-          } else {
-            // Niet-actief geselecteerd: toon vlakken zonder edit-modus
-            drawFacePolygons(map,L,facesToDraw,selFaceIdx,()=>{activateBuilding(b.id);},false,-1,null,null);
-          }
+          // BELANGRIJK: return-waarde opvangen voor cleanup — anders stapelen lagen op
+          const fg=isActive
+            ?drawFacePolygons(map,L,facesToDraw,selFaceIdx,
+                (idx)=>{setSelFaceIdx(idx);setOrientation(facesToDraw[idx].orientation);setSlope(facesToDraw[idx].slope);},
+                editMode,selFaceIdx,onVertexDrag,onVertexDragEnd)
+            :drawFacePolygons(map,L,facesToDraw,selFaceIdx,()=>{activateBuilding(b.id);},false,-1,null,null);
+          if(fg) faceGroups.push(fg);
         }
       });
 
-      roofLayerRef.current={remove:()=>{if(masterGroup) map.removeLayer(masterGroup);}};
+      roofLayerRef.current={remove:()=>{
+        try{map.removeLayer(masterGroup);}catch{}
+        faceGroups.forEach(fg=>{try{map.removeLayer(fg);}catch{}});
+      }};
       return; // multi-building pad klaar
     }
 
@@ -2675,7 +2678,12 @@ export default function App(){
   },[buildings,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,selBuildingId]);
 
   redrawRoofRef.current=redrawRoof;
-  useEffect(()=>{if(mapReady&&(buildings.length>0||buildingCoords)) redrawRoof();},[mapReady,buildings,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,selBuildingId]);
+  useEffect(()=>{
+    if(!mapReady||(buildings.length===0&&!buildingCoords)) return;
+    // Debounce: wacht 50ms om rapid-fire calls te batchen (bv. bij setDetectedFaces + setSelFaceIdx samen)
+    const t=setTimeout(()=>redrawRoof(),50);
+    return()=>clearTimeout(t);
+  },[mapReady,buildings,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,selBuildingId]);
   useEffect(()=>{if(activeTab==="configuratie"&&leafRef.current&&mapReady){setTimeout(()=>leafRef.current?.invalidateSize?.(),50);}},[activeTab,mapReady]);
 
   useEffect(()=>{
