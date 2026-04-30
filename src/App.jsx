@@ -2445,12 +2445,11 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
   //  Capture met allowTaint:false + useCORS:true → toDataURL() werkt
   //  Na capture: originele tiles herstellen.
   // ═══════════════════════════════════════════════════════════════════════
-  const handleSnapshot=useCallback(async()=>{
-    if(!leafRef.current){
-      alert("Kaart nog niet geladen. Probeer opnieuw."); return;
-    }
-
-    setSnapshotLoading(true);
+  // ── captureSnapshot: doet het echte werk, geeft snapshot-object terug ──
+  // Gescheiden van handleSnapshot zodat handlePDF het ook kan aanroepen
+  // zonder state-timing problemen.
+  const captureSnapshot=useCallback(async()=>{
+    if(!leafRef.current) throw new Error("Kaart nog niet geladen");
     const map=leafRef.current;
     const L=window.L;
     let osmLayer=null;
@@ -2461,7 +2460,7 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
       }
 
-      // Auto-teken panelen als ze nog niet zichtbaar zijn
+      // Teken panelen als ze nog niet zichtbaar zijn
       if(!panelsDrawn&&buildingCoords&&selPanel){
         if(panelDataRef) panelDataRef.current=null;
         if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
@@ -2473,31 +2472,26 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         const _fp=_sf?.polygon||buildingCoords;
         panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,panelDataRef,false);
         setPanelsDrawn(true);
-        await new Promise(r=>setTimeout(r,400));
+        await new Promise(r=>setTimeout(r,500));
       }
 
       const mapEl=document.getElementById("leaflet-map");
       if(!mapEl) throw new Error("Kaart-element niet gevonden");
 
-      // ── Zoom in op gebouw vóór capture ──────────────────────────────────
-      // Dit garandeert dat snapBounds correct is t.o.v. de paneel-coördinaten.
-      // Zonder fitBounds kan de gebruiker uitgezoomed zijn waardoor panelen
-      // in de PDF microscopisch klein worden.
+      // Zoom in op het gebouw zodat bounds exact kloppen met paneel-coördinaten
       if(buildingCoords&&buildingCoords.length>=3){
         const latLngs=buildingCoords.map(([la,ln])=>L.latLng(la,ln));
         const bldBounds=L.latLngBounds(latLngs);
         map.fitBounds(bldBounds,{padding:[60,60],maxZoom:20});
-        // Wacht op tiles én animatie
         await new Promise(resolve=>{
           let done=false;
           const finish=()=>{if(!done){done=true;resolve();}};
           map.once("moveend",finish);
-          setTimeout(finish,800);
+          setTimeout(finish,1000);
         });
       }
 
-      // Tijdelijk OSM tiles (CORS-enabled) — Esri heeft geen CORS headers
-      // waardoor canvas.toDataURL() een SecurityError gooit op Esri tiles
+      // Wissel naar OSM tiles (CORS-enabled) — Esri gooit SecurityError op canvas.toDataURL
       osmLayer=L.tileLayer(
         "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
         {attribution:"© OpenStreetMap contributors",maxZoom:21,crossOrigin:""}
@@ -2505,15 +2499,16 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
       if(origTile) map.removeLayer(origTile);
       osmLayer.addTo(map);
 
+      // Wacht tot tiles volledig geladen zijn
       await new Promise(resolve=>{
         let done=false;
         const finish=()=>{if(!done){done=true;resolve();}};
         osmLayer.on("load",finish);
-        setTimeout(finish,3000);
+        setTimeout(finish,4000); // max 4s wachten
       });
 
       map.invalidateSize(true);
-      await new Promise(r=>setTimeout(r,300));
+      await new Promise(r=>setTimeout(r,400));
 
       const canvas=await window.html2canvas(mapEl,{
         useCORS:              true,
@@ -2533,44 +2528,64 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         },
       });
 
-      const dataUrl=canvas.toDataURL("image/jpeg",0.85);
-      // Sla de exacte kaartgrenzen op — nodig voor pixel-perfecte vector overlay in PDF
+      const dataUrl=canvas.toDataURL("image/jpeg",0.88);
       const mapBounds=map.getBounds();
-      setMapSnapshot({
+      return {
         dataUrl,
         width:  canvas.width,
         height: canvas.height,
         timestamp: Date.now(),
-        // Geografische grenzen van de screenshot (Leaflet viewport)
         bounds:{
           north: mapBounds.getNorth(),
           south: mapBounds.getSouth(),
           east:  mapBounds.getEast(),
           west:  mapBounds.getWest(),
         },
-      });
+      };
+    }finally{
+      // Altijd originele tiles herstellen
+      if(osmLayer){try{map.removeLayer(osmLayer);}catch{}}
+      if(origTile) {try{origTile.addTo(map);}catch{}}
+    }
+  },[panelsDrawn,buildingCoords,selPanel,detectedFaces,selFaceIdx,panelCount,panelRotOffset,panelOrient]);
 
+  const handleSnapshot=useCallback(async()=>{
+    if(!leafRef.current){alert("Kaart nog niet geladen. Probeer opnieuw.");return;}
+    setSnapshotLoading(true);
+    try{
+      const snap=await captureSnapshot();
+      setMapSnapshot(snap);
     }catch(e){
       console.error("[ZonneDak] Snapshot fout:",e);
       alert("Foto maken mislukt: "+(e.message||"onbekende fout"));
     }finally{
-      if(osmLayer){try{map.removeLayer(osmLayer);}catch{}}
-      if(origTile) {try{origTile.addTo(map);}catch{}}
       setSnapshotLoading(false);
     }
-  },[panelsDrawn,buildingCoords,selPanel,detectedFaces,selFaceIdx,panelCount,panelRotOffset,panelOrient]);
+  },[captureSnapshot]);
 
   const handlePDF=async()=>{
     if(!results) return;
     setPdfLoading(true);
-    // Update results met meest recente panelData (kan gewijzigd zijn na drag)
+
+    let snap=mapSnapshot;
+
+    // Auto-capture snapshot als er nog geen is — luchtfoto is verplicht in PDF
+    if(!snap&&buildingCoords&&leafRef.current){
+      try{
+        snap=await captureSnapshot();
+        setMapSnapshot(snap);
+      }catch(e){
+        console.warn("Auto-snapshot mislukt, PDF zonder luchtfoto:",e.message);
+      }
+    }
+
     const latestResults={
       ...results,
       _panelData: panelDataRef.current||results._panelData||null,
       _facePoly: detectedFaces?.[selFaceIdx]?.polygon||buildingCoords||results._facePoly||null,
       _buildingCoords: buildingCoords||results._buildingCoords||null,
     };
-    try{await generatePDF(latestResults,customer,displayName,slope,orientation,mapSnapshot,editableAiText);}
+    try{await generatePDF(latestResults,customer,displayName,slope,orientation,snap,editableAiText);}
     catch(e){alert(`PDF fout: ${e.message}`);}
     setPdfLoading(false);
   };
@@ -3114,10 +3129,11 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
               {!customer.name&&<div className="info-box warn" style={{marginBottom:8}}><strong>⚠️</strong> Voeg klantnaam toe in de "Klant" tab voor het rapport.</div>}
               <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:8}}>
                 <button className="btn green" onClick={handlePDF} disabled={pdfLoading||!results}>
-                  {pdfLoading?<><div className="spinner"/>PDF genereren...</>:"📄 Download PDF rapport"}
+                  {pdfLoading?<><div className="spinner"/>Luchtfoto + PDF genereren...</>:"📄 Download PDF rapport"}
                 </button>
               </div>
               <div style={{fontSize:8,color:"var(--muted)",lineHeight:1.7}}>
+                <strong>📸 Luchtfoto wordt automatisch gemaakt</strong> bij het genereren (OSM-kaart + panelen).<br/>
                 <strong>Rapport bevat:</strong> klantgegevens · systeemoverzicht · maandgrafiek · terugverdienberekening<br/>
                 <strong style={{color:"var(--green)"}}>+ Datasheets bijgevoegd:</strong>{" "}
                 {results?.panel?.datasheet?<span style={{color:"var(--green)"}}>✅ {results.panel.brand} {results.panel.watt}W</span>:<span style={{color:"var(--muted2)"}}>— geen datasheet</span>}
