@@ -3038,6 +3038,95 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
                   <div style={{fontSize:8,color:"var(--muted)",marginBottom:3}}>Daktype</div>
                   <DakTypePicker value={b.daktype||"auto"} onChange={dt=>updateBuildingDaktype(b.id,dt)}/>
                 </div>}
+
+                {/* Dakvlakken voor actief+geselecteerd gebouw */}
+                {isSelected&&isActive&&b.faces&&b.faces.length>0&&<div style={{marginTop:8}}>
+                  {b.dhmStatus==="loading"&&<div style={{display:"flex",alignItems:"center",gap:6,fontSize:9,color:"var(--alpha)"}}><div className="spinner cyan"/>LiDAR analyseren...</div>}
+                  {b.dhmStatus==="error"&&<div className="info-box warn" style={{fontSize:9,padding:"5px 8px"}}>⚠️ LiDAR niet beschikbaar · manuele instelling geldig</div>}
+                  <div className="face-grid" style={{marginTop:4}}>
+                    {b.faces.map((f,i)=>{
+                      const q=ZONE_Q[f.orientation]||ZONE_Q.Z;
+                      const isGood=BEST_SOUTH[f.orientation]!==false;
+                      const qC=isGood?q[0]:q[1];
+                      const conf=f.confidence??0;
+                      const confColor=conf>=0.7?"var(--green)":conf>=0.4?"var(--amber)":"var(--red)";
+                      const face2d=f.area2d_manual||(b.area||80)*(f.pct/100);
+                      const face3d=f.area3d_manual||compute3dArea(face2d,f.slope);
+                      const isFaceSel=selFaceIdx===i&&selBuildingId===b.id;
+                      return(
+                        <button key={i} className={`face-btn ${isFaceSel?"active":""}`}
+                          onClick={()=>{setSelFaceIdx(i);setOrientation(f.orientation);setSlope(f.slope);
+                            setBuildings(prev=>prev.map(x=>x.id===b.id?{...x,selFaceIdx:i}:x));
+                          }}>
+                          <span className="fb-main">{f.isFlatRoof?"🏢 ":""}{f.orientation} · {f.slope}°{f.status==="manual"&&<span style={{fontSize:7,color:"var(--amber)",marginLeft:4}}>✏️</span>}</span>
+                          <span className="fb-sub">{f.pct}% · {f.avgH}m hoogte</span>
+                          <span style={{fontSize:8,color:"var(--blue)",display:"block",marginTop:2}}>3D: {face3d.toFixed(0)}m² <span style={{color:"var(--muted)"}}>(2D: {face2d.toFixed(0)}m²)</span></span>
+                          <span style={{fontSize:8,color:isFaceSel?"var(--alpha)":qC.c,display:"block"}}>{qC.l}</span>
+                          {conf>0&&<span style={{fontSize:7,color:confColor,display:"block"}}>{conf>=0.7?"✅":conf>=0.4?"⚠️":"❌"} conf: {Math.round(conf*100)}%</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Vlak-edit knoppen */}
+                  <div style={{display:"flex",gap:5,marginTop:6,flexWrap:"wrap"}}>
+                    {!editMode
+                      ?<button className="btn sec sm" style={{flex:1}} onClick={()=>{
+                          if(!b.faces[selFaceIdx]?.polygon){
+                            const withPolys=generateFacePolygons(b.coords,b.faces,b.ridgeAngleDeg);
+                            setBuildings(prev=>prev.map(x=>x.id===b.id?{...x,faces:withPolys}:x));
+                            setDetectedFaces(withPolys);
+                            setTimeout(()=>setEditMode(true),50);
+                          } else {setEditMode(true);}
+                        }}>✏️ Dakvlak aanpassen</button>
+                      :<>
+                        <button className="btn green sm" style={{flex:1}} onClick={()=>{
+                          setBuildings(prev=>prev.map(x=>x.id===b.id
+                            ?{...x,faces:x.faces?.map((f,i)=>i===selFaceIdx?{...f,status:"manual"}:f)}:x));
+                          setDetectedFaces(prev=>prev?.map((f,i)=>i===selFaceIdx?{...f,status:"manual"}:f));
+                          setEditMode(false);
+                        }}>✅ Bevestig</button>
+                        <button className="btn danger sm" onClick={()=>setEditMode(false)}>✕</button>
+                      </>
+                    }
+                    {!editMode&&b.faces.length<4&&<button className="btn sec sm" onClick={()=>{
+                      const f=b.faces[selFaceIdx];
+                      if(!f?.polygon||f.polygon.length<4) return;
+                      const mid=Math.floor(f.polygon.length/2);
+                      const half1={...f,polygon:[...f.polygon.slice(0,mid+1)],pct:Math.round(f.pct/2),status:"manual"};
+                      const half2={...f,orientation:DIRS8[(DIRS8.indexOf(f.orientation)+2)%8]||f.orientation,polygon:[...f.polygon.slice(mid)],pct:Math.round(f.pct/2),status:"manual"};
+                      const newFaces=[...b.faces.slice(0,selFaceIdx),half1,half2,...b.faces.slice(selFaceIdx+1)];
+                      setBuildings(prev=>prev.map(x=>x.id===b.id?{...x,faces:newFaces}:x));
+                      setDetectedFaces(newFaces);
+                    }}>➕ Splits</button>}
+                  </div>
+                  {editMode&&<div className="info-box" style={{marginTop:5,background:"#fffbeb",borderColor:"#fde68a",fontSize:9}}>
+                    <strong>✏️ Editeer modus</strong> — Versleep oranje bolletjes op de kaart.
+                  </div>}
+                </div>}
+
+                {/* Helling + Oriëntatie voor actief gebouw */}
+                {isSelected&&isActive&&<div style={{marginTop:8,borderTop:"1px solid var(--border)",paddingTop:8}}>
+                  <div style={{display:"flex",flexDirection:"column",gap:7}}>
+                    <div className="sl-item">
+                      <label>Hellingshoek <span style={{color:b.dhmStatus==="ok"?"var(--alpha)":"var(--amber)"}}>{slope}° {b.dhmStatus==="ok"?"· LiDAR":""}</span></label>
+                      <input type="range" min="3" max="75" value={slope} onChange={e=>setSlope(+e.target.value)}/>
+                    </div>
+                    <div>
+                      <div className="sl" style={{marginBottom:4,fontSize:9}}>Oriëntatie</div>
+                      <div className="orient-grid">
+                        {["N","NO","O","ZO","Z","ZW","W","NW"].map(o=>{
+                          const dhmHit=b.faces?.some(f=>f.orientation===o);
+                          return <button key={o} className={`orient-btn ${orientation===o?"active":""} ${dhmHit&&orientation!==o?"dhm-hit":""}`} onClick={()=>setOrientation(o)}>
+                            {o}{dhmHit&&<span className="dhm-dot"/>}
+                          </button>;
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>}
+
+
               </div>
             );
           })}
@@ -3106,7 +3195,8 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
 
         <div className="divider"/>
 
-        <div>
+        {/* Dakparameters + Oriëntatie: toon alleen als er geen multi-building UI is */}
+        {buildings.length===0&&<><div>
           <div className="sl">Dakparameters</div>
           <div style={{display:"flex",flexDirection:"column",gap:9}}>
             {grbStatus==="ok"
@@ -3132,7 +3222,7 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
             <div style={{flex:1,padding:"5px 8px",background:zq[0].c+"22",border:`1px solid ${zq[0].c}55`,borderRadius:4,fontSize:7,color:zq[0].c}}>Z: {zq[0].l}</div>
             <div style={{flex:1,padding:"5px 8px",background:zq[1].c+"22",border:`1px solid ${zq[1].c}55`,borderRadius:4,fontSize:7,color:zq[1].c}}>N: {zq[1].l}</div>
           </div>}
-        </div>
+        </div></>}
 
         <div className="divider"/>
 
