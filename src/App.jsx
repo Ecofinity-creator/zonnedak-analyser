@@ -2861,16 +2861,11 @@ export default function App(){
 
   const calculate=async()=>{
     if(!coords||!selPanel||(!buildingCoords&&buildings.length===0)) return;
-    // Gebruik het werkelijk geplaatste aantal panelen (uit packPanels) als dat beschikbaar is.
-    // panelDataRef.current wordt gevuld door drawPanelLayer → meest accurate telling.
-    // Fallback: customCount of som van b.panelCount per geselecteerd gebouw.
+    // Panelentelling: gebruik werkelijk geplaatste panelen als die er zijn,
+    // anders de customCount die de gebruiker heeft ingesteld in de sidebar.
+    // NIET de som van b.panelCount per gebouw — die is altijd de default waarde.
     const actualPlaced=panelDataRef.current?.length||0;
-    const totalPanelCount=actualPlaced>0
-      ? actualPlaced
-      : buildings.length>0
-        ? buildings.filter(b=>b.selected).reduce((s,b)=>s+(b.panelCount||customCount||10),0)
-        : panelCount;
-    const effectivePanelCount=totalPanelCount||panelCount;
+    const effectivePanelCount=actualPlaced>0 ? actualPlaced : (customCount||10);
     // Irradiantie op basis van actief geselecteerd vlak
     const irr=getSolarIrr(orientation,slope);
     const actualArea=effectivePanelCount*selPanel.area,annualKwh=Math.round(actualArea*irr*(selPanel.eff/100));
@@ -3020,19 +3015,50 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         });
       }
 
-      // Stap 4: OSM tiles (CORS-enabled)
-      osmLayer=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        {attribution:"© OpenStreetMap",maxZoom:21,crossOrigin:""});
-      if(origTile) map.removeLayer(origTile);
-      osmLayer.addTo(map);
-      await new Promise(resolve=>{
-        let done=false;
-        const finish=()=>{if(!done){done=true;resolve();}};
-        osmLayer.on("load",finish);
-        setTimeout(finish,4000);
-      });
-      map.invalidateSize(true);
-      await new Promise(r=>setTimeout(r,400));
+      // Stap 4: Luchtfoto tiles voor capture
+      // Probeer volgorde: Esri (crossOrigin) → Digitaal Vlaanderen orthofoto → OSM fallback
+      // Esri ondersteunt soms CORS afhankelijk van de regio/server
+      const tileProviders=[
+        {url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+         opt:{attribution:"© Esri",maxZoom:21,maxNativeZoom:18,crossOrigin:"anonymous"}},
+        {url:"https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+         opt:{attribution:"© OpenStreetMap",maxZoom:21,crossOrigin:""}},
+      ];
+
+      let captureOk=false;
+      for(const provider of tileProviders){
+        if(osmLayer){try{map.removeLayer(osmLayer);}catch{}}
+        osmLayer=L.tileLayer(provider.url,provider.opt);
+        if(origTile) map.removeLayer(origTile);
+        osmLayer.addTo(map);
+        await new Promise(resolve=>{
+          let done=false;
+          const finish=()=>{if(!done){done=true;resolve();}};
+          osmLayer.on("load",finish);
+          setTimeout(finish,3500);
+        });
+        map.invalidateSize(true);
+        await new Promise(r=>setTimeout(r,300));
+
+        // Test of toDataURL werkt (CORS check)
+        try{
+          const testCanvas=document.createElement("canvas");
+          testCanvas.width=10;testCanvas.height=10;
+          const testCtx=testCanvas.getContext("2d");
+          // Capture een klein stukje van de kaart als test
+          const tmpCanvas=await window.html2canvas(mapEl,{
+            useCORS:true,allowTaint:false,scale:0.1,logging:false,
+            width:50,height:50,x:0,y:0,
+            backgroundColor:"#000",imageTimeout:3000,
+          });
+          tmpCanvas.toDataURL("image/jpeg"); // gooit SecurityError als tainted
+          captureOk=true;
+          break; // deze provider werkt
+        }catch(corsErr){
+          console.warn("[ZonneDak] Tile provider CORS fout, probeer volgende:",corsErr.message);
+          captureOk=false;
+        }
+      }
 
       // Stap 5: Capture
       const canvas=await window.html2canvas(mapEl,{
