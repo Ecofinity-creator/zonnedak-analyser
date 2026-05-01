@@ -2114,6 +2114,7 @@ export default function App(){
   // Multi-vlak panels: key = `${buildingId}_${faceIdx}`
   const panelLayersByFaceRef=useRef({}); // {key: L.layerGroup}
   const panelDataByFaceRef=useRef({});   // {key: panelData[]}
+  const [panelCountsByFace,setPanelCountsByFace]=useState({}); // {key:count} triggers re-render
   const panelLayerRef=useRef(null); // actieve laag (voor move-mode)
 
   const[panels,setPanels]=useState(DEFAULT_PANELS);
@@ -2334,6 +2335,7 @@ export default function App(){
     panelLayersByFaceRef.current={};
     panelDataByFaceRef.current={};
     panelDataRef.current=null;
+    setPanelCountsByFace({});
     setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");
     setTimeout(()=>{suppressAutoSaveRef.current=false;setShowProjectMenu(false);},100);
   },[]);
@@ -3240,7 +3242,7 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
                           }}>
                           <span className="fb-main">{f.isFlatRoof?"🏢 ":""}{f.orientation} · {f.slope}°
                             {f.status==="manual"&&<span style={{fontSize:7,color:"var(--amber)",marginLeft:4}}>✏️</span>}
-                            {(()=>{const fk=`${b.id}_${i}`;const pd=panelDataByFaceRef.current[fk];return pd?.length>0?<span style={{fontSize:7,background:"var(--blue)",color:"#fff",borderRadius:8,padding:"0 4px",marginLeft:4}}>{pd.length}🔆</span>:null;})()}
+                            {panelCountsByFace[`${b.id}_${i}`]>0&&<span style={{fontSize:7,background:"var(--blue)",color:"#fff",borderRadius:8,padding:"0 4px",marginLeft:4}}>{panelCountsByFace[`${b.id}_${i}`]}🔆</span>}
                           </span>
                           <span className="fb-sub">{f.pct}% · {f.avgH}m hoogte</span>
                           <span style={{fontSize:8,color:"var(--blue)",display:"block",marginTop:2}}>3D: {face3d.toFixed(0)}m² <span style={{color:"var(--muted)"}}>(2D: {face2d.toFixed(0)}m²)</span></span>
@@ -3487,6 +3489,8 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
             panelDataByFaceRef.current[faceKey]=faceDataRef.current;
             panelLayerRef.current=newLayer;
             panelDataRef.current=faceDataRef.current;
+            // State update triggert re-render → badge wordt zichtbaar
+            setPanelCountsByFace(prev=>({...prev,[faceKey]:faceDataRef.current?.length||0}));
             setPanelsDrawn(true);
           }
           setActiveTab("configuratie");
