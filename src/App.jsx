@@ -1407,9 +1407,13 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
 
   y=secTitle("Systeemoverzicht",y);
   const kWp=((results.panelCount*results.panel.watt)/1000).toFixed(2);
+  // Multi-vlak: toon alle oriëntaties, niet enkel de dominante
+  const orientatieStr2=results.faceSummary&&results.faceEntries?.length>1
+    ?results.faceSummary
+    :(results.orientation+" · Helling: "+results.slope+"°");
   const sysItems=[
     results.panelCount+" × "+results.panel.brand+" "+results.panel.model,
-    "Azimut: "+orientation+" · Helling: "+slope+"° · Piekvermogen: "+kWp+" kWp",
+    "Vlakken: "+orientatieStr2+" · Piekvermogen: "+kWp+" kWp",
   ];
   if(results.inv) sysItems.push("1 × "+results.inv.brand+" "+results.inv.model+" · "+results.inv.kw+" kW · "+results.inv.fase);
   sysItems.forEach((t,i)=>{
@@ -2836,17 +2840,36 @@ export default function App(){
 
   const calculate=async()=>{
     if(!coords||!selPanel||(!buildingCoords&&buildings.length===0)) return;
-    // Panelentelling: gebruik werkelijk geplaatste panelen als die er zijn,
-    // anders de customCount die de gebruiker heeft ingesteld in de sidebar.
-    // NIET de som van b.panelCount per gebouw — die is altijd de default waarde.
-    // Tel panelen van ALLE vlakken op
-    const allFaceData=Object.values(panelDataByFaceRef.current||{});
-    const totalPlaced=allFaceData.reduce((s,d)=>s+(d?.length||0),0);
-    const effectivePanelCount=totalPlaced>0 ? totalPlaced : (panelDataRef.current?.length||customCount||10);
-    // Irradiantie op basis van actief geselecteerd vlak
-    const irr=getSolarIrr(orientation,slope);
-    const actualArea=effectivePanelCount*selPanel.area,annualKwh=Math.round(actualArea*irr*(selPanel.eff/100));
-    const panelCount2=effectivePanelCount; // alias
+
+    // ── Verzamel info van ALLE vlakken met panelen ─────────────────────────
+    // faceEntries: [{key, count, orientation, slope, building}]
+    const faceEntries=Object.entries(panelCountsByFace)
+      .filter(([,cnt])=>cnt>0)
+      .map(([key,cnt])=>{
+        const parts=key.split("_");
+        const bId=parts.slice(0,-1).join("_");
+        const fIdx=parseInt(parts[parts.length-1])||0;
+        const bld=buildings.find(x=>x.id===bId);
+        const faces=(bld?.id===selBuildingId?detectedFaces:bld?.faces)||detectedFaces;
+        const f=faces?.[fIdx];
+        return {key,count:cnt,orientation:f?.orientation||orientation,slope:f?.slope||slope,bld};
+      });
+
+    // Totaal geplaatste panelen
+    const totalPlaced=faceEntries.reduce((s,e)=>s+e.count,0);
+    const effectivePanelCount=totalPlaced>0 ? totalPlaced : (customCount||10);
+
+    // Dominante oriëntatie: vlak met meeste panelen
+    const dominantFace=faceEntries.length>0
+      ?faceEntries.reduce((a,b)=>b.count>a.count?b:a)
+      :{orientation,slope};
+    const effectiveOrientation=dominantFace.orientation;
+    const effectiveSlope=dominantFace.slope;
+
+    // Irradiantie op basis van dominante oriëntatie
+    const irr=getSolarIrr(effectiveOrientation,effectiveSlope);
+    const actualArea=effectivePanelCount*selPanel.area;
+    const annualKwh=Math.round(actualArea*irr*(selPanel.eff/100));
     const co2=Math.round(annualKwh*.202);
     const consumption=Math.max(annualConsumption||3500,1);
     const coverage=Math.round((annualKwh/consumption)*100);
@@ -2857,6 +2880,11 @@ export default function App(){
     const injectKwhBase=Math.max(annualKwh-selfKwhBase,0);
     const annualBase=Math.round(selfKwhBase*PRIJS_AANKOOP+injectKwhBase*PRIJS_INJECTIE);
     const paybackBase=investPanels!==null?Math.round(investPanels/Math.max(annualBase,1)):null;
+
+    // Samenvatting van alle vlakken voor PDF en AI
+    const faceSummary=faceEntries.length>0
+      ?faceEntries.map(e=>`${e.orientation} ${e.slope}° (${e.count} panelen)`).join(", ")
+      :`${effectiveOrientation} ${effectiveSlope}° (${effectivePanelCount} panelen)`;
 
     let battResult=null;
     if(battEnabled&&selBatt){
@@ -2871,9 +2899,14 @@ export default function App(){
       battResult={extraSav,totSav,totInv:totInvBatt,payback,battPrice:battOnlyPrice,
         selfRatio:selfRatioBatt,selfKwh:Math.round(selfKwhBatt),injectKwh:Math.round(injectKwhBatt)};
     }
+    // Sla alle panel data op voor PDF foto-label
+    const allPanelData=Object.values(panelDataByFaceRef.current||{}).flat();
     setResults({irr,panelCount:effectivePanelCount,actualArea:Math.round(actualArea),annualKwh,co2,coverage,
       investPanels,annualBase,paybackBase,battResult,panel:selPanel,inv:selInv,batt:battEnabled?selBatt:null,
-      detectedArea,grbOk:grbStatus==="ok",dhmOk:dhmStatus==="ok",orientation,slope,
+      detectedArea,grbOk:grbStatus==="ok",dhmOk:dhmStatus==="ok",
+      orientation:effectiveOrientation,slope:effectiveSlope,
+      faceSummary, // alle vlakken voor PDF systeemoverzicht
+      faceEntries, // detail per vlak
       stringDesign:stringDesign||null,consumption:Math.round(consumption),
       selfKwhBase:Math.round(selfKwhBase),injectKwhBase:Math.round(injectKwhBase),
       selfRatioBase,priceBuy:PRIJS_AANKOOP,priceInject:PRIJS_INJECTIE,
@@ -2907,7 +2940,7 @@ Locatie: ${displayName}
 Dak: ${grbStatus==="ok"?"GRB-contour":"Schatting"} · ${detectedArea||80} m²${dhmStr}
 Paneel: ${selPanel.brand} ${selPanel.model} (${selPanel.watt}W, ${selPanel.eff}%)
 Aantal: ${panelCount} · ${Math.round(actualArea)} m² · ${((panelCount*selPanel.watt)/1000).toFixed(1)} kWp
-Helling: ${slope}° ${orientation} · ${irr} kWh/m²/j
+Vlakken: ${results?.faceSummary||orientation+" "+slope+"°"} · Irradiantie: ${irr} kWh/m²/j
 ${invStr}
 Opbrengst: ${annualKwh} kWh/j · CO₂: ${co2} kg/j
 Klant verbruik: ${consumption} kWh · dekking ${coverage}% · zelfverbruik ${Math.round(selfRatioBase*100)}%
@@ -3748,7 +3781,7 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
                 {results.inv&&<div className="rc alpha-rc"><div className="rc-label">AlphaESS</div><div className="rc-num" style={{fontSize:12,lineHeight:1.3}}>{results.inv.model}</div><div className="rc-unit">{results.inv.fase} · {results.inv.kw}kW</div></div>}
                 <div className="rc"><div className="rc-label">Installatie</div><div className="rc-num">{results.panelCount}</div><div className="rc-unit">panelen · {results.actualArea} m² · {((results.panelCount*results.panel.watt)/1000).toFixed(1)} kWp</div></div>
                 <div className="rc green"><div className="rc-label">Jaarlijkse opbrengst</div><div className="rc-num">{results.annualKwh.toLocaleString()}</div><div className="rc-unit">kWh / jaar</div></div>
-                <div className="rc"><div className="rc-label">Irradiantie</div><div className="rc-num">{results.irr}</div><div className="rc-unit">kWh/m²/j · {results.orientation} {results.slope}°</div></div>
+                <div className="rc"><div className="rc-label">Dakvlakken</div><div className="rc-num" style={{fontSize:11,lineHeight:1.3}}>{results.faceSummary||`${results.orientation} ${results.slope}°`}</div><div className="rc-unit">{results.irr} kWh/m²/j irradiantie</div></div>
                 <div className="rc"><div className="rc-label">CO₂ besparing</div><div className="rc-num">{results.co2}</div><div className="rc-unit">kg / jaar</div></div>
                 <div className="rc"><div className="rc-label">Dekkingsgraad</div><div className="rc-num">{results.coverage}%</div><div className="rc-unit">van gemiddeld verbruik</div></div>
               </div>
