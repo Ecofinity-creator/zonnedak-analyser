@@ -1649,17 +1649,15 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
   }
 
   // ── Luchtfoto met panelen ──────────────────────────────────────────────────
-  // Aanpak:
-  //   Achtergrond = OSM-snapshot (JPEG).
-  //   Paneel-vectoren worden EXACT uitgelijnd via de opgeslagen Leaflet-bounds.
-  //   Bounds worden opgeslagen bij snapshot → zelfde viewport → perfecte overlap.
+  // Aanpak: de html2canvas snapshot bevat REEDS de Leaflet SVG-panelen correct.
+  // We embedden gewoon de foto — geen vector overlay nodig.
+  // Vector overlay had permanent coördinaten-transformatie problemen.
   try{
-    let imgData=null,imgRatio=1,snapBounds=null;
-    if(mapSnapshot?.dataUrl){
-      imgData    = mapSnapshot.dataUrl;
-      imgRatio   = mapSnapshot.height/mapSnapshot.width;
-      snapBounds = mapSnapshot.bounds||null; // {north,south,east,west}
-    }
+    const imgData=mapSnapshot?.dataUrl||null;
+    const imgRatio=imgData?(mapSnapshot.height/mapSnapshot.width):0.6;
+    const panelData=results._panelData;
+    const panelCount3=panelData?.length||results.panelCount||0;
+    const kWp3=panelCount3>0?((panelCount3*results.panel.watt)/1000).toFixed(1):"—";
 
     doc.addPage();
     doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
@@ -1669,97 +1667,38 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     y=22;
     y=secTitle("Paneelplaatsing op het dak",y);
 
+    // Info-lijn boven de foto
+    sf(9,"bold");sc([37,99,235]);
+    doc.text(`${panelCount3} panelen · ${kWp3} kWp`,M,y);
+    sf(9,"normal");sc(MUT);
+    doc.text(`Paneel: ${results.panel.brand} ${results.panel.model}`,M+60,y);
+    y+=7;
+
     const imgW=W-2*M;
-    const imgH=imgData?Math.min(150,imgW*imgRatio):100;
-    const imgX=M, imgY=y;
+    const imgH=imgData?Math.min(160,imgW*imgRatio):80;
+    const imgX=M,imgY=y;
 
     if(imgData){
+      // Foto met panelen al erin (html2canvas vangt Leaflet SVG correct op)
       doc.addImage(imgData,"JPEG",imgX,imgY,imgW,imgH);
+      // Lichte oranje rand
+      doc.setDrawColor(...OR);doc.setLineWidth(0.4);
+      doc.rect(imgX,imgY,imgW,imgH,"S");
     } else {
       doc.setFillColor(220,230,240);
       doc.rect(imgX,imgY,imgW,imgH,"F");
       sf(9,"italic");sc(MUT);
-      doc.text("Gebruik '📸 Foto opslaan voor rapport' voor luchtfoto",imgX+imgW/2,imgY+imgH/2,{align:"center"});
-    }
-
-    // ── Paneel vector overlay ────────────────────────────────────────────────
-    const panelData=results._panelData;
-    if(panelData&&panelData.length>0){
-
-      let toX,toY;
-
-      if(snapBounds){
-        // ── Web Mercator correctie ───────────────────────────────────────
-        // Leaflet/OSM gebruikt EPSG:3857 (Web Mercator).
-        // Y in Web Mercator = ln(tan(π/4 + lat·π/360)) — NIET lineair in graden.
-        // Zonder deze correctie zijn de panelen gedraaid t.o.v. het dak in de PDF.
-        const {north,south,east,west}=snapBounds;
-        const latToMerc=lat=>Math.log(Math.tan(Math.PI/4+lat*Math.PI/360));
-        const mercN=latToMerc(north), mercS=latToMerc(south);
-        const lngRange=east-west||0.0001;
-        const mercRange=mercN-mercS||0.0001;
-        toX=lng=>imgX+(lng-west)/lngRange*imgW;
-        toY=lat=>imgY+(mercN-latToMerc(lat))/mercRange*imgH;
-      } else {
-        // Fallback: bereken bounds vanuit de data zelf (minder nauwkeurig)
-        const bc=results._buildingCoords||results._facePoly||[];
-        const allPts=[...bc,...panelData.flatMap(p=>p.corners)];
-        if(allPts.length===0) throw new Error("geen punten");
-        const minLat=Math.min(...allPts.map(p=>p[0]));
-        const maxLat=Math.max(...allPts.map(p=>p[0]));
-        const minLng=Math.min(...allPts.map(p=>p[1]));
-        const maxLng=Math.max(...allPts.map(p=>p[1]));
-        const cLat=(minLat+maxLat)/2;
-        const MLAT=111320,MLNG=111320*Math.cos(cLat*Math.PI/180);
-        const rngX=(maxLng-minLng)*MLNG||0.1;
-        const rngY=(maxLat-minLat)*MLAT||0.1;
-        const pad=0.15;
-        const eW=imgW*(1-2*pad),eH=imgH*(1-2*pad);
-        const sc2=Math.min(eW/rngX,eH/rngY);
-        const oX=imgX+imgW*pad+(eW-rngX*sc2)/2;
-        const oY=imgY+imgH*pad+(eH-rngY*sc2)/2;
-        // Web Mercator Y ook hier voor consistentie
-        const latToMerc2=lat=>Math.log(Math.tan(Math.PI/4+lat*Math.PI/360));
-        const mercMax=latToMerc2(maxLat),mercMin2=latToMerc2(minLat);
-        const mercRng2=mercMax-mercMin2||0.0001;
-        const mLatPerMerc=MLAT/((1/Math.cos(cLat*Math.PI/180))||1);
-        toX=lng=>oX+(lng-minLng)*MLNG*sc2;
-        toY=lat=>oY+(mercMax-latToMerc2(lat))/mercRng2*(rngY*sc2);
-      }
-
-      // Dakcontour (oranje lijn, semi-transparant via lage opacity)
-      const bc=results._buildingCoords;
-      if(bc&&bc.length>=3){
-        doc.setDrawColor(...OR);doc.setLineWidth(0.7);
-        const bcPts=bc.map(([la,ln])=>[toX(ln),toY(la)]);
-        const moves=bcPts.slice(1).map(([x,y],i)=>[x-bcPts[i][0],y-bcPts[i][1]]);
-        doc.lines(moves,bcPts[0][0],bcPts[0][1],[1,1],"S",true);
-      }
-
-      // Panelen: blauw gevuld
-      doc.setFillColor(37,99,235);
-      doc.setDrawColor(10,30,80);
-      doc.setLineWidth(0.1);
-      panelData.forEach(panel=>{
-        const pts=panel.corners.map(([la,ln])=>[toX(ln),toY(la)]);
-        if(pts.length<3) return;
-        doc.setFillColor(37,99,235);
-        try{ doc.polygon(pts,"FD"); }
-        catch{
-          const xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]);
-          const rx=Math.min(...xs),ry=Math.min(...ys);
-          const rw=Math.max(...xs)-rx,rh=Math.max(...ys)-ry;
-          if(rw>0.1&&rh>0.1) doc.rect(rx,ry,rw,rh,"FD");
-        }
-      });
-
-      sf(8,"bold");sc([37,99,235]);
-      doc.text(`${panelData.length} panelen · ${((panelData.length*results.panel.watt)/1000).toFixed(1)} kWp`,imgX,imgY+imgH+6);
+      doc.text("Klik '📸 Foto opslaan' op de configuratie-tab voor luchtfoto",
+               imgX+imgW/2,imgY+imgH/2,{align:"center"});
     }
 
     sf(7,"italic");sc(MUT);
-    doc.text("Luchtfoto: "+(imgData?"OpenStreetMap":"niet beschikbaar")+" · Paneelplaatsing is een schatting.",imgX,imgY+imgH+(panelData?.length>0?12:6));
-    y=imgY+imgH+18;
+    doc.text(
+      "Luchtfoto: "+(imgData?"OpenStreetMap · panelen gerenderd via Leaflet":"niet beschikbaar")+
+      " · Paneelplaatsing is een schatting.",
+      imgX,imgY+imgH+5
+    );
+    y=imgY+imgH+14;
 
   }catch(mapErr){console.warn("Luchtfoto sectie mislukt:",mapErr);}
 
@@ -3012,10 +2951,11 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         await new Promise(r=>setTimeout(r,500));
       }
 
-      // Stap 3: Zoom in op gebouw
+      // Stap 3: Zoom in op gebouw — kleiner padding = panelen groter in beeld
       if(buildingCoords&&buildingCoords.length>=3){
         const latLngs=buildingCoords.map(([la,ln])=>L.latLng(la,ln));
-        map.fitBounds(L.latLngBounds(latLngs),{padding:[60,60],maxZoom:20});
+        // Pad van 40px: gebouw vult ±70% van het beeld → panelen goed zichtbaar
+        map.fitBounds(L.latLngBounds(latLngs),{padding:[40,40],maxZoom:21});
         await new Promise(resolve=>{
           let done=false;
           const finish=()=>{if(!done){done=true;resolve();}};
