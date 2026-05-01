@@ -1689,13 +1689,17 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
       let toX,toY;
 
       if(snapBounds){
-        // ✅ EXACTE uitlijning: gebruik dezelfde bounds als de snapshot
-        // Leaflet Y-as: north = boven, south = onder → in PDF ook north = kleine y
+        // ── Web Mercator correctie ───────────────────────────────────────
+        // Leaflet/OSM gebruikt EPSG:3857 (Web Mercator).
+        // Y in Web Mercator = ln(tan(π/4 + lat·π/360)) — NIET lineair in graden.
+        // Zonder deze correctie zijn de panelen gedraaid t.o.v. het dak in de PDF.
         const {north,south,east,west}=snapBounds;
+        const latToMerc=lat=>Math.log(Math.tan(Math.PI/4+lat*Math.PI/360));
+        const mercN=latToMerc(north), mercS=latToMerc(south);
         const lngRange=east-west||0.0001;
-        const latRange=north-south||0.0001;
+        const mercRange=mercN-mercS||0.0001;
         toX=lng=>imgX+(lng-west)/lngRange*imgW;
-        toY=lat=>imgY+(north-lat)/latRange*imgH;
+        toY=lat=>imgY+(mercN-latToMerc(lat))/mercRange*imgH;
       } else {
         // Fallback: bereken bounds vanuit de data zelf (minder nauwkeurig)
         const bc=results._buildingCoords||results._facePoly||[];
@@ -1714,8 +1718,13 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
         const sc2=Math.min(eW/rngX,eH/rngY);
         const oX=imgX+imgW*pad+(eW-rngX*sc2)/2;
         const oY=imgY+imgH*pad+(eH-rngY*sc2)/2;
+        // Web Mercator Y ook hier voor consistentie
+        const latToMerc2=lat=>Math.log(Math.tan(Math.PI/4+lat*Math.PI/360));
+        const mercMax=latToMerc2(maxLat),mercMin2=latToMerc2(minLat);
+        const mercRng2=mercMax-mercMin2||0.0001;
+        const mLatPerMerc=MLAT/((1/Math.cos(cLat*Math.PI/180))||1);
         toX=lng=>oX+(lng-minLng)*MLNG*sc2;
-        toY=lat=>oY+(maxLat-lat)*MLAT*sc2;
+        toY=lat=>oY+(mercMax-latToMerc2(lat))/mercRng2*(rngY*sc2);
       }
 
       // Dakcontour (oranje lijn, semi-transparant via lage opacity)
