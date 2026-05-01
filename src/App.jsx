@@ -1940,14 +1940,34 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
           {tlContact.emails?.length>0&&<div style={{fontSize:9,color:"var(--muted)"}}>{tlContact.emails.map(e=>e.email).join(" · ")}</div>}
         </div>
         {tlContact.addresses?.length>0&&<div style={{marginTop:8}}>
-          <div className="sl" style={{fontSize:9,marginBottom:4}}>Adres voor dit project</div>
-          {tlContact.addresses.length===1?<div style={{fontSize:9,color:"var(--muted)"}}>{tlContact.addresses[0].full}</div>:
-            tlContact.addresses.map((a,idx)=>(
-              <label key={idx} style={{display:"flex",alignItems:"flex-start",gap:6,padding:"4px 0",cursor:"pointer",fontSize:9}}>
-                <input type="radio" checked={tlSelectedAddressIdx===idx} onChange={()=>onSelectAddress(idx)} style={{marginTop:2}}/>
-                <span><strong>{a.type}</strong>: {a.full}</span>
-              </label>
-            ))
+          <div className="sl" style={{fontSize:9,marginBottom:4}}>📍 Adres voor dit project</div>
+          {tlContact.addresses.length===1
+            ?<div style={{fontSize:9,padding:"6px 8px",background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:4,color:"var(--text)"}}>{tlContact.addresses[0].full}</div>
+            :<div style={{display:"flex",flexDirection:"column",gap:3}}>
+              {tlContact.addresses.map((a,idx)=>(
+                <div key={idx}
+                  onClick={()=>onSelectAddress(idx)}
+                  style={{display:"flex",alignItems:"flex-start",gap:8,padding:"7px 10px",
+                    cursor:"pointer",borderRadius:5,fontSize:9,
+                    background:tlSelectedAddressIdx===idx?"var(--amber-light)":"var(--bg3)",
+                    border:tlSelectedAddressIdx===idx?"1.5px solid var(--amber)":"1px solid var(--border-dark)"}}>
+                  <div style={{width:14,height:14,borderRadius:"50%",flexShrink:0,marginTop:1,
+                    background:tlSelectedAddressIdx===idx?"var(--amber)":"var(--bg4)",
+                    border:`2px solid ${tlSelectedAddressIdx===idx?"var(--amber)":"var(--border-dark)"}`,
+                    display:"flex",alignItems:"center",justifyContent:"center"}}>
+                    {tlSelectedAddressIdx===idx&&<div style={{width:5,height:5,borderRadius:"50%",background:"#fff"}}/>}
+                  </div>
+                  <div>
+                    <div style={{fontWeight:600,color:tlSelectedAddressIdx===idx?"var(--amber)":"var(--text)"}}>{a.type||"Adres"}</div>
+                    <div style={{color:"var(--muted)",marginTop:1}}>{a.full}</div>
+                  </div>
+                </div>
+              ))}
+              {/* Toon geselecteerd adres bevestiging */}
+              <div style={{fontSize:8,color:"var(--green)",marginTop:2,padding:"3px 6px",background:"var(--green-bg)",borderRadius:4}}>
+                ✓ Geselecteerd: {tlContact.addresses[tlSelectedAddressIdx]?.full||"—"}
+              </div>
+            </div>
           }
         </div>}
         {tlContact.deals?.length>0&&<div style={{marginTop:10}}>
@@ -2090,7 +2110,11 @@ export default function App(){
   const selectingRef=useRef(false);
   const baseTileRef=useRef(null);
   const dhmLayerRef=useRef(null);const searchTO=useRef(null);
-  const roofLayerRef=useRef(null);const panelLayerRef=useRef(null);
+  const roofLayerRef=useRef(null);
+  // Multi-vlak panels: key = `${buildingId}_${faceIdx}`
+  const panelLayersByFaceRef=useRef({}); // {key: L.layerGroup}
+  const panelDataByFaceRef=useRef({});   // {key: panelData[]}
+  const panelLayerRef=useRef(null); // actieve laag (voor move-mode)
 
   const[panels,setPanels]=useState(DEFAULT_PANELS);
   const[selPanelId,setSelPanelId]=useState(1);
@@ -2303,6 +2327,13 @@ export default function App(){
     setMapSnapshot(null);setPanelsDrawn(false);
     setTlContact(null);setTlQuery("");setTlResults([]);setTlSelectedDealId(null);setTlPendingGeo(null);
     setBuildings([]);setSelBuildingId(null);
+    // Verwijder alle panel-lagen
+    if(leafRef.current&&window.L){
+      Object.values(panelLayersByFaceRef.current||{}).forEach(l=>{try{leafRef.current.removeLayer(l);}catch{}});
+    }
+    panelLayersByFaceRef.current={};
+    panelDataByFaceRef.current={};
+    panelDataRef.current=null;
     setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");
     setTimeout(()=>{suppressAutoSaveRef.current=false;setShowProjectMenu(false);},100);
   },[]);
@@ -2514,7 +2545,7 @@ export default function App(){
       else map.removeLayer(roofLayerRef.current);
       roofLayerRef.current=null;
     }
-    if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;setPanelsDrawn(false);}
+    // Multi-vlak: panel lagen NIET verwijderen bij redraw — ze leven onafhankelijk per vlak
 
     // ── Teken ALLE gebouwen op kaart ──────────────────────────────────
     if(buildings.length>0){
@@ -2664,21 +2695,8 @@ export default function App(){
   },[mapReady,buildings,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,selBuildingId]);
   useEffect(()=>{if(activeTab==="configuratie"&&leafRef.current&&mapReady){setTimeout(()=>leafRef.current?.invalidateSize?.(),50);}},[activeTab,mapReady]);
 
-  useEffect(()=>{
-    if(!panelsDrawn||!buildingCoords||!selPanel||!leafRef.current||!window.L||!coords) return;
-    const L=window.L,map=leafRef.current;
-    if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
-    let _sf=detectedFaces?.[selFaceIdx];
-    if(_sf&&!_sf.polygon&&buildingCoords){
-      const withPolys=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);
-      setDetectedFaces(withPolys);_sf=withPolys?.[selFaceIdx]||_sf;
-    }
-    const _fp=_sf?.polygon||buildingCoords;
-    const _ridge2=ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0;
-    const _fp2=_fp.length>=3?_fp:(buildingCoords?makeFacePoly(buildingCoords,orientation,_ridge2):buildingCoords)||buildingCoords;
-    const _ra=panelRotOffset;
-    panelLayerRef.current=drawPanelLayer(map,L,_fp2,panelCount,selPanel,_ra,panelOrient,panelDataRef,panelMoveMode);
-  },[panelCount,selPanel,panelsDrawn,panelRotOffset]);
+  // Panel useEffect verwijderd — panels per vlak worden getekend via "Toon panelen" knop
+  // en blijven staan bij vlak/gebouw-wissel. Zie panelLayersByFaceRef.
 
   useEffect(()=>{
     const lnk=document.createElement("link");lnk.rel="stylesheet";
@@ -2819,8 +2837,10 @@ export default function App(){
     // Panelentelling: gebruik werkelijk geplaatste panelen als die er zijn,
     // anders de customCount die de gebruiker heeft ingesteld in de sidebar.
     // NIET de som van b.panelCount per gebouw — die is altijd de default waarde.
-    const actualPlaced=panelDataRef.current?.length||0;
-    const effectivePanelCount=actualPlaced>0 ? actualPlaced : (customCount||10);
+    // Tel panelen van ALLE vlakken op
+    const allFaceData=Object.values(panelDataByFaceRef.current||{});
+    const totalPlaced=allFaceData.reduce((s,d)=>s+(d?.length||0),0);
+    const effectivePanelCount=totalPlaced>0 ? totalPlaced : (panelDataRef.current?.length||customCount||10);
     // Irradiantie op basis van actief geselecteerd vlak
     const irr=getSolarIrr(orientation,slope);
     const actualArea=effectivePanelCount*selPanel.area,annualKwh=Math.round(actualArea*irr*(selPanel.eff/100));
@@ -3218,7 +3238,10 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
                           onClick={()=>{setSelFaceIdx(i);setOrientation(f.orientation);setSlope(f.slope);
                             setBuildings(prev=>prev.map(x=>x.id===b.id?{...x,selFaceIdx:i}:x));
                           }}>
-                          <span className="fb-main">{f.isFlatRoof?"🏢 ":""}{f.orientation} · {f.slope}°{f.status==="manual"&&<span style={{fontSize:7,color:"var(--amber)",marginLeft:4}}>✏️</span>}</span>
+                          <span className="fb-main">{f.isFlatRoof?"🏢 ":""}{f.orientation} · {f.slope}°
+                            {f.status==="manual"&&<span style={{fontSize:7,color:"var(--amber)",marginLeft:4}}>✏️</span>}
+                            {(()=>{const fk=`${b.id}_${i}`;const pd=panelDataByFaceRef.current[fk];return pd?.length>0?<span style={{fontSize:7,background:"var(--blue)",color:"#fff",borderRadius:8,padding:"0 4px",marginLeft:4}}>{pd.length}🔆</span>:null;})()}
+                          </span>
                           <span className="fb-sub">{f.pct}% · {f.avgH}m hoogte</span>
                           <span style={{fontSize:8,color:"var(--blue)",display:"block",marginTop:2}}>3D: {face3d.toFixed(0)}m² <span style={{color:"var(--muted)"}}>(2D: {face2d.toFixed(0)}m²)</span></span>
                           <span style={{fontSize:8,color:isFaceSel?"var(--alpha)":qC.c,display:"block"}}>{qC.l}</span>
@@ -3444,17 +3467,26 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
 
         <button className="btn sec full" style={{marginBottom:5}} onClick={()=>{
           if(!coords||!buildingCoords||!selPanel) return;
-          if(panelDataRef) panelDataRef.current=null;
           setPanelMoveMode(false);
           if(leafRef.current&&window.L){
             const L=window.L,map=leafRef.current;
-            if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
+            // Multi-vlak: verwijder alleen de laag van het HUIDIGE vlak
+            const faceKey=`${selBuildingId||"main"}_${selFaceIdx}`;
+            const existingLayer=panelLayersByFaceRef.current[faceKey];
+            if(existingLayer){try{map.removeLayer(existingLayer);}catch{}}
+            delete panelLayersByFaceRef.current[faceKey];
+            delete panelDataByFaceRef.current[faceKey];
+            // Maak face-specifieke ref aan
+            const faceDataRef={current:null};
             let _sf=detectedFaces?.[selFaceIdx];
             if(_sf&&!_sf.polygon&&buildingCoords){const wp=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);setDetectedFaces(wp);_sf=wp?.[selFaceIdx]||_sf;}
             const _ridge=ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0;
             const _fp=_sf?.polygon||(buildingCoords?makeFacePoly(buildingCoords,orientation,_ridge):buildingCoords)||buildingCoords;
-            console.info("[ZonneDak] Toon panelen: auto_ridge="+_ridge+"° offset="+panelRotOffset+"° orient="+orientation+" fp_pts="+_fp.length);
-            panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,panelDataRef,false);
+            const newLayer=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,faceDataRef,false);
+            panelLayersByFaceRef.current[faceKey]=newLayer;
+            panelDataByFaceRef.current[faceKey]=faceDataRef.current;
+            panelLayerRef.current=newLayer;
+            panelDataRef.current=faceDataRef.current;
             setPanelsDrawn(true);
           }
           setActiveTab("configuratie");
