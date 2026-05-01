@@ -2936,20 +2936,22 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         await new Promise(r=>setTimeout(r,200));
       }
 
-      // Stap 2: Teken panelen als nog niet zichtbaar
-      if(!panelsDrawn&&buildingCoords&&selPanel){
-        if(panelDataRef) panelDataRef.current=null;
-        if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
-        let _sf=detectedFaces?.[selFaceIdx];
-        if(_sf&&!_sf.polygon&&buildingCoords){
-          const wp=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);
-          setDetectedFaces(wp);_sf=wp?.[selFaceIdx]||_sf;
+      // Stap 2: Panelen tekenen — ALTIJD opnieuw vlak voor capture
+      // setActiveTab() triggert redrawRoof() via useEffect → verwijdert panel layer.
+      // Oplossing: teken panelen NADAT de tab geswitcht is en kaart zichtbaar is,
+      // maar vóór fitBounds en tile-swap. Gebruik bestaande panelData (gebruikersposities).
+      try{
+        if(panelLayerRef.current){try{map.removeLayer(panelLayerRef.current);}catch{} panelLayerRef.current=null;}
+        const _sf=detectedFaces?.[selFaceIdx];
+        const _fp=(_sf?.polygon)||buildingCoords;
+        if(_fp&&selPanel){
+          // Bewaar bestaande panelData zodat gebruikersdragging behouden blijft
+          const savedData=panelDataRef.current;
+          panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,panelDataRef,false);
+          if(!panelDataRef.current&&savedData) panelDataRef.current=savedData;
         }
-        const _fp=_sf?.polygon||buildingCoords;
-        panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,panelDataRef,false);
-        setPanelsDrawn(true);
-        await new Promise(r=>setTimeout(r,500));
-      }
+        await new Promise(r=>setTimeout(r,400));
+      }catch(e){console.warn("[ZonneDak] Panel tekenen voor snapshot:",e);}
 
       // Stap 3: Zoom in op gebouw — kleiner padding = panelen groter in beeld
       if(buildingCoords&&buildingCoords.length>=3){
@@ -3009,7 +3011,8 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         }
       }
 
-      // Stap 5: Capture
+      // Stap 5: Capture — extra wacht zodat Leaflet SVG (panelen) volledig gerenderd is
+      await new Promise(r=>setTimeout(r,500));
       const canvas=await window.html2canvas(mapEl,{
         useCORS:true,allowTaint:false,scale:1.5,
         logging:false,backgroundColor:"#e8e8e8",
