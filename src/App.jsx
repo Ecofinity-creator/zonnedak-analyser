@@ -979,9 +979,9 @@ function generateFacePolygons(lc, faces, ridgeAngleDeg){
 
 
 
-function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVertexDrag,onVertexDragEnd){
+function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVertexDrag,onVertexDragEnd,parentGroup){
   if(!faces||!faces.length) return null;
-  const g=L.layerGroup();
+  const g=parentGroup||L.layerGroup();
   faces.forEach((f,fi)=>{
     if(!f.polygon||f.polygon.length<3) return;
     const q=ZONE_Q[f.orientation]||ZONE_Q.Z;
@@ -1066,7 +1066,7 @@ function drawFacePolygons(map,L,faces,selFaceIdx,onSelect,editMode,_unused,onVer
       });
     }
   });
-  g.addTo(map);
+  if(!parentGroup) g.addTo(map); // alleen toevoegen als er geen parentGroup is
   return g;
 }
 
@@ -2564,7 +2564,6 @@ export default function App(){
     // ── Teken ALLE gebouwen op kaart ──────────────────────────────────
     if(buildings.length>0){
       const masterGroup=L.layerGroup().addTo(map);
-      const faceGroups=[]; // track alle drawFacePolygons return-waarden voor cleanup
 
       buildings.forEach(b=>{
         const isSelected=b.selected;
@@ -2633,21 +2632,20 @@ export default function App(){
         // Actief gebouw: gebruik globale selFaceIdx; andere gebouwen: hun eigen opgeslagen index
         const faceSel=isActive?selFaceIdx:(b.selFaceIdx||0);
 
-          // Actief gebouw: editeerbare vlakken via drawFacePolygons
-          // BELANGRIJK: return-waarde opvangen voor cleanup — anders stapelen lagen op
-          const fg=isActive
-            ?drawFacePolygons(map,L,facesToDraw,faceSel,
-                (idx)=>{setSelFaceIdx(idx);setOrientation(facesToDraw[idx].orientation);setSlope(facesToDraw[idx].slope);},
-                editMode,faceSel,onVertexDrag,onVertexDragEnd)
-            :drawFacePolygons(map,L,facesToDraw,faceSel,()=>{activateBuilding(b.id);},false,-1,null,null);
-          if(fg) faceGroups.push(fg);
+          // Alle vlakken toevoegen aan masterGroup — cleanup via één masterGroup.remove()
+          // parentGroup=masterGroup voorkomt dat layers direct op kaart komen
+          if(isActive){
+            drawFacePolygons(map,L,facesToDraw,faceSel,
+              (idx)=>{setSelFaceIdx(idx);setOrientation(facesToDraw[idx].orientation);setSlope(facesToDraw[idx].slope);},
+              editMode,faceSel,onVertexDrag,onVertexDragEnd,masterGroup);
+          } else {
+            drawFacePolygons(map,L,facesToDraw,faceSel,
+              ()=>{activateBuilding(b.id);},false,-1,null,null,masterGroup);
+          }
         }
       });
 
-      roofLayerRef.current={remove:()=>{
-        try{map.removeLayer(masterGroup);}catch{}
-        faceGroups.forEach(fg=>{try{map.removeLayer(fg);}catch{}});
-      }};
+      roofLayerRef.current={remove:()=>{try{map.removeLayer(masterGroup);}catch{}}};
       return; // multi-building pad klaar
     }
 
