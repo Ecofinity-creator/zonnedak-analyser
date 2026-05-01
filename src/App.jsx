@@ -1729,9 +1729,22 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
   const mergedPdf=await PDFDocument.load(new Uint8Array(mainPdfBytes));
 
   const dsFiles=[];
-  if(results.panel?.datasheet) dsFiles.push({file:results.panel.datasheet,label:`${results.panel.brand} ${results.panel.model}`,type:"Paneel datasheet"});
-  if(results.inv?.datasheet&&results.inv.datasheet!==results.panel?.datasheet)
-    dsFiles.push({file:results.inv.datasheet,label:`${results.inv.brand} ${results.inv.model}`,type:"Omvormer datasheet"});
+  if(results.panel){
+    dsFiles.push({
+      file:results.panel.datasheet||null,
+      datasheetData:results.panel.datasheetData||null,
+      label:`${results.panel.brand} ${results.panel.model}`,
+      type:"Paneel datasheet"
+    });
+  }
+  if(results.inv&&(results.inv.datasheet||results.inv.datasheetData)){
+    dsFiles.push({
+      file:results.inv.datasheet||null,
+      datasheetData:results.inv.datasheetData||null,
+      label:`${results.inv.brand} ${results.inv.model}`,
+      type:"Omvormer datasheet"
+    });
+  }
 
   // ── Datasheets via pdf.js rasterisatie ──────────────────────────────────────
   // pdf-lib copyPages faalt op encrypted datasheets (Qcells, Trina, AlphaESS).
@@ -1746,7 +1759,13 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
   };
 
   for(const ds of dsFiles){
-    const bytes=await fetchPdfBytes(DS_BASE+ds.file);
+    // Prioriteit: geüploade datasheet (ArrayBuffer) → publieke datasheet (URL)
+    let bytes=null;
+    if(ds.datasheetData){
+      bytes=new Uint8Array(ds.datasheetData);
+    } else if(ds.file){
+      bytes=await fetchPdfBytes(DS_BASE+ds.file);
+    }
     if(!bytes) continue;
     try{
       await loadPdfJs();
@@ -1824,12 +1843,26 @@ function PanelCard({p,selected,onSelect,onDelete,canDelete}){return(
     {canDelete&&<button className="btn danger sm" style={{marginTop:5,width:"fit-content"}} onClick={e=>{e.stopPropagation();onDelete(p.id);}}>✕</button>}
   </div>
 );}
-function InverterCard({inv,selected,onSelect}){return(
+function InverterCard({inv,selected,onSelect,onDelete,canDelete}){
+  const isAlpha=inv.brand?.toLowerCase().includes("alpha");
+  const mpptCount=inv.mpptCount||inv.mppt||"?";
+  const maxPvKwp=inv.maxPv?`max ${(inv.maxPv/1000).toFixed(1)}kWp`:"";
+  return(
   <div className={`inv-card ${selected?"selected":""}`} onClick={()=>onSelect(inv.id)}>
-    <div className="alpha-badge">⚡ AlphaESS G3</div>
-    <div className="card-name">{inv.model}</div><div className="card-brand">{inv.brand} · {inv.fase}</div>
-    <div className="chips"><span className="chip alpha-c">{inv.kw}kW</span><span className="chip">{inv.mppt} MPPT</span><span className="chip">max {inv.maxPv/1000}kWp</span><span className="chip">{inv.eff}% eff</span><span className="chip">{inv.warranty}j</span></div>
-    <div className="card-notes">{inv.notes}</div>
+    {isAlpha&&<div className="alpha-badge">⚡ AlphaESS G3</div>}
+    <div className="card-name">{inv.model}</div>
+    <div className="card-brand">{inv.brand} · {inv.fase}</div>
+    <div className="chips">
+      <span className={`chip ${isAlpha?"alpha-c":"blue-c"}`}>{inv.kw}kW</span>
+      <span className="chip">{mpptCount} MPPT</span>
+      {maxPvKwp&&<span className="chip">{maxPvKwp}</span>}
+      <span className="chip">{inv.eff||"—"}% eff</span>
+      <span className="chip">{inv.warranty}j</span>
+    </div>
+    {inv.notes&&<div className="card-notes">{inv.notes}</div>}
+    {inv.datasheetName&&<div style={{fontSize:7,color:"var(--green)",marginTop:4}}>📄 {inv.datasheetName}</div>}
+    {canDelete&&<button className="btn danger sm" style={{marginTop:5,width:"fit-content"}}
+      onClick={e=>{e.stopPropagation();onDelete(inv.id);}}>✕ Verwijder</button>}
   </div>
 );}
 function BattCard({b,selected,onSelect,onDelete,canDelete}){return(
@@ -1859,16 +1892,136 @@ function TechRow({label,mppts,val,check}){
   );
 }
 function NewPanelForm({onAdd}){
-  const e0={brand:"",model:"",watt:"",area:"",eff:"",warranty:"25",dims:"",weight:""};
-  const[f,setF]=useState(e0);const s=(k,v)=>setF(p=>({...p,[k]:v}));
+  const e0={brand:"",model:"",watt:"",area:"",eff:"",warranty:"25",dims:"",weight:"",
+    voc:"",vmp:"",isc:"",imp:"",tempCoeffVoc:"-0.25",tempCoeffPmax:"-0.30"};
+  const[f,setF]=useState(e0);
+  const[dsFile,setDsFile]=useState(null); // {name, data: ArrayBuffer}
+  const[dsLoading,setDsLoading]=useState(false);
+  const s=(k,v)=>setF(p=>({...p,[k]:v}));
   const ok=f.brand&&f.model&&+f.watt>0&&+f.area>0&&+f.eff>0;
+
+  const handleDsUpload=e=>{
+    const file=e.target.files?.[0];
+    if(!file) return;
+    setDsLoading(true);
+    const reader=new FileReader();
+    reader.onload=ev=>{setDsFile({name:file.name,data:ev.target.result});setDsLoading(false);};
+    reader.onerror=()=>setDsLoading(false);
+    reader.readAsArrayBuffer(file);
+  };
+
   return(<div className="new-form"><h4>➕ Nieuw paneel toevoegen</h4>
-    <div className="inp-2"><div><div className="inp-label">Merk</div><input className="inp" placeholder="Jinko" value={f.brand} onChange={e=>s("brand",e.target.value)}/></div><div><div className="inp-label">Model</div><input className="inp" placeholder="Tiger 420W" value={f.model} onChange={e=>s("model",e.target.value)}/></div></div>
-    <div className="inp-3"><div><div className="inp-label">Watt</div><input className="inp" type="number" placeholder="420" value={f.watt} onChange={e=>s("watt",e.target.value)}/></div><div><div className="inp-label">m²</div><input className="inp" type="number" placeholder="1.72" value={f.area} onChange={e=>s("area",e.target.value)}/></div><div><div className="inp-label">Eff %</div><input className="inp" type="number" placeholder="21.5" value={f.eff} onChange={e=>s("eff",e.target.value)}/></div></div>
-    <div className="inp-2"><div><div className="inp-label">Garantie (j)</div><input className="inp" type="number" placeholder="25" value={f.warranty} onChange={e=>s("warranty",e.target.value)}/></div><div></div></div>
-    <div className="inp-2"><div><div className="inp-label">Afmetingen</div><input className="inp" placeholder="1756×1096×35mm" value={f.dims} onChange={e=>s("dims",e.target.value)}/></div><div><div className="inp-label">Gewicht</div><input className="inp" placeholder="21.3 kg" value={f.weight} onChange={e=>s("weight",e.target.value)}/></div></div>
-    <button className="btn full" disabled={!ok} onClick={()=>{onAdd({...f,id:Date.now(),watt:+f.watt,area:+f.area,eff:+f.eff,price:0,warranty:+f.warranty});setF(e0);}}>Paneel toevoegen</button>
+    <div className="inp-2">
+      <div><div className="inp-label">Merk</div><input className="inp" placeholder="Jinko" value={f.brand} onChange={e=>s("brand",e.target.value)}/></div>
+      <div><div className="inp-label">Model</div><input className="inp" placeholder="Tiger 420W" value={f.model} onChange={e=>s("model",e.target.value)}/></div>
+    </div>
+    <div className="inp-3">
+      <div><div className="inp-label">Watt</div><input className="inp" type="number" placeholder="420" value={f.watt} onChange={e=>s("watt",e.target.value)}/></div>
+      <div><div className="inp-label">m²</div><input className="inp" type="number" placeholder="1.72" value={f.area} onChange={e=>s("area",e.target.value)}/></div>
+      <div><div className="inp-label">Eff %</div><input className="inp" type="number" placeholder="21.5" value={f.eff} onChange={e=>s("eff",e.target.value)}/></div>
+    </div>
+    <div className="inp-2">
+      <div><div className="inp-label">Garantie (j)</div><input className="inp" type="number" placeholder="25" value={f.warranty} onChange={e=>s("warranty",e.target.value)}/></div>
+      <div></div>
+    </div>
+    <div className="inp-2">
+      <div><div className="inp-label">Afmetingen</div><input className="inp" placeholder="1756×1096×35mm" value={f.dims} onChange={e=>s("dims",e.target.value)}/></div>
+      <div><div className="inp-label">Gewicht</div><input className="inp" placeholder="21.3 kg" value={f.weight} onChange={e=>s("weight",e.target.value)}/></div>
+    </div>
+    {/* Elektrische specs voor string-design */}
+    <div style={{fontSize:9,color:"var(--muted)",borderTop:"1px solid var(--border)",paddingTop:6,marginTop:2}}>Elektrische specs (STC) — voor string-design</div>
+    <div className="inp-3">
+      <div><div className="inp-label">Voc (V)</div><input className="inp" type="number" placeholder="38.7" value={f.voc} onChange={e=>s("voc",e.target.value)}/></div>
+      <div><div className="inp-label">Vmp (V)</div><input className="inp" type="number" placeholder="32.7" value={f.vmp} onChange={e=>s("vmp",e.target.value)}/></div>
+      <div><div className="inp-label">Isc (A)</div><input className="inp" type="number" placeholder="14.4" value={f.isc} onChange={e=>s("isc",e.target.value)}/></div>
+    </div>
+    <div className="inp-3">
+      <div><div className="inp-label">Imp (A)</div><input className="inp" type="number" placeholder="13.5" value={f.imp} onChange={e=>s("imp",e.target.value)}/></div>
+      <div><div className="inp-label">Temp Voc %/°C</div><input className="inp" type="number" placeholder="-0.25" value={f.tempCoeffVoc} onChange={e=>s("tempCoeffVoc",e.target.value)}/></div>
+      <div><div className="inp-label">Temp Pmax %/°C</div><input className="inp" type="number" placeholder="-0.30" value={f.tempCoeffPmax} onChange={e=>s("tempCoeffPmax",e.target.value)}/></div>
+    </div>
+    {/* Datasheet upload */}
+    <div style={{borderTop:"1px solid var(--border)",paddingTop:6,marginTop:2}}>
+      <div className="inp-label">Datasheet PDF (optioneel)</div>
+      <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",padding:"7px 10px",
+        background:dsFile?"var(--green-bg)":"var(--bg3)",border:`1px solid ${dsFile?"var(--green-border)":"var(--border-dark)"}`,
+        borderRadius:6,fontSize:10}}>
+        <input type="file" accept="application/pdf,.pdf" onChange={handleDsUpload} style={{display:"none"}}/>
+        {dsLoading?"⏳ Laden...":dsFile?`✅ ${dsFile.name}`:"📄 Klik om datasheet te uploaden"}
+      </label>
+      {dsFile&&<button className="btn danger sm" style={{marginTop:4}} onClick={()=>setDsFile(null)}>✕ Verwijder datasheet</button>}
+    </div>
+    <button className="btn full" disabled={!ok} onClick={()=>{
+      onAdd({...f,id:Date.now(),watt:+f.watt,area:+f.area,eff:+f.eff,price:0,warranty:+f.warranty,
+        voc:+f.voc||undefined,vmp:+f.vmp||undefined,isc:+f.isc||undefined,imp:+f.imp||undefined,
+        tempCoeffVoc:+f.tempCoeffVoc||undefined,tempCoeffPmax:+f.tempCoeffPmax||undefined,
+        datasheetData:dsFile?.data||null,datasheetName:dsFile?.name||null,datasheet:null});
+      setF(e0);setDsFile(null);
+    }}>Paneel toevoegen</button>
   </div>);}
+
+function NewInverterForm({onAdd}){
+  const e0={brand:"",model:"",fase:"1-fase",kw:"",mppt:"2",maxPv:"",eff:"97",warranty:"10",notes:""};
+  const[f,setF]=useState(e0);
+  const[dsFile,setDsFile]=useState(null);
+  const[dsLoading,setDsLoading]=useState(false);
+  const s=(k,v)=>setF(p=>({...p,[k]:v}));
+  const ok=f.brand&&f.model&&+f.kw>0;
+
+  const handleDsUpload=e=>{
+    const file=e.target.files?.[0];
+    if(!file) return;
+    setDsLoading(true);
+    const reader=new FileReader();
+    reader.onload=ev=>{setDsFile({name:file.name,data:ev.target.result});setDsLoading(false);};
+    reader.onerror=()=>setDsLoading(false);
+    reader.readAsArrayBuffer(file);
+  };
+
+  return(<div className="new-form"><h4>➕ Nieuwe omvormer toevoegen</h4>
+    <div className="inp-2">
+      <div><div className="inp-label">Merk</div><input className="inp" placeholder="SMA" value={f.brand} onChange={e=>s("brand",e.target.value)}/></div>
+      <div><div className="inp-label">Model</div><input className="inp" placeholder="Sunny Boy 5.0" value={f.model} onChange={e=>s("model",e.target.value)}/></div>
+    </div>
+    <div className="inp-3">
+      <div><div className="inp-label">AC vermogen (kW)</div><input className="inp" type="number" placeholder="5" value={f.kw} onChange={e=>s("kw",e.target.value)}/></div>
+      <div><div className="inp-label">Fase</div>
+        <select className="inp" value={f.fase} onChange={e=>s("fase",e.target.value)}>
+          <option value="1-fase">1-fase</option>
+          <option value="3-fase">3-fase</option>
+        </select>
+      </div>
+      <div><div className="inp-label">MPPT inputs</div><input className="inp" type="number" placeholder="2" value={f.mppt} onChange={e=>s("mppt",e.target.value)}/></div>
+    </div>
+    <div className="inp-3">
+      <div><div className="inp-label">Max PV (W)</div><input className="inp" type="number" placeholder="10000" value={f.maxPv} onChange={e=>s("maxPv",e.target.value)}/></div>
+      <div><div className="inp-label">Eff %</div><input className="inp" type="number" placeholder="97" value={f.eff} onChange={e=>s("eff",e.target.value)}/></div>
+      <div><div className="inp-label">Garantie (j)</div><input className="inp" type="number" placeholder="10" value={f.warranty} onChange={e=>s("warranty",e.target.value)}/></div>
+    </div>
+    <div><div className="inp-label">Notities</div><input className="inp" placeholder="Korte beschrijving..." value={f.notes} onChange={e=>s("notes",e.target.value)}/></div>
+    {/* Datasheet upload */}
+    <div style={{borderTop:"1px solid var(--border)",paddingTop:6,marginTop:2}}>
+      <div className="inp-label">Datasheet PDF (optioneel)</div>
+      <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",padding:"7px 10px",
+        background:dsFile?"var(--green-bg)":"var(--bg3)",border:`1px solid ${dsFile?"var(--green-border)":"var(--border-dark)"}`,
+        borderRadius:6,fontSize:10}}>
+        <input type="file" accept="application/pdf,.pdf" onChange={handleDsUpload} style={{display:"none"}}/>
+        {dsLoading?"⏳ Laden...":dsFile?`✅ ${dsFile.name}`:"📄 Klik om datasheet te uploaden"}
+      </label>
+      {dsFile&&<button className="btn danger sm" style={{marginTop:4}} onClick={()=>setDsFile(null)}>✕ Verwijder datasheet</button>}
+    </div>
+    <button className="btn alpha full" disabled={!ok} onClick={()=>{
+      onAdd({...f,id:Date.now(),kw:+f.kw,mppt:+f.mppt,maxPv:+f.maxPv||+f.kw*2000,
+        eff:+f.eff||97,price:0,warranty:+f.warranty||10,
+        mppt:+f.mppt||2,mpptCount:+f.mppt||2,maxDcVoltage:600,maxInputCurrentPerMppt:16,
+        mpptVoltageMin:100,mpptVoltageMax:560,
+        maxAcPower:Math.round(+f.kw*1000)||5000,
+        maxDcPower:+f.maxPv||Math.round(+f.kw*2000),
+        datasheetData:dsFile?.data||null,datasheetName:dsFile?.name||null,datasheet:null});
+      setF(e0);setDsFile(null);
+    }}>Omvormer toevoegen</button>
+  </div>);}
+
 function NewBattForm({onAdd}){
   const e0={brand:"",model:"",kwh:"",cycles:"",warranty:"10"};
   const[f,setF]=useState(e0);const s=(k,v)=>setF(p=>({...p,[k]:v}));
@@ -2125,7 +2278,7 @@ export default function App(){
   const[selPanelId,setSelPanelId]=useState(1);
   const selPanel=panels.find(p=>p.id===selPanelId)||panels[0];
 
-  const[inverters]=useState(DEFAULT_INVERTERS);
+  const[inverters,setInverters]=useState(DEFAULT_INVERTERS);
   const[selInvId,setSelInvId]=useState(2); // standaard: SMILE-G3-S5
   const selInv=inverters.find(i=>i.id===selInvId)||null;
   const[invFilter,setInvFilter]=useState("alle");
@@ -2485,6 +2638,28 @@ export default function App(){
   const renameBuildingLabel=useCallback((id,label)=>{
     setBuildings(prev=>prev.map(b=>b.id===id?{...b,label}:b));
   },[]);
+
+  // Verwijder panelen van een specifiek dakvlak
+  const removeFacePanels=useCallback((bId,fIdx)=>{
+    const faceKey=`${bId}_${fIdx}`;
+    // Verwijder laag van kaart
+    const layer=panelLayersByFaceRef.current[faceKey];
+    if(layer&&leafRef.current){try{leafRef.current.removeLayer(layer);}catch{}}
+    delete panelLayersByFaceRef.current[faceKey];
+    delete panelDataByFaceRef.current[faceKey];
+    // Update state → triggert re-render + badge verdwijnt
+    setPanelCountsByFace(prev=>{
+      const next={...prev};
+      delete next[faceKey];
+      return next;
+    });
+    // Als dit het actieve vlak is, ook legacy refs clearen
+    if(bId===selBuildingId&&fIdx===selFaceIdx){
+      panelDataRef.current=null;
+      panelLayerRef.current=null;
+      setPanelsDrawn(false);
+    }
+  },[selBuildingId,selFaceIdx]);
 
   useEffect(()=>{
     const f=detectedFaces?.[selFaceIdx];
@@ -3152,7 +3327,91 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
   const filteredBatt=battFilter==="alle"?batteries:battFilter==="alpha"?batteries.filter(b=>b.isAlpha):batteries.filter(b=>!b.isAlpha);
   const zq=ZONE_Q[orientation]||ZONE_Q.Z;
   const dhmHits=new Set(detectedFaces?.map(f=>f.orientation)||[]);
-  const stringDesign=(selPanel?.voc&&selInv?.maxDcVoltage)?computeStringDesign(selPanel,selInv,panelCount):null;
+  // ── String-design met MPPT-oriëntatie groepering ──────────────────────────
+  // Regel: panelen met VERSCHILLENDE oriëntatie → aparte MPPT-ingang
+  // (MPP-tracker werkt alleen optimaal als alle panelen op één ingang dezelfde oriëntatie hebben)
+  //
+  // Algoritme:
+  //   1. Groepeer faceEntries op oriëntatie
+  //   2. Elke oriëntatie-groep → één MPPT-ingang
+  //   3. Als meer groepen dan MPPT-ingangen → combineer vergelijkbare oriëntaties (bv ZO+Z)
+  //   4. Bereken stringDesign per MPPT-ingang
+
+  const buildOrientationGroups=()=>{
+    if(!selPanel?.voc||!selInv?.maxDcVoltage) return null;
+
+    // Gebruik faceEntries als beschikbaar (na berekening), anders enkelvoudig vlak
+    const entries=results?.faceEntries?.length>0
+      ? results.faceEntries
+      : [{orientation,slope,count:panelCount}];
+
+    // Groepeer op oriëntatie
+    const groups={};
+    entries.forEach(e=>{
+      const key=e.orientation;
+      if(!groups[key]) groups[key]={orientation:e.orientation,slope:e.slope,count:0,faces:[]};
+      groups[key].count+=e.count;
+      groups[key].faces.push(e);
+    });
+
+    let mpptGroups=Object.values(groups).filter(g=>g.count>0);
+    const maxMppt=selInv.mpptCount||selInv.mppt||2;
+
+    // Te veel groepen voor beschikbare MPPT-ingangen → combineer kleinste groepen
+    while(mpptGroups.length>maxMppt){
+      mpptGroups.sort((a,b)=>a.count-b.count);
+      const smallest=mpptGroups.shift();
+      // Voeg toe aan meest gelijkende oriëntatie (dichtste in graden)
+      const aspDeg=g=>ASP_MAP[g.orientation]||0;
+      const aspDegS=ASP_MAP[smallest.orientation]||0;
+      const closest=mpptGroups.reduce((a,b)=>{
+        const da=Math.abs(((aspDeg(a)-aspDegS+540)%360)-180);
+        const db=Math.abs(((aspDeg(b)-aspDegS+540)%360)-180);
+        return db<da?b:a;
+      });
+      closest.count+=smallest.count;
+      closest.orientation=closest.count>=smallest.count?closest.orientation:smallest.orientation;
+      closest.faces=[...closest.faces,...smallest.faces];
+    }
+
+    return mpptGroups;
+  };
+
+  const orientationGroups=buildOrientationGroups();
+
+  // Bouw per-MPPT stringDesign op
+  const buildMpptStringDesign=()=>{
+    if(!selPanel?.voc||!selInv?.maxDcVoltage||!orientationGroups) return null;
+    // computeStringDesign voor totaal (compatibiliteit)
+    const base=computeStringDesign(selPanel,selInv,panelCount);
+    if(!base) return null;
+    // Overschrijf mppts met oriëntatie-gebaseerde verdeling
+    const enrichedMppts=orientationGroups.map((g,i)=>{
+      const baseMppt=base.mppts[i]||base.mppts[0];
+      // Herbereken per ingang op basis van werkelijk aantal panelen op die ingang
+      const panelsOnInput=g.count;
+      const strLen=baseMppt?.stringLen||Math.floor(selInv.mpptVoltageMax/(selPanel.vmp||30));
+      const strings=Math.max(1,Math.round(panelsOnInput/strLen));
+      const totalP=strings*strLen;
+      return {
+        ...baseMppt,
+        totalPanels:panelsOnInput,
+        stringCount:strings,
+        powerStc:panelsOnInput*selPanel.watt,
+        // Oriëntatie-info voor weergave
+        orientation:g.orientation,
+        slope:g.slope,
+        faces:g.faces,
+        orientationLabel:`${g.orientation} · ${g.slope}°`,
+        multiOrientation:g.faces.length>1,
+      };
+    });
+    return {...base,mppts:enrichedMppts,
+      totalPower:panelCount*selPanel.watt,
+      tooManyOrientations:orientationGroups.length>(selInv.mpptCount||2)};
+  };
+
+  const stringDesign=(selPanel?.voc&&selInv?.maxDcVoltage)?buildMpptStringDesign():null;
   const isLoading=grbStatus==="loading"||dhmStatus==="loading";
 
   const TABS=[
@@ -3275,7 +3534,12 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
                           }}>
                           <span className="fb-main">{f.isFlatRoof?"🏢 ":""}{f.orientation} · {f.slope}°
                             {f.status==="manual"&&<span style={{fontSize:7,color:"var(--amber)",marginLeft:4}}>✏️</span>}
-                            {panelCountsByFace[`${b.id}_${i}`]>0&&<span style={{fontSize:7,background:"var(--blue)",color:"#fff",borderRadius:8,padding:"0 4px",marginLeft:4}}>{panelCountsByFace[`${b.id}_${i}`]}🔆</span>}
+                            {panelCountsByFace[`${b.id}_${i}`]>0&&<span style={{display:"inline-flex",alignItems:"center",gap:3,marginLeft:4}}>
+                              <span style={{fontSize:7,background:"var(--blue)",color:"#fff",borderRadius:8,padding:"0 4px"}}>{panelCountsByFace[`${b.id}_${i}`]}🔆</span>
+                              <span onClick={e=>{e.stopPropagation();removeFacePanels(b.id,i);}}
+                                style={{fontSize:7,background:"var(--red)",color:"#fff",borderRadius:8,padding:"0 4px",cursor:"pointer"}}
+                                title="Verwijder panelen van dit vlak">✕</span>
+                            </span>}
                           </span>
                           <span className="fb-sub">{f.pct}% · {f.avgH}m hoogte</span>
                           <span style={{fontSize:8,color:"var(--blue)",display:"block",marginTop:2}}>3D: {face3d.toFixed(0)}m² <span style={{color:"var(--muted)"}}>(2D: {face2d.toFixed(0)}m²)</span></span>
@@ -3699,7 +3963,12 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
           <div className="info-box alpha-info"><strong>🔆 AlphaESS SMILE-G3</strong> · LiFePO4 · 10j · IP65 · 97%+ eff. · Fluvius · Jabba · AlphaCloud</div>
           <div className="filter-row">{["alle","1-fase","3-fase"].map(f=><button key={f} className={`filter-btn af ${invFilter===f?"active":""}`} onClick={()=>setInvFilter(f)}>{f}</button>)}</div>
           {selInv&&<div style={{display:"flex",justifyContent:"flex-end"}}><button className="btn sec sm" onClick={()=>setSelInvId(null)}>✕ Verwijder keuze</button></div>}
-          <div className="list">{filteredInv.map(inv=><InverterCard key={inv.id} inv={inv} selected={inv.id===selInvId} onSelect={setSelInvId}/>)}</div>
+          <div className="list">{filteredInv.map(inv=>(
+            <InverterCard key={inv.id} inv={inv} selected={inv.id===selInvId} onSelect={setSelInvId}
+              onDelete={id=>setInverters(prev=>prev.filter(x=>x.id!==id))}
+              canDelete={DEFAULT_INVERTERS.findIndex(d=>d.id===inv.id)===-1}/>
+          ))}</div>
+          <NewInverterForm onAdd={inv=>setInverters(prev=>[...prev,inv])}/>
         </div>}
 
         {activeTab==="batterij"&&<div className="section">
@@ -3716,6 +3985,7 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
           {!selPanel?.voc&&<div className="info-box warn"><strong>⚠️ Onvolledige paneel-data</strong><br/>Het geselecteerde paneel heeft geen elektrische specs (Voc/Vmp/Isc).</div>}
           {!selInv&&<div className="info-box warn"><strong>⚠️ Geen omvormer geselecteerd</strong><br/>Kies eerst een omvormer in het AlphaESS-tabblad.</div>}
           {stringDesign&&<>
+            {/* Project + temperatuur header */}
             <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10,display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
               <div>
                 <div style={{fontSize:11,marginBottom:6}}><strong>Project:</strong> {customer.name||"—"}</div>
@@ -3729,13 +3999,87 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
                 <div style={{fontSize:11,color:"var(--muted)"}}>Max: <strong style={{color:"var(--text)"}}>{stringDesign.config.tempMax} °C</strong></div>
               </div>
             </div>
+
+            {/* MPPT-verdeling per oriëntatie — kernonderdeel */}
+            <div className="sl" style={{marginBottom:8}}>MPPT-verdeling per dakrichting</div>
+            <div style={{marginBottom:10,padding:"8px 12px",background:"var(--blue-bg)",border:"1px solid var(--blue-border)",borderRadius:6,fontSize:10,color:"var(--blue)"}}>
+              ℹ️ Panelen met <strong>verschillende oriëntatie</strong> worden op <strong>aparte MPPT-ingangen</strong> aangesloten.
+              Elke MPPT-tracker werkt optimaal als alle panelen op die ingang dezelfde richting hebben.
+            </div>
+
+            {stringDesign.tooManyOrientations&&<div className="info-box warn" style={{marginBottom:10}}>
+              <strong>⚠️ Meer dakrichtingen dan MPPT-ingangen</strong><br/>
+              <span style={{fontSize:11}}>Je hebt panelen op {orientationGroups?.length} richtingen maar de {selInv.model} heeft slechts {selInv.mpptCount||selInv.mppt||2} MPPT-ingangen.
+              Sommige richtingen moeten samengevoegd worden. Overweeg een omvormer met meer MPPT-ingangen.</span>
+            </div>}
+
+            <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(stringDesign.mppts.length,3)},1fr)`,gap:8,marginBottom:12}}>
+              {stringDesign.mppts.map((m,i)=>(
+                <div key={i} style={{background:"var(--bg2)",border:"2px solid var(--alpha-border)",
+                  borderRadius:10,padding:14,borderTop:"3px solid var(--alpha)"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                    <span style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:14,color:"var(--alpha)"}}>
+                      Ingang {String.fromCharCode(65+i)}
+                    </span>
+                    <span style={{fontSize:9,color:"var(--muted)"}}>MPPT {i+1}</span>
+                  </div>
+
+                  {/* Oriëntatie-badges */}
+                  <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:10}}>
+                    {(m.faces||[{orientation:m.orientationLabel?.split("·")[0]?.trim()||orientation,
+                      slope:m.orientationLabel?.split("·")[1]?.trim()||slope+"°",count:m.totalPanels}])
+                      .map((f2,fi)=>(
+                        <div key={fi} style={{padding:"4px 10px",borderRadius:6,
+                          background:"var(--amber-light)",border:"1px solid #fde68a",
+                          fontSize:10,fontWeight:600,color:"var(--amber)"}}>
+                          <div>{f2.orientation} · {typeof f2.slope==="number"?f2.slope+"°":f2.slope}</div>
+                          <div style={{fontWeight:400,fontSize:9,color:"var(--muted)"}}>{f2.count} panelen</div>
+                        </div>
+                    ))}
+                  </div>
+
+                  {m.multiOrientation&&<div style={{fontSize:9,color:"var(--red)",marginBottom:8,
+                    padding:"3px 8px",background:"var(--red-bg)",borderRadius:4,border:"1px solid var(--red-border)"}}>
+                    ⚠️ Gemengde oriëntaties — suboptimaal
+                  </div>}
+
+                  {/* Sleutelwaarden */}
+                  <table style={{width:"100%",fontSize:10,borderCollapse:"collapse"}}>
+                    <tbody>
+                      {[
+                        ["Panelen",m.totalPanels],
+                        ["Strings",m.stringCount],
+                        ["Piekvermogen",(m.powerStc/1000).toFixed(2)+" kWp"],
+                        ["Voc koud",<span style={{color:m.checks?.vocColdOk===false?"var(--red)":"var(--green)",fontWeight:600}}>{m.vocCold?.toFixed(0)} V {m.checks?.vocColdOk===false?"✗":"✓"}</span>],
+                        ["Vmp warm",<span style={{color:m.checks?.vmpHotOk===false?"var(--red)":"var(--green)",fontWeight:600}}>{m.vmpHot?.toFixed(0)} V {m.checks?.vmpHotOk===false?"✗":"✓"}</span>],
+                        ["Isc totaal",<span style={{color:m.checks?.iscOk===false?"var(--red)":"var(--green)",fontWeight:600}}>{m.iscTotal?.toFixed(1)} A {m.checks?.iscOk===false?"✗":"✓"}</span>],
+                      ].map(([lbl,val],ri)=>(
+                        <tr key={ri} style={{borderBottom:"1px solid var(--border)"}}>
+                          <td style={{padding:"3px 0",color:"var(--muted)"}}>{lbl}</td>
+                          <td style={{padding:"3px 0",textAlign:"right",fontWeight:600}}>{val}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+
+            {/* Volledige technische detailtabel */}
             <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,padding:14,marginBottom:10,overflowX:"auto"}}>
-              <div className="sl" style={{marginBottom:8}}>Detailwaarden per MPPT-ingang</div>
+              <div className="sl" style={{marginBottom:8}}>Volledige technische tabel</div>
               <table style={{width:"100%",fontSize:11,borderCollapse:"collapse",minWidth:500}}>
                 <thead>
                   <tr style={{borderBottom:"2px solid var(--border)"}}>
                     <th style={{textAlign:"left",padding:"6px 4px",color:"var(--muted)",fontWeight:500}}></th>
-                    {stringDesign.mppts.map((m,i)=>(<th key={i} style={{textAlign:"right",padding:"6px 4px",fontWeight:600}}>Ingang {String.fromCharCode(65+i)}</th>))}
+                    {stringDesign.mppts.map((m,i)=>(
+                      <th key={i} style={{textAlign:"right",padding:"6px 4px",fontWeight:600}}>
+                        <div>Ingang {String.fromCharCode(65+i)}</div>
+                        <div style={{fontSize:9,color:"var(--amber)",fontWeight:400}}>
+                          {m.faces?.map(f2=>f2.orientation).join("+") || m.orientationLabel?.split("·")[0]?.trim() || orientation}
+                        </div>
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
@@ -3858,9 +4202,9 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
                 <strong>📸 Luchtfoto wordt automatisch gemaakt</strong> bij het genereren (OSM-kaart + panelen).<br/>
                 <strong>Rapport bevat:</strong> klantgegevens · systeemoverzicht · maandgrafiek · terugverdienberekening<br/>
                 <strong style={{color:"var(--green)"}}>+ Datasheets bijgevoegd:</strong>{" "}
-                {results?.panel?.datasheet?<span style={{color:"var(--green)"}}>✅ {results.panel.brand} {results.panel.watt}W</span>:<span style={{color:"var(--muted2)"}}>— geen datasheet</span>}
+                {(results?.panel?.datasheet||results?.panel?.datasheetData)?<span style={{color:"var(--green)"}}>✅ {results.panel.brand} {results.panel.watt}W{results.panel.datasheetData?" (geüpload)":""}</span>:<span style={{color:"var(--muted2)"}}>— geen datasheet</span>}
                 {" · "}
-                {results?.inv?.datasheet?<span style={{color:"var(--green)"}}>✅ AlphaESS SMILE-G3</span>:<span style={{color:"var(--muted2)"}}>— geen datasheet</span>}
+                {results?.inv&&(results.inv.datasheet||results.inv.datasheetData)?<span style={{color:"var(--green)"}}>✅ {results.inv.brand} {results.inv.model}{results.inv.datasheetData?" (geüpload)":""}</span>:<span style={{color:"var(--muted2)"}}>— geen datasheet</span>}
               </div>
             </div>
           </div>
