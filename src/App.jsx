@@ -2861,10 +2861,15 @@ export default function App(){
 
   const calculate=async()=>{
     if(!coords||!selPanel||(!buildingCoords&&buildings.length===0)) return;
-    // Multi-building: som panelCount van alle geselecteerde gebouwen
-    const totalPanelCount=buildings.length>0
-      ?buildings.filter(b=>b.selected).reduce((s,b)=>s+(b.panelCount||customCount||10),0)
-      :panelCount;
+    // Gebruik het werkelijk geplaatste aantal panelen (uit packPanels) als dat beschikbaar is.
+    // panelDataRef.current wordt gevuld door drawPanelLayer → meest accurate telling.
+    // Fallback: customCount of som van b.panelCount per geselecteerd gebouw.
+    const actualPlaced=panelDataRef.current?.length||0;
+    const totalPanelCount=actualPlaced>0
+      ? actualPlaced
+      : buildings.length>0
+        ? buildings.filter(b=>b.selected).reduce((s,b)=>s+(b.panelCount||customCount||10),0)
+        : panelCount;
     const effectivePanelCount=totalPanelCount||panelCount;
     // Irradiantie op basis van actief geselecteerd vlak
     const irr=getSolarIrr(orientation,slope);
@@ -2977,7 +2982,18 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
       }
 
-      // Teken panelen als ze nog niet zichtbaar zijn
+      // Stap 1: Schakel naar configuratie tab — html2canvas vangt display:none niet
+      const mapEl=document.getElementById("leaflet-map");
+      if(!mapEl) throw new Error("Kaart-element niet gevonden");
+      const mapIsHidden=mapEl.offsetParent===null||getComputedStyle(mapEl).display==="none";
+      if(mapIsHidden){
+        setActiveTab("configuratie");
+        await new Promise(r=>setTimeout(r,400));
+        map.invalidateSize(true);
+        await new Promise(r=>setTimeout(r,200));
+      }
+
+      // Stap 2: Teken panelen als nog niet zichtbaar
       if(!panelsDrawn&&buildingCoords&&selPanel){
         if(panelDataRef) panelDataRef.current=null;
         if(panelLayerRef.current){map.removeLayer(panelLayerRef.current);panelLayerRef.current=null;}
@@ -2992,14 +3008,10 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         await new Promise(r=>setTimeout(r,500));
       }
 
-      const mapEl=document.getElementById("leaflet-map");
-      if(!mapEl) throw new Error("Kaart-element niet gevonden");
-
-      // Zoom in op het gebouw zodat bounds exact kloppen met paneel-coördinaten
+      // Stap 3: Zoom in op gebouw
       if(buildingCoords&&buildingCoords.length>=3){
         const latLngs=buildingCoords.map(([la,ln])=>L.latLng(la,ln));
-        const bldBounds=L.latLngBounds(latLngs);
-        map.fitBounds(bldBounds,{padding:[60,60],maxZoom:20});
+        map.fitBounds(L.latLngBounds(latLngs),{padding:[60,60],maxZoom:20});
         await new Promise(resolve=>{
           let done=false;
           const finish=()=>{if(!done){done=true;resolve();}};
@@ -3008,61 +3020,37 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         });
       }
 
-      // Wissel naar OSM tiles (CORS-enabled) — Esri gooit SecurityError op canvas.toDataURL
-      osmLayer=L.tileLayer(
-        "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        {attribution:"© OpenStreetMap contributors",maxZoom:21,crossOrigin:""}
-      );
+      // Stap 4: OSM tiles (CORS-enabled)
+      osmLayer=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        {attribution:"© OpenStreetMap",maxZoom:21,crossOrigin:""});
       if(origTile) map.removeLayer(origTile);
       osmLayer.addTo(map);
-
-      // Wacht tot tiles volledig geladen zijn
       await new Promise(resolve=>{
         let done=false;
         const finish=()=>{if(!done){done=true;resolve();}};
         osmLayer.on("load",finish);
-        setTimeout(finish,4000); // max 4s wachten
+        setTimeout(finish,4000);
       });
-
       map.invalidateSize(true);
       await new Promise(r=>setTimeout(r,400));
 
+      // Stap 5: Capture
       const canvas=await window.html2canvas(mapEl,{
-        useCORS:              true,
-        allowTaint:           false,
-        scale:                1.5,
-        logging:              false,
-        backgroundColor:      "#e8e8e8",
-        foreignObjectRendering:false,
-        imageTimeout:         15000,
-        onclone:(clonedDoc)=>{
-          clonedDoc.querySelectorAll(".leaflet-overlay-pane svg").forEach(svg=>{
-            svg.style.overflow="visible";
-          });
-          clonedDoc.querySelectorAll(".leaflet-pane").forEach(pane=>{
-            pane.style.display="block";
-          });
+        useCORS:true,allowTaint:false,scale:1.5,
+        logging:false,backgroundColor:"#e8e8e8",
+        foreignObjectRendering:false,imageTimeout:15000,
+        onclone:(doc)=>{
+          doc.querySelectorAll(".leaflet-overlay-pane svg").forEach(s=>s.style.overflow="visible");
+          doc.querySelectorAll(".leaflet-pane").forEach(p=>p.style.display="block");
         },
       });
-
       const dataUrl=canvas.toDataURL("image/jpeg",0.88);
-      const mapBounds=map.getBounds();
-      return {
-        dataUrl,
-        width:  canvas.width,
-        height: canvas.height,
-        timestamp: Date.now(),
-        bounds:{
-          north: mapBounds.getNorth(),
-          south: mapBounds.getSouth(),
-          east:  mapBounds.getEast(),
-          west:  mapBounds.getWest(),
-        },
-      };
+      const mb=map.getBounds();
+      return {dataUrl,width:canvas.width,height:canvas.height,timestamp:Date.now(),
+        bounds:{north:mb.getNorth(),south:mb.getSouth(),east:mb.getEast(),west:mb.getWest()}};
     }finally{
-      // Altijd originele tiles herstellen
       if(osmLayer){try{map.removeLayer(osmLayer);}catch{}}
-      if(origTile) {try{origTile.addTo(map);}catch{}}
+      if(origTile){try{origTile.addTo(map);}catch{}}
     }
   },[panelsDrawn,buildingCoords,selPanel,detectedFaces,selFaceIdx,panelCount,panelRotOffset,panelOrient]);
 
