@@ -1180,13 +1180,20 @@ function drawPanelLayer(map,L,facePoly,count,panel,ridgeAngleDeg,orient,panelDat
     }));
   };
 
+  // Canvas renderer: L.canvas() tekent polygonen op een <canvas> element
+  // ipv SVG — html2canvas kan canvas WEL capturen, SVG NIET.
+  const canvasRenderer=L.canvas({padding:0.5});
+
   panels.forEach((p,i)=>{
-    const poly=L.polygon(p.corners,{color:DEF_BRD,weight:1,fillColor:DEF_COL,fillOpacity:.85})
+    const poly=L.polygon(p.corners,{
+      renderer:canvasRenderer,
+      color:DEF_BRD,weight:1,fillColor:DEF_COL,fillOpacity:.85
+    })
       .bindTooltip("Paneel "+(i+1)+" (rij "+( rowOf[i]+1)+") · "+panel.watt+"W",{direction:"top"})
       .addTo(g);
     polyLayers.push(poly);
     midLayers.push(p.midLine?.length===2
-      ?L.polyline(p.midLine,{color:"#60a5fa",weight:.5,opacity:.6}).addTo(g)
+      ?L.polyline(p.midLine,{renderer:canvasRenderer,color:"#60a5fa",weight:.5,opacity:.6}).addTo(g)
       :null);
   });
 
@@ -3018,8 +3025,21 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         logging:false,backgroundColor:"#e8e8e8",
         foreignObjectRendering:false,imageTimeout:15000,
         onclone:(doc)=>{
-          doc.querySelectorAll(".leaflet-overlay-pane svg").forEach(s=>s.style.overflow="visible");
-          doc.querySelectorAll(".leaflet-pane").forEach(p=>p.style.display="block");
+          // Zorg dat alle Leaflet panes zichtbaar zijn (incl. canvas pane met panelen)
+          doc.querySelectorAll(".leaflet-pane").forEach(p=>{
+            p.style.display="block";
+            p.style.visibility="visible";
+          });
+          // Canvas renderer pane specifiek
+          doc.querySelectorAll(".leaflet-canvas-pane canvas, .leaflet-overlay-pane canvas").forEach(c=>{
+            c.style.display="block";
+            c.style.visibility="visible";
+          });
+          // SVG overlay ook meenemen (voor building outlines)
+          doc.querySelectorAll(".leaflet-overlay-pane svg").forEach(s=>{
+            s.style.overflow="visible";
+            s.style.display="block";
+          });
         },
       });
       const dataUrl=canvas.toDataURL("image/jpeg",0.88);
