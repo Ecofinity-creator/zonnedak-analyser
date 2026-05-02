@@ -3194,89 +3194,94 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
     const L=window.L;
     let osmLayer=null;
     const origTile=baseTileRef.current;
+    const restorations=[];
 
     try{
       if(!window.html2canvas){
         await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
       }
 
-      // ── Stap 1: Configuratie-tab zodat kaart zichtbaar is ───────────
-      setActiveTab("configuratie");
-      await new Promise(r=>setTimeout(r,250));
-      await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
-      map.invalidateSize(true);
-      await new Promise(r=>setTimeout(r,250));
-
       const mapEl=document.getElementById("leaflet-map");
       if(!mapEl) throw new Error("Kaart-element niet gevonden");
 
-      // ── Stap 2: Zoom in op gebouw ────────────────────────────────────
+      // ── Stap 1: DOM-parent forcering (bypass React state) ────────────
+      // React setState is async — zelfs met RAF kan de DOM commit uitgesteld zijn.
+      // Directe DOM-manipulatie: loop omhoog en maak verborgen parents zichtbaar.
+      let walker=mapEl.parentElement;
+      while(walker&&walker!==document.body){
+        const cs=getComputedStyle(walker);
+        if(cs.display==="none"||cs.visibility==="hidden"||parseFloat(cs.opacity||"1")<0.01){
+          restorations.push({el:walker,
+            display:walker.style.display,
+            visibility:walker.style.visibility,
+            opacity:walker.style.opacity});
+          walker.style.display="block";
+          walker.style.visibility="visible";
+          walker.style.opacity="1";
+        }
+        walker=walker.parentElement;
+      }
+      map.invalidateSize(true);
+      await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+
+      // ── Stap 2: Zoom op gebouw ────────────────────────────────────────
       if(buildingCoords&&buildingCoords.length>=3){
         const latLngs=buildingCoords.map(([la,ln])=>L.latLng(la,ln));
-        map.fitBounds(L.latLngBounds(latLngs),{padding:[40,40],maxZoom:21});
+        map.fitBounds(L.latLngBounds(latLngs),{padding:[40,40],maxZoom:20});
         await new Promise(resolve=>{
           let done=false;
           const finish=()=>{if(!done){done=true;resolve();}};
           map.once("moveend",finish);
-          setTimeout(finish,1200);
+          setTimeout(finish,1500);
         });
       }
 
-      // ── Stap 3: Wissel naar OSM tiles (CORS-safe) ───────────────────
-      // Doe dit VÓÓR panelen tekenen zodat de tile-redraw de canvas niet wist
+      // ── Stap 3: OSM tiles (CORS-safe, zodat toDataURL werkt) ─────────
       osmLayer=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        {attribution:"© OpenStreetMap",maxZoom:21,crossOrigin:""});
-      if(origTile) map.removeLayer(origTile);
+        {attribution:"© OpenStreetMap",maxZoom:21,crossOrigin:"anonymous"});
+      if(origTile){try{map.removeLayer(origTile);}catch{}}
       osmLayer.addTo(map);
       await new Promise(resolve=>{
         let done=false;
         const finish=()=>{if(!done){done=true;resolve();}};
         osmLayer.on("load",finish);
-        setTimeout(finish,4000);
+        setTimeout(finish,5000);
       });
       map.invalidateSize(true);
       await new Promise(r=>setTimeout(r,300));
-      await new Promise(r=>requestAnimationFrame(r));
 
-      // ── Stap 4: Teken panelen NADAT tiles klaar zijn ────────────────
-      // Cruciaal: tile-swap wist de Leaflet canvas-pane. Panelen MOETEN
-      // getekend worden NA de tile-load, anders zijn ze niet zichtbaar.
+      // ── Stap 4: Teken panelen NA tile-load ───────────────────────────
+      // Tile-swap triggert Leaflet canvas-redraw → panelen worden gewist.
+      // Teken daarom panelen ALTIJD als allerlaatste stap vóór capture.
       try{
-        // Verwijder alle oude panel-lagen
         Object.values(panelLayersByFaceRef.current||{}).forEach(l=>{try{map.removeLayer(l);}catch{}});
         panelLayersByFaceRef.current={};
-
-        const snapFaceEntries=Object.entries(panelDataByFaceRef.current||{});
-        if(snapFaceEntries.length>0){
-          for(const [faceKey,faceData] of snapFaceEntries){
-            if(!faceData||faceData.length===0) continue;
+        const entries=Object.entries(panelDataByFaceRef.current||{}).filter(([,d])=>d?.length>0);
+        if(entries.length>0){
+          for(const [faceKey,faceData] of entries){
             const parts=faceKey.split("_");
             const bId=parts.slice(0,-1).join("_");
             const fIdx=parseInt(parts[parts.length-1])||0;
-            const bld=buildings.find(x=>x.id===bId)||null;
+            const bld=buildings.find(x=>x.id===bId);
             const bFaces=(bld?.id===selBuildingId?detectedFaces:bld?.faces)||null;
-            const facePoly=bFaces?.[fIdx]?.polygon||(bld?.coords||buildingCoords);
-            if(!facePoly||!selPanel) continue;
+            const fp=bFaces?.[fIdx]?.polygon||(bld?.coords||buildingCoords);
+            if(!fp||!selPanel) continue;
             const fdr={current:faceData};
-            const newLayer=drawPanelLayer(map,L,facePoly,faceData.length,
-              selPanel,panelRotOffset,panelOrient,fdr,false);
-            panelLayersByFaceRef.current[faceKey]=newLayer;
+            panelLayersByFaceRef.current[faceKey]=
+              drawPanelLayer(map,L,fp,faceData.length,selPanel,panelRotOffset,panelOrient,fdr,false);
           }
         } else if(buildingCoords&&selPanel){
-          const _sf=detectedFaces?.[selFaceIdx];
-          const _fp=_sf?.polygon||buildingCoords;
-          const faceKey=`${selBuildingId||"main"}_${selFaceIdx}`;
+          const fp=detectedFaces?.[selFaceIdx]?.polygon||buildingCoords;
           const fdr={current:null};
-          const nl=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,fdr,false);
-          panelLayersByFaceRef.current[faceKey]=nl;
-          panelDataByFaceRef.current[faceKey]=fdr.current;
+          panelLayersByFaceRef.current[`${selBuildingId||"x"}_${selFaceIdx}`]=
+            drawPanelLayer(map,L,fp,panelCount,selPanel,panelRotOffset,panelOrient,fdr,false);
         }
-        // Wacht tot canvas renderer klaar is met tekenen
+        // Wacht op canvas renderer paint
         await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
-        await new Promise(r=>setTimeout(r,400));
-      }catch(e){console.warn("[ZonneDak] Panels tekenen voor snapshot:",e);}
+        await new Promise(r=>setTimeout(r,600));
+      }catch(e){console.warn("[ZonneDak] Panel draw for snapshot:",e);}
 
-      // ── Stap 5: Capture ─────────────────────────────────────────────
+      // ── Stap 5: Capture ───────────────────────────────────────────────
       const canvas=await window.html2canvas(mapEl,{
         useCORS:true,
         allowTaint:false,
@@ -3286,6 +3291,7 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
         foreignObjectRendering:false,
         imageTimeout:20000,
         onclone:(doc)=>{
+          // Zorg dat alle Leaflet canvas/svg layers zichtbaar zijn in de clone
           doc.querySelectorAll(".leaflet-pane,.leaflet-layer").forEach(el=>{
             el.style.display="block";
             el.style.visibility="visible";
@@ -3294,7 +3300,6 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
           doc.querySelectorAll(".leaflet-canvas-pane canvas").forEach(c=>{
             c.style.display="block";
             c.style.visibility="visible";
-            c.style.opacity="1";
           });
           doc.querySelectorAll(".leaflet-overlay-pane svg").forEach(s=>{
             s.style.overflow="visible";
@@ -3308,8 +3313,15 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
         bounds:{north:mb.getNorth(),south:mb.getSouth(),east:mb.getEast(),west:mb.getWest()}};
 
     }finally{
+      // Herstel originele tile layer
       if(osmLayer){try{map.removeLayer(osmLayer);}catch{}}
       if(origTile){try{origTile.addTo(map);}catch{}}
+      // Herstel DOM parents (in omgekeerde volgorde)
+      restorations.reverse().forEach(({el,display,visibility,opacity})=>{
+        el.style.display=display;
+        el.style.visibility=visibility;
+        el.style.opacity=opacity;
+      });
     }
   },[buildings,buildingCoords,selBuildingId,detectedFaces,selFaceIdx,selPanel,panelCount,panelRotOffset,panelOrient]);
 
