@@ -2016,7 +2016,7 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
 
     sf(7,"italic");sc(MUT);
     doc.text(
-      "Luchtfoto: "+(imgData?"OpenStreetMap · panelen gerenderd via Leaflet":"niet beschikbaar")+
+      "Luchtfoto: "+(imgData?"Esri World Imagery · panelen gerenderd via Leaflet":"niet beschikbaar")+
       " · Paneelplaatsing is een schatting.",
       imgX,imgY+imgH+5
     );
@@ -3174,7 +3174,7 @@ export default function App(){
 
     // Sync gedeelde nokpunten naar andere vlakken
     // Gebruik origPt uit draggedPolygonsRef (live) zodat opeenvolgende drags correct werken
-    const TOLE=0.00008; // ~8m tolerantie voor snijpunten
+    const TOLE=0.00003; // ~3m tolerantie - tight genoeg voor nok, breed genoeg voor GPS drift
     draggedPolygonsRef.current.forEach((poly,fi)=>{
       if(fi===faceIdx||!poly) return;
       poly.forEach((pt,vi)=>{
@@ -3719,7 +3719,7 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
       // ── Stap 2: Zoom op gebouw ────────────────────────────────────────
       if(buildingCoords&&buildingCoords.length>=3){
         const latLngs=buildingCoords.map(([la,ln])=>L.latLng(la,ln));
-        map.fitBounds(L.latLngBounds(latLngs),{padding:[60,60],maxZoom:19});
+        map.fitBounds(L.latLngBounds(latLngs),{padding:[20,20],maxZoom:20});
         await new Promise(resolve=>{
           let done=false;
           const finish=()=>{if(!done){done=true;resolve();}};
@@ -3728,18 +3728,19 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
         });
       }
 
-      // ── Stap 3: OSM tiles laden ───────────────────────────────────────
-      osmLayer=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        {attribution:"© OpenStreetMap",maxZoom:21,crossOrigin:true});
+      // ── Stap 3: Esri luchtfoto tiles (crossOrigin voor html2canvas) ─────────
+      osmLayer=L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        {attribution:"© Esri",maxZoom:19,maxNativeZoom:18,crossOrigin:""});
       if(origTile){try{map.removeLayer(origTile);}catch{}}
       osmLayer.addTo(map);
       await new Promise(resolve=>{
         let done=false;
         const finish=()=>{if(!done){done=true;resolve();}};
         osmLayer.on("load",finish);
-        setTimeout(finish,6000); // 6s max
+        setTimeout(finish,6000);
       });
-      await new Promise(r=>setTimeout(r,500));
+      await new Promise(r=>setTimeout(r,400));
 
       // ── Stap 4: Panelen tekenen NA tile-load ─────────────────────────
       try{
@@ -4040,7 +4041,7 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
            style={{display:"flex",alignItems:"center",gap:5,textDecoration:"none",
              background:"rgba(255,255,255,0.12)",borderRadius:6,padding:"3px 8px"}}>
           <img src={VERDIFY_LOGO_BASE64} alt="Verdify"
-               style={{height:22,width:"auto",objectFit:"contain",filter:"brightness(1.2)"}}/>
+               style={{height:34,width:"auto",objectFit:"contain",filter:"brightness(1.3) drop-shadow(0 1px 2px rgba(0,0,0,0.3))"}}/>
         </a>
       </div>
     </header>
@@ -4729,17 +4730,20 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
             ✅ Klant geladen: <strong>{customer.name}</strong> — {displayName?.split(",").slice(0,2).join(",")}
           </div>}
 
-          {/* ── TL Template-instellingen ── */}
+        {activeTab==="instellingen"&&<div className="section">
+          <div className="sl" style={{marginBottom:12}}>⚙️ App-instellingen</div>
+
+          {/* TL Offerte-templates */}
           {tlAuth?.logged_in&&<div className="customer-section">
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <div className="sl">⚙️ TL Offerte-templates per dakbedekking</div>
+              <div className="sl">📋 TL Offerte-templates per dakbedekking</div>
               <button className="btn sec sm" onClick={fetchTlQuotations} disabled={tlQuotationLoading}>
                 {tlQuotationLoading?"⏳ Laden...":"🔄 Offertes laden"}
               </button>
             </div>
             <div style={{fontSize:8,color:"var(--muted)",marginBottom:8}}>
               Koppel per dakbedekking de juiste referentie-offerte in Teamleader.
-              De aantallen worden automatisch aangepast.
+              De aantallen (panelen, batterij) worden automatisch aangepast.
             </div>
             {[
               {id:"pannendak",icon:"🟤",label:"Pannendak"},
@@ -4747,8 +4751,8 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
               {id:"platdak",icon:"⬜",label:"Plat dak"},
               {id:"idedak",icon:"🔩",label:"IDE dak"},
             ].map(d=>(
-              <div key={d.id} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-                <div style={{width:90,fontSize:9,fontWeight:600}}>{d.icon} {d.label}</div>
+              <div key={d.id} style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                <div style={{width:100,fontSize:10,fontWeight:600}}>{d.icon} {d.label}</div>
                 {tlQuotationList.length>0
                   ?<select className="inp" style={{flex:1,fontSize:9}}
                       value={tlTemplates[d.id]||""}
@@ -4756,17 +4760,28 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
                       <option value="">— Kies referentie-offerte —</option>
                       {tlQuotationList.map(q=><option key={q.id} value={q.id}>{q.name}</option>)}
                     </select>
-                  :<input className="inp" style={{flex:1,fontSize:8}} placeholder="Plak TL offerte-ID..."
+                  :<input className="inp" style={{flex:1,fontSize:9}} placeholder="Plak TL offerte-ID..."
                       value={tlTemplates[d.id]||""}
                       onChange={e=>saveTlTemplates({...tlTemplates,[d.id]:e.target.value})}/>
                 }
-                {tlTemplates[d.id]&&<span style={{color:"var(--green)",fontSize:10}}>✓</span>}
+                {tlTemplates[d.id]&&<span style={{color:"var(--green)",fontSize:12}}>✓</span>}
               </div>
             ))}
-            <div style={{fontSize:8,color:"var(--muted)",marginTop:4}}>
-              Niet beschikbaar? Open een referentie-offerte in TL en kopieer de UUID uit de URL.
+            <div style={{fontSize:8,color:"var(--muted)",marginTop:4,padding:"6px 8px",background:"var(--bg2)",borderRadius:4}}>
+              💡 Niet gevonden? Open de referentie-offerte in TL en kopieer de UUID uit de URL.
             </div>
           </div>}
+
+          {/* App info */}
+          <div className="customer-section" style={{marginTop:12}}>
+            <div className="sl">ℹ️ Over ZonneDak Analyzer</div>
+            <div style={{fontSize:9,color:"var(--muted)",lineHeight:1.7}}>
+              <strong>Versie:</strong> 2.0 · EcoFinity BV<br/>
+              <strong>Data:</strong> GRB Gebouwcontouren · DHM Vlaanderen II LiDAR · Lambert72<br/>
+              <strong>Ontwikkeld door:</strong> <a href="https://verdify.be" target="_blank" rel="noopener noreferrer" style={{color:"var(--alpha)"}}>Verdify</a>
+            </div>
+          </div>
+        </div>}
 
         {activeTab==="panelen"&&<div className="section">
           <div className="sl">Panelenlijst</div>
