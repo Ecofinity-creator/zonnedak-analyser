@@ -1568,11 +1568,13 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     const labelColW=nMppt>1?58:75;
     const valColW=Math.floor((W-2*M-labelColW)/nMppt);
     // Header toont naam + oriëntatie
+    // Header: "Ingang A · ZW 16°"
     const head=[["",...sd.mppts.map((m,i)=>{
-      const ori=m.faces?.map(f2=>f2.orientation).join("+") || m.orientation || "";
-      return "Ingang "+String.fromCharCode(65+i)+(ori?" ("+ori+" · "+(m.slope??slope)+"°)":"");
+      const ori=(m.faces?.map(f2=>f2.orientation).join("+")) || m.orientation || "";
+      const sl=m.slope??slope;
+      return "Ingang "+String.fromCharCode(65+i)+(ori?" · "+ori+" "+sl+"°":"");
     })]];
-    const cell=(check,val)=>check===null?val:(check?"✓ ":"✗ ")+val;
+    const cell=(check,val)=>check===null?val:(check?"+ ":"- ")+val; // + = ok, - = overschreden
     const rows=[
       ["Aantal strings",...sd.mppts.map(m=>m.stringCount+"")],
       ["PV-panelen",...sd.mppts.map(m=>m.totalPanels+"")],
@@ -2171,20 +2173,6 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
           </div>
         </div>}
 
-        {/* ── Bevestigingsknop: laad adres + ga naar kaart ── */}
-        {!showNewDealForm&&<div style={{marginTop:12,borderTop:"2px solid var(--amber)",paddingTop:10}}>
-          {!tlSelectedDealId&&<div style={{fontSize:9,color:"var(--amber)",marginBottom:6,textAlign:"center",fontWeight:600}}>
-            ⚠️ Kies eerst een deal hierboven (of maak er een aan)
-          </div>}
-          <button className="btn full" style={{fontSize:11,fontWeight:700}}
-            onClick={onConfirm}
-            disabled={!pendingGeo||!tlSelectedDealId}>
-            {!pendingGeo?"📍 Adres niet gevonden":!tlSelectedDealId?"🤝 Deal vereist":"✅ Bevestig klant + laad kaart →"}
-          </button>
-          {pendingGeo&&<div style={{fontSize:8,color:"var(--muted)",marginTop:4,textAlign:"center"}}>
-            {pendingGeo.display_name?.split(",").slice(0,3).join(", ")}
-          </div>}
-        </div>}
       </>}
     </div>
   );
@@ -3381,6 +3369,15 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
       _panelData: panelDataRef.current||results._panelData||null,
       _facePoly: detectedFaces?.[selFaceIdx]?.polygon||buildingCoords||results._facePoly||null,
       _buildingCoords: buildingCoords||results._buildingCoords||null,
+      // Geef altijd de HUIDIGE stringDesign mee (niet de opgeslagen versie)
+      // zodat Ingang B correct is ook als er panelen zijn bijgekomen na calculate()
+      stringDesign: stringDesign||results.stringDesign||null,
+      // Geef ook de huidige faceEntries mee
+      faceEntries: orientationGroups?.map((g,i)=>({
+        orientation:g.orientation,slope:g.slope,count:g.count,
+        label:"Ingang "+String.fromCharCode(65+i),
+      }))||results.faceEntries||null,
+      panelCount: Object.values(panelCountsByFace||{}).reduce((s,c)=>s+c,0)||results.panelCount||panelCount,
     };
     try{await generatePDF(latestResults,customer,displayName,slope,orientation,snap,editableAiText);}
     catch(e){alert(`PDF fout: ${e.message}`);}
