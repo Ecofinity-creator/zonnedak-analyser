@@ -17,6 +17,7 @@ import {
 import { computeStringDesign } from "./stringDesign.js";
 import * as TL from "./teamleaderClient.js";
 import { ECOFINITY_LOGO_BASE64, ECOFINITY_LOGO_WIDTH, ECOFINITY_LOGO_HEIGHT } from "./ecofinityLogo.js";
+import { VERDIFY_LOGO_BASE64, VERDIFY_LOGO_WIDTH, VERDIFY_LOGO_HEIGHT } from "./verdifyLogo.js";
 
 const wgs84ToLambert72 = _wgs84ToLambert72;
 const lambert72ToWgs84 = _lambert72ToWgs84;
@@ -1350,6 +1351,275 @@ function MonthlyChart({annualKwh}){
 }
 
 
+
+// ──────────────────────────────────────────────────────────────────────────────
+// PDF HELPER CHARTS
+// ──────────────────────────────────────────────────────────────────────────────
+
+// 1. Terugverdientijd grafiek — cumulatieve cashflow over 25 jaar
+function pdfCashflowChart(doc,results,y,M,W,OR,BL,GR,TXT,MUT,LN,WHT,sf,sc){
+  const invest=results.investPanels;
+  if(!invest||invest<=0) return y;
+  const annSav=results.annualBase||0;
+  const annSavBatt=results.battResult?.totSav||annSav;
+  const YEARS=25,DEGR=0.005,PRICE_UP=0.02;
+  // Bereken cumulatief per jaar met degradatie en prijsstijging
+  const cfBase=[],cfBatt=[];
+  for(let yr=0;yr<=YEARS;yr++){
+    if(yr===0){cfBase.push(-invest);cfBatt.push(-invest);continue;}
+    let cB=-invest,cBt=-invest;
+    for(let j=1;j<=yr;j++){
+      const factor=Math.pow(1-DEGR,j-1)*Math.pow(1+PRICE_UP,j-1);
+      cB+=annSav*factor;
+      cBt+=annSavBatt*factor;
+    }
+    cfBase.push(Math.round(cB));
+    cfBatt.push(Math.round(cBt));
+  }
+  const hasBatt=results.battResult&&annSavBatt>annSav;
+  const allVals=[...cfBase,...(hasBatt?cfBatt:[])];
+  const minV=Math.min(...allVals);
+  const maxV=Math.max(...allVals,0);
+  const range=maxV-minV||1;
+  const cW=W-2*M,cH=55,x0=M,y0=y,chartH=45,chartT=y0+5;
+
+  // Titelbalk
+  sf(10,"bold");sc(TXT);doc.text("Terugverdientijd — Cumulatieve cashflow",x0,chartT-2);
+  // Assen
+  doc.setDrawColor(...LN);doc.setLineWidth(0.3);
+  // Nul-lijn
+  const zeroY=chartT+chartH-(0-minV)/range*chartH;
+  doc.setDrawColor(150,150,150);doc.setLineWidth(0.5);
+  doc.line(x0,zeroY,x0+cW,zeroY);
+  sf(6,"normal");sc(MUT);doc.text("€0",x0-2,zeroY+1,{align:"right"});
+  // Grid lijnen
+  [-invest,maxV].forEach(val=>{
+    if(val===0) return;
+    const gy=chartT+chartH-(val-minV)/range*chartH;
+    doc.setDrawColor(...LN);doc.setLineWidth(0.2);
+    doc.line(x0,gy,x0+cW,gy);
+    sf(5,"normal");sc(MUT);
+    doc.text((val>=0?"+":"")+Math.round(val/1000)+"k",x0-1,gy+1,{align:"right"});
+  });
+  // Payback-lijn (geen batterij)
+  const pbBase=cfBase.findIndex(v=>v>=0);
+  if(pbBase>0){
+    const pbX=x0+pbBase/YEARS*cW;
+    doc.setDrawColor(...OR);doc.setLineWidth(0.5);doc.setLineDashPattern([1,1],0);
+    doc.line(pbX,chartT,pbX,chartT+chartH);
+    doc.setLineDashPattern([],0);
+    sf(6,"bold");sc(OR);doc.text(pbBase+"j",pbX+1,chartT+3);
+  }
+  // Batterij curve (geel-oranje)
+  if(hasBatt){
+    doc.setDrawColor(230,120,0);doc.setLineWidth(1.0);
+    for(let i=0;i<YEARS;i++){
+      const x1=x0+i/YEARS*cW,y1=chartT+chartH-(cfBatt[i]-minV)/range*chartH;
+      const x2=x0+(i+1)/YEARS*cW,y2=chartT+chartH-(cfBatt[i+1]-minV)/range*chartH;
+      doc.line(x1,y1,x2,y2);
+    }
+    const pbBatt=cfBatt.findIndex(v=>v>=0);
+    if(pbBatt>0&&pbBatt!==pbBase){
+      const pbX=x0+pbBatt/YEARS*cW;
+      sf(6,"bold");sc([200,90,0]);doc.text(pbBatt+"j",pbX+1,chartT+7);
+    }
+  }
+  // Basis curve (blauw)
+  doc.setDrawColor(...BL);doc.setLineWidth(1.2);
+  for(let i=0;i<YEARS;i++){
+    const x1=x0+i/YEARS*cW,y1=chartT+chartH-(cfBase[i]-minV)/range*chartH;
+    const x2=x0+(i+1)/YEARS*cW,y2=chartT+chartH-(cfBase[i+1]-minV)/range*chartH;
+    doc.line(x1,y1,x2,y2);
+  }
+  // X-as labels (5j stappen)
+  sf(5,"normal");sc(MUT);
+  [0,5,10,15,20,25].forEach(yr=>{
+    const lx=x0+yr/YEARS*cW;
+    doc.line(lx,chartT+chartH,lx,chartT+chartH+1.5);
+    doc.text(yr+"",lx,chartT+chartH+4,{align:"center"});
+  });
+  sf(6,"normal");sc(MUT);doc.text("jaar",x0+cW+2,chartT+chartH+4);
+  // Legenda
+  const legY=chartT+chartH+9;
+  doc.setFillColor(...BL);doc.rect(x0,legY-2,10,2,"F");
+  sf(6,"normal");sc(TXT);doc.text("Zonder batterij",x0+12,legY);
+  if(hasBatt){
+    doc.setFillColor(230,120,0);doc.rect(x0+55,legY-2,10,2,"F");
+    doc.text("Met batterij",x0+67,legY);
+  }
+  sf(7,"italic");sc(MUT);
+  doc.text("Incl. paneel-degradatie 0.5%/j · Elektriciteitsprijsstijging 2%/j",x0,legY+5);
+  return y+cH+16;
+}
+
+// 2. Productie vs Verbruik grafiek (maandelijks)
+function pdfProductionConsumptionChart(doc,results,y,M,W,OR,BL,GR,TXT,MUT,LN,WHT,sf,sc,MONTHS,MONTHLY_FACTOR){
+  const annKwh=results.annualKwh||0;
+  const annConsump=results.consumption||3500;
+  const monthProd=MONTHLY_FACTOR.map(f=>Math.round(annKwh*f));
+  const monthConsump=Array(12).fill(Math.round(annConsump/12));
+  // Profiel-gebaseerd verbruikspatroon (meer thuis in winter)
+  const profileFactors={
+    gepensioneerd:[1.15,1.1,1.0,0.95,0.9,0.85,0.85,0.85,0.9,0.95,1.05,1.15],
+    thuiswerker:[1.1,1.05,1.0,0.95,0.9,0.9,0.9,0.9,0.95,1.0,1.05,1.1],
+    werkend_koppel:[1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0],
+    gezin:[1.1,1.05,1.0,0.95,0.95,0.9,0.9,0.95,0.95,1.0,1.05,1.1],
+  };
+  const pf=profileFactors[results.usageProfile]||profileFactors.gezin;
+  const monthConsumpAdj=pf.map(f=>Math.round(annConsump/12*f));
+  const maxV=Math.max(...monthProd,...monthConsumpAdj,1);
+  const cW=W-2*M,cH=50,bW=(cW-8)/12;
+  const chartTop=y+8,chartH=38;
+
+  sf(10,"bold");sc(TXT);doc.text("Productie vs Verbruik — Maandelijks overzicht",M,y+3);
+
+  // Grid
+  [0,0.5,1].forEach(f=>{
+    const gy=chartTop+chartH-f*chartH;
+    doc.setDrawColor(...LN);doc.setLineWidth(0.2);doc.line(M,gy,M+cW,gy);
+    sf(5,"normal");sc(MUT);doc.text(Math.round(maxV*f)+"",M-1,gy+1,{align:"right"});
+  });
+
+  monthProd.forEach((prod,i)=>{
+    const consump=monthConsumpAdj[i];
+    const selfConsump=Math.min(prod,consump);
+    const surplus=Math.max(prod-consump,0);
+    const deficit=Math.max(consump-prod,0);
+    const bx=M+4+i*(bW+0.5);
+
+    // Zelfverbruik (groen)
+    const hSelf=selfConsump/maxV*chartH;
+    doc.setFillColor(...GR);
+    doc.rect(bx,chartTop+chartH-hSelf,bW,hSelf,"F");
+    // Surplus injectie (lichtblauw)
+    if(surplus>0){
+      const hSurp=surplus/maxV*chartH;
+      doc.setFillColor(147,197,253);
+      doc.rect(bx,chartTop+chartH-hSelf-hSurp,bW,hSurp,"F");
+    }
+    // Netafname (lichtgrijs overlay)
+    if(deficit>0){
+      const hDef=deficit/maxV*chartH;
+      doc.setFillColor(200,200,200);
+      doc.rect(bx,chartTop+chartH-hSelf-hDef,bW,hDef,"F");
+    }
+    // Verbruikslijn
+    sf(5,"normal");sc(MUT);doc.text(MONTHS[i],bx+bW/2,chartTop+chartH+4,{align:"center"});
+  });
+
+  // Verbruikslijn (oranje)
+  doc.setDrawColor(...OR);doc.setLineWidth(1.0);
+  monthConsumpAdj.forEach((c,i)=>{
+    if(i===0) return;
+    const x1=M+4+(i-1)*(bW+0.5)+bW/2,y1=chartTop+chartH-monthConsumpAdj[i-1]/maxV*chartH;
+    const x2=M+4+i*(bW+0.5)+bW/2,y2=chartTop+chartH-c/maxV*chartH;
+    doc.line(x1,y1,x2,y2);
+  });
+
+  // Legenda
+  const legY=chartTop+chartH+10;
+  [[GR,"Zelfverbruik"],[147,197,253,"Surplus injectie"],[200,200,200,"Netafname"],OR,"Verbruik"].forEach((item,i)=>{
+    if(Array.isArray(item)){
+      const [col,lbl]=item;
+      const lx=M+i*45;
+      if(Array.isArray(col)) doc.setFillColor(...col);
+      else doc.setFillColor(col,197,253);
+      doc.rect(lx,legY-2,7,3,"F");
+      sf(6,"normal");sc(TXT);doc.text(lbl,lx+9,legY);
+    } else {
+      const lx=M+3*45;
+      doc.setDrawColor(...OR);doc.setLineWidth(1);doc.line(lx,legY-0.5,lx+7,legY-0.5);
+      sf(6,"normal");sc(TXT);doc.text("Verbruik",lx+9,legY);
+    }
+  });
+  return y+cH+14;
+}
+
+// 3. Schaduwanalyse — op basis van zonnehoeken voor 51°N
+function computeShadowAnalysis(faces){
+  if(!faces||faces.length===0) return null;
+  // Zonnehoeken voor 51°N per maand (gemiddeld op 12h en 15h)
+  const SUN_ELEV_51N=[14,19,27,36,44,47,45,40,31,22,15,12]; // gemiddeld midden van dag
+  const SUN_AZ_SOUTH=[180,175,170,160,155,150,155,160,170,175,180,180]; // gemiddeld azimut
+  const MONTHS_NL=["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Aug","Sep","Okt","Nov","Dec"];
+  const analysis=faces.map((f,fi)=>{
+    const asp=f.aspectDeg??ASP_MAP_STATIC[f.orientation]??180;
+    const tilt=f.slope??30;
+    const h=f.avgH??5;
+    // Horizon-blokkade: obstructies voor het vlak op basis van hoogte
+    // Conservatieve schatting: buur-gebouwen op 10m = arctan(h/10) obstruction
+    const horizAngle=Math.atan2(Math.max(h-3,0),15)*180/Math.PI; // hoek naar horizobstructie
+    const monthly=SUN_ELEV_51N.map((elev,mi)=>{
+      // Hoekafwijking tussen zonneazimut en vlak-oriëntatie
+      const azDiff=Math.abs(((SUN_AZ_SOUTH[mi]-asp)+180)%360-180);
+      // Zon staat achter het vlak → 100% schaduw (geen productie)
+      if(azDiff>90) return 100;
+      // Zon te laag → horizon-obstructie
+      if(elev<=horizAngle) return Math.round(Math.min((horizAngle-elev+2)*8,80));
+      // Schaduw door helling (rijen panelen)
+      const rowShade=tilt>45?Math.round((tilt-45)*0.5):0;
+      return Math.max(rowShade,0);
+    });
+    const avgLoss=Math.round(monthly.reduce((s,v)=>s+v,0)/12);
+    return {faceIdx:fi,orientation:f.orientation,slope:tilt,monthly,avgLoss};
+  });
+  return analysis;
+}
+// Static ASP map voor shadow analysis (buiten React component)
+const ASP_MAP_STATIC={N:0,NO:45,O:90,ZO:135,Z:180,ZW:225,W:270,NW:315};
+
+// 4. String-diagram in PDF
+function pdfStringDiagram(doc,sd,selPanel,results,y,M,W,OR,BL,TXT,MUT,LN,WHT,sf,sc){
+  if(!sd||!sd.mppts?.length) return y;
+  const cW=W-2*M,nMppt=sd.mppts.length;
+  const diagH=60,panelW=8,panelH=5,gap=2;
+  // Omvormer box (midden rechts)
+  const invX=M+cW-25,invY=y+15,invW=22,invH=30;
+  doc.setFillColor(30,58,138);doc.roundedRect(invX,invY,invW,invH,2,2,"F");
+  sf(7,"bold");sc(WHT);doc.text(results.inv?.model||"Omvormer",invX+invW/2,invY+6,{align:"center"});
+  sf(6,"normal");doc.text(results.inv?.kw+"kW AC",invX+invW/2,invY+11,{align:"center"});
+  sf(5,"normal");doc.text(nMppt+" MPPT",invX+invW/2,invY+15,{align:"center"});
+  // Per MPPT ingang
+  const mpptColors=[[37,99,235],[234,88,12],[22,163,74],[147,51,234]];
+  sd.mppts.forEach((m,mi)=>{
+    const color=mpptColors[mi%mpptColors.length];
+    const strings=m.stringCount||1;
+    const panelsPerStr=m.stringLen||Math.ceil(m.totalPanels/strings);
+    const colX=M+mi*(cW-30)/(nMppt)+5;
+    // Ingang label
+    sf(8,"bold");sc(color);
+    doc.text("Ingang "+String.fromCharCode(65+mi),colX,y+5);
+    sf(6,"normal");sc(MUT);
+    doc.text((m.faces||[]).map(f=>f.orientation).join("+")||m.orientation||"",colX,y+9);
+    doc.text(m.totalPanels+" panelen · "+strings+" string"+(strings>1?"s":""),colX,y+13);
+    // Teken strings van panelen
+    let panelNr=1;
+    for(let si=0;si<strings;si++){
+      const strX=colX+si*(panelW+gap+2);
+      // Verbindingslijn naar omvormer
+      const lineStartX=strX+panelW/2,lineStartY=y+17+(panelsPerStr)*(panelH+1);
+      doc.setDrawColor(...color);doc.setLineWidth(0.7);
+      doc.line(lineStartX,lineStartY,invX,invY+8+mi*8);
+      // MPPT label op de lijn
+      sf(5,"italic");sc(color);
+      doc.text("MPPT "+(mi+1),lineStartX+(invX-lineStartX)*0.4,lineStartY+(invY+8+mi*8-lineStartY)*0.4);
+      // Paneel-rechthoekjes
+      for(let pi=0;pi<panelsPerStr&&panelNr<=m.totalPanels;pi++,panelNr++){
+        const px=strX,py=y+17+pi*(panelH+1);
+        doc.setFillColor(...color);doc.setDrawColor(255,255,255);doc.setLineWidth(0.2);
+        doc.roundedRect(px,py,panelW,panelH,0.5,0.5,"FD");
+        sf(5,"bold");sc(WHT);doc.text(panelNr+"",px+panelW/2,py+panelH-1,{align:"center"});
+      }
+    }
+    // Elektr. kenmerken per ingang
+    const detailY=y+17+(panelsPerStr+1)*(panelH+1)+3;
+    sf(5,"normal");sc(TXT);
+    doc.text("Voc: "+m.vocCold?.toFixed(0)+"V · Vmp: "+m.vmpHot?.toFixed(0)+"V",colX,detailY);
+    doc.text("Isc: "+m.iscTotal?.toFixed(1)+"A · Imp: "+m.impTotal?.toFixed(1)+"A",colX,detailY+4);
+  });
+  return y+diagH+20;
+}
+
 async function generatePDF(results,customer,displayName,slope,orientation,mapSnapshot,aiAdvice){
   await loadPdfLibs();
   const{jsPDF}=window.jspdf;
@@ -1368,11 +1638,24 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     sf(12,"bold");sc(TXT);doc.text(t,M+6,yy+2);
     return yy+11;
   };
+  const addPageFooter=()=>{
+    // Verdify "powered by" footer onderaan elke pagina
+    const fy=292;
+    doc.setDrawColor(226,232,240);doc.setLineWidth(0.3);doc.line(M,fy-3,W-M,fy-3);
+    sf(6,"normal");sc([148,163,184]);
+    doc.text("Gegenereerd met ZonneDak Analyzer · Powered by Verdify · verdify.be",M,fy);
+    // Verdify logo klein rechts
+    try{
+      const lW=18,lH=lW*(VERDIFY_LOGO_HEIGHT/VERDIFY_LOGO_WIDTH);
+      doc.addImage(VERDIFY_LOGO_BASE64,"JPEG",W-M-lW,fy-lH-1,lW,lH);
+    }catch{}
+  };
   const miniHeader=(pg)=>{
     doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
     sf(9,"bold");sc(WHT);doc.text("EcoFinity BV",M,9);
     sf(9,"normal");doc.text("Project: "+(customer.name||"—"),M+32,9);
     sf(8,"normal");doc.text("Pagina "+pg,W-M,9,{align:"right"});
+    addPageFooter();
   };
 
   const LOGO_W = 50;
@@ -1624,7 +1907,14 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     }else{
       sf(9,"bold");sc([0,140,0]);doc.text("OK - Configuratie binnen alle veiligheidsgrenzen.",M,y);y+=5;
     }
-    y+=4;hLine(y);y+=8;
+    y+=4;
+    // ── String-diagram ──
+    const sdDiagY=y+6;
+    if(sdDiagY>220){doc.addPage();y=20;}
+    else{y+=6;}
+    y=secTitle("Stroomschema — DC bekabeling",y);
+    y=pdfStringDiagram(doc,sd,results.panel,results,y,M,W,OR,BL,TXT,MUT,LN,WHT,sf,sc);
+    hLine(y);y+=8;
   }
 
   if(y>284-40){doc.addPage();y=20;}
@@ -1741,6 +2031,37 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     doc.text("Pagina "+i+" / "+pgC,W-M,292,{align:"right"});
     doc.text("EcoFinity BV · www.ecofinity.eu · info@ecofinity.eu · +32 55 495865",M,292);
     doc.text("Berekeningen zijn schattingen op basis van gemiddelde zonnestraling in Vlaanderen.",M,288,{maxWidth:W-2*M-20});
+  }
+
+  // ── Schaduwanalyse pagina ──
+  const shadowData=results._shadowData;
+  if(shadowData?.length>0){
+    doc.addPage();
+    doc.setFillColor(...OR);doc.rect(0,0,W,14,"F");
+    sf(9,"bold");sc(WHT);doc.text("EcoFinity BV",M,9);
+    sf(9,"normal");doc.text("Project: "+(customer.name||"—"),M+32,9);
+    sf(8,"normal");doc.text("Schaduwanalyse",W-M,9,{align:"right"});
+    y=22;y=secTitle("Schaduwanalyse per dakvlak",y);
+    sf(8,"normal");sc(MUT);
+    doc.text("Gebaseerd op LiDAR-hoogte, zonnehoeken voor 51°N (België) en vlak-oriëntatie.",M,y);y+=7;
+    const shadowRows=shadowData.map(s=>[
+      {content:s.orientation+" "+s.slope+"°",styles:{fontStyle:"bold",halign:"left"}},
+      ...s.monthly.map(v=>({content:v===0?"✓":v+"%",
+        styles:{textColor:v===0?[22,163,74]:v<15?[180,100,0]:[200,38,38],fontStyle:v===0?"normal":"bold"}})),
+      {content:s.avgLoss===0?"✓":s.avgLoss+"%",styles:{fontStyle:"bold",
+        textColor:s.avgLoss<5?[22,163,74]:s.avgLoss<15?[180,100,0]:[200,38,38]}},
+    ]);
+    doc.autoTable({startY:y,
+      head:[["Vlak","Jan","Feb","Mrt","Apr","Mei","Jun","Jul","Aug","Sep","Okt","Nov","Dec","Gem."]],
+      body:shadowRows,
+      styles:{fontSize:7.5,cellPadding:2.2,halign:"center"},
+      headStyles:{fillColor:[15,23,42],textColor:WHT,fontStyle:"bold"},
+      columnStyles:{0:{cellWidth:22,halign:"left"}},
+      alternateRowStyles:{fillColor:[248,250,252]},
+      margin:{left:M,right:M},tableWidth:W-2*M});
+    y=doc.lastAutoTable.finalY+5;
+    sf(7,"italic");sc(MUT);
+    doc.text("✓ = geen schaduw  ·  % = geschat schaduwverlies t.o.v. nominale productie",M,y);
   }
 
   const mainPdfBytes=doc.output("arraybuffer");
@@ -2217,6 +2538,125 @@ function ProjectPanel({customer,projectList,lastSavedAt,isLoadingProject,
         ))}
       </div>}
       {isLoadingProject&&<div style={{fontSize:9,color:"var(--alpha)"}}>⏳ Project wordt geladen...</div>}
+
+      {/* ────── TL MAPPING EDITOR MODAL ────── */}
+      {tlMappingOpen&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:99998,
+        display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+        <div style={{background:"var(--bg1)",borderRadius:12,width:"min(740px,95vw)",
+          maxHeight:"90vh",display:"flex",flexDirection:"column",boxShadow:"0 20px 60px rgba(0,0,0,0.4)"}}>
+
+          {/* Header */}
+          <div style={{padding:"14px 20px",borderBottom:"2px solid var(--amber)",
+            background:"var(--amber-light)",borderRadius:"12px 12px 0 0",flexShrink:0,
+            display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:16,color:"var(--amber)"}}>
+                📋 Offerte-mapping instellen
+              </div>
+              <div style={{fontSize:9,color:"var(--muted)",marginTop:2}}>
+                Dakbedekking: <strong style={{color:"var(--amber)"}}>{buildings.find(b=>b.id===selBuildingId)?.dakbedekking||"—"}</strong>
+                {" · "}Koppel per lijnpost welke berekende waarde de hoeveelheid bepaalt
+              </div>
+            </div>
+            <button onClick={()=>setTlMappingOpen(false)}
+              style={{background:"none",border:"none",fontSize:22,cursor:"pointer",color:"var(--muted)",lineHeight:1}}>✕</button>
+          </div>
+
+          {tlMappingLoading&&<div style={{padding:50,textAlign:"center",color:"var(--alpha)"}}>
+            <div className="spinner"/><div style={{marginTop:10}}>Lijnposten laden uit Teamleader...</div>
+          </div>}
+
+          {!tlMappingLoading&&<>
+            {/* Beschikbare waarden */}
+            <div style={{padding:"10px 20px",background:"var(--bg2)",borderBottom:"1px solid var(--border)",flexShrink:0}}>
+              <div style={{fontSize:9,fontWeight:700,marginBottom:6,color:"var(--text)"}}>Beschikbare berekende waarden:</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {getTlAppValues().filter(v=>v.key!=="keep"&&v.value!=null).map(v=>(
+                  <div key={v.key} style={{padding:"2px 9px",borderRadius:20,fontSize:9,
+                    background:"var(--blue-bg)",border:"1px solid var(--blue-border)",color:"var(--blue)",
+                    fontFamily:"'IBM Plex Mono',monospace"}}>
+                    <strong>{v.value}</strong>{v.unit?" "+v.unit:""} — {v.label}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Tabel */}
+            <div style={{overflowY:"auto",flex:1,padding:"8px 20px"}}>
+              <table style={{width:"100%",borderCollapse:"collapse"}}>
+                <thead style={{position:"sticky",top:0,background:"var(--bg1)",zIndex:1}}>
+                  <tr style={{borderBottom:"2px solid var(--border)"}}>
+                    <th style={{textAlign:"left",padding:"7px 4px",fontSize:9,color:"var(--muted)",fontWeight:600}}>Lijnpost</th>
+                    <th style={{textAlign:"right",padding:"7px 4px",fontSize:9,color:"var(--muted)",fontWeight:600,width:65}}>Huidig</th>
+                    <th style={{textAlign:"left",padding:"7px 4px",fontSize:9,color:"var(--muted)",fontWeight:600,width:230}}>Koppel aan →</th>
+                    <th style={{textAlign:"right",padding:"7px 4px",fontSize:9,color:"var(--green)",fontWeight:700,width:65}}>Nieuw</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tlMappingLines.map((line)=>{
+                    const mapped=tlMappingValues[line.key];
+                    const appVal=getTlAppValues().find(v=>v.key===mapped);
+                    const newQty=(mapped&&mapped!=="keep"&&appVal?.value!=null)?appVal.value:null;
+                    const isLinked=mapped&&mapped!=="keep";
+                    return(
+                      <tr key={line.key} style={{borderBottom:"1px solid var(--border)",
+                        background:isLinked?"var(--green-bg)":"transparent",transition:"background .1s"}}>
+                        <td style={{padding:"8px 4px"}}>
+                          <div style={{fontWeight:600,fontSize:11,color:"var(--text)"}}>{line.description}</div>
+                          {line.unitPrice>0&&<div style={{fontSize:8,color:"var(--muted)"}}>€ {Number(line.unitPrice).toFixed(2)}/stuk</div>}
+                        </td>
+                        <td style={{padding:"8px 4px",textAlign:"right",
+                          fontFamily:"'IBM Plex Mono',monospace",fontSize:11,color:"var(--muted)"}}>
+                          {line.currentQty}{line.unit?" "+line.unit:""}
+                        </td>
+                        <td style={{padding:"8px 4px"}}>
+                          <select style={{width:"100%",padding:"4px 6px",fontSize:9,borderRadius:5,
+                            border:"1.5px solid "+(isLinked?"var(--green)":"var(--border-dark)"),
+                            background:"var(--bg3)",color:"var(--text)",fontFamily:"inherit"}}
+                            value={mapped||"keep"}
+                            onChange={e=>setTlMappingValues(prev=>({...prev,[line.key]:e.target.value}))}>
+                            <option value="keep">⬜ Ongewijzigd laten ({line.currentQty})</option>
+                            <optgroup label="── Berekende waarden ──">
+                              {getTlAppValues().filter(v=>v.key!=="keep"&&v.value!=null).map(v=>(
+                                <option key={v.key} value={v.key}>{v.value}{v.unit?" "+v.unit:""} — {v.label}</option>
+                              ))}
+                            </optgroup>
+                          </select>
+                        </td>
+                        <td style={{padding:"8px 4px",textAlign:"right",
+                          fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:13,
+                          color:newQty!=null?"var(--green)":"var(--muted)"}}>
+                          {newQty!=null?<span>{newQty}<span style={{fontSize:9,marginLeft:2}}>{line.unit}</span></span>
+                            :<span style={{fontSize:10}}>{line.currentQty}</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Footer */}
+            <div style={{padding:"12px 20px",borderTop:"2px solid var(--border)",
+              background:"var(--bg2)",borderRadius:"0 0 12px 12px",flexShrink:0,
+              display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
+              <div style={{fontSize:9,color:"var(--muted)"}}>
+                <strong>{Object.values(tlMappingValues).filter(v=>v&&v!=="keep").length}</strong> van <strong>{tlMappingLines.length}</strong> lijnposten gekoppeld
+                <br/><span style={{fontSize:8,color:"var(--alpha)"}}>Mapping wordt bewaard per daktype voor hergebruik</span>
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <button className="btn sec" onClick={()=>setTlMappingOpen(false)}>Annuleren</button>
+                <button className="btn green" style={{fontWeight:700,fontSize:11}}
+                  onClick={handleCreateTlQuotation} disabled={tlCreateQuotStatus==="loading"}>
+                  {tlCreateQuotStatus==="loading"?<><div className="spinner"/>Aanmaken...</>
+                    :"✅ Offerte aanmaken in Teamleader"}
+                </button>
+              </div>
+            </div>
+          </>}
+        </div>
+      </div>}
+
     </div>
   );
 }
@@ -2316,6 +2756,18 @@ export default function App(){
   const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
   const[tlPendingGeo,setTlPendingGeo]=useState(null);
   const[tlConfirmed,setTlConfirmed]=useState(false);
+  // TL offerte-templates per dakbedekking
+  const[tlTemplates,setTlTemplates]=useState(()=>{
+    try{return JSON.parse(localStorage.getItem("zonnedak_tl_templates")||"{}");}catch{return {};}
+  });
+  const saveTlTemplates=(tmpl)=>{
+    setTlTemplates(tmpl);
+    try{localStorage.setItem("zonnedak_tl_templates",JSON.stringify(tmpl));}catch{}
+  };
+  const[tlQuotationList,setTlQuotationList]=useState([]);
+  const[tlQuotationLoading,setTlQuotationLoading]=useState(false);
+  const[tlCreateQuotStatus,setTlCreateQuotStatus]=useState(null);
+  const[tlCreateQuotUrl,setTlCreateQuotUrl]=useState(null);
   const[showNewDealForm,setShowNewDealForm]=useState(false);
   const[newDealTitle,setNewDealTitle]=useState("");
   const[newDealValue,setNewDealValue]=useState("");
@@ -2371,6 +2823,140 @@ export default function App(){
     const geo=await TL.geocodeAddress(addr);
     if(geo) setTlPendingGeo({lat:String(geo.lat),lon:String(geo.lng),display_name:geo.displayName});
   },[tlContact]);
+
+  // Haal lijst van bestaande TL-offertes op voor template-mapping
+  const fetchTlQuotations=useCallback(async()=>{
+    if(!tlAuth?.logged_in) return;
+    setTlQuotationLoading(true);
+    try{
+      const resp=await TL.apiCall("quotations.list",{page:{size:100,number:1}});
+      const items=resp?.data||[];
+      setTlQuotationList(items.map(q=>({id:q.id,name:q.name||q.reference||q.id})));
+    }catch(e){console.warn("TL quotations.list:",e);}
+    setTlQuotationLoading(false);
+  },[tlAuth]);
+
+  // State voor de mapping-editor
+  const[tlMappingOpen,setTlMappingOpen]=useState(false);
+  const[tlMappingLines,setTlMappingLines]=useState([]); // geladen lijnposten uit template
+  const[tlMappingValues,setTlMappingValues]=useState({}); // {lineKey: appValueKey}
+  const[tlMappingLoading,setTlMappingLoading]=useState(false);
+  // Berekende waarden die je kan koppelen aan lijnposten
+  const getTlAppValues=useCallback(()=>{
+    if(!results) return [];
+    const totalPlaced=Object.values(panelCountsByFace||{}).reduce((s,c)=>s+c,0)||results.panelCount||0;
+    const vals=[
+      {key:"panelCount",      label:"Aantal panelen",          value:totalPlaced,      unit:"st"},
+      {key:"panelKwp",        label:"Piekvermogen (kWp)",      value:+(totalPlaced*(results.panel?.watt||0)/1000).toFixed(2), unit:"kWp"},
+      {key:"panelWatt",       label:"Vermogen per paneel (W)", value:results.panel?.watt||0, unit:"W"},
+      {key:"battCount",       label:"Aantal batterijen",       value:results.battResult?1:0, unit:"st"},
+      {key:"invCount",        label:"Aantal omvormers",        value:1,                unit:"st"},
+      {key:"roofArea",        label:"Dakoppervlak (m²)",       value:results.detectedArea||0, unit:"m²"},
+      {key:"annualKwh",       label:"Jaaropbrengst (kWh)",     value:results.annualKwh||0, unit:"kWh"},
+      {key:"fixed1",          label:"Vaste hoeveelheid: 1",    value:1,                unit:""},
+      {key:"fixed2",          label:"Vaste hoeveelheid: 2",    value:2,                unit:""},
+      {key:"keep",            label:"⬜ Ongewijzigd laten",    value:null,             unit:""},
+    ];
+    // Voeg aantal per vlak toe
+    Object.entries(panelCountsByFace||{}).forEach(([key,cnt])=>{
+      if(!cnt) return;
+      const parts=key.split("_");
+      const fIdx=parseInt(parts[parts.length-1])||0;
+      const bld=buildings.find(x=>x.id===parts.slice(0,-1).join("_"));
+      const face=bld?.faces?.[fIdx];
+      const lbl=`Panelen ${bld?.label||"Gebouw"} vlak ${fIdx+1} (${face?.orientation||"?"})`;
+      vals.push({key:`face_${key}`,label:lbl,value:cnt,unit:"st"});
+    });
+    return vals;
+  },[results,panelCountsByFace,buildings]);
+
+  // Laad template-lijnposten voor de mapping-editor
+  const handleOpenMapping=useCallback(async()=>{
+    const activeBld=buildings.find(b=>b.id===selBuildingId);
+    const dakbed=activeBld?.dakbedekking;
+    const templateId=tlTemplates[dakbed];
+    if(!templateId){
+      alert("Kies eerst een dakbedekking op tab 02 en stel de template in.");
+      return;
+    }
+    setTlMappingLoading(true);
+    setTlMappingOpen(true);
+    try{
+      const resp=await TL.apiCall("quotations.info",{id:templateId});
+      const groups=resp?.data?.grouped_lines||[];
+      // Flatten alle items met unieke sleutel
+      const lines=[];
+      groups.forEach((g,gi)=>{
+        (g.items||[]).forEach((item,ii)=>{
+          lines.push({
+            key:`${gi}_${ii}`,
+            groupIdx:gi,
+            itemIdx:ii,
+            description:item.description||`Post ${gi+1}.${ii+1}`,
+            unit:item.unit||"",
+            currentQty:item.quantity||1,
+            unitPrice:item.unit_price?.amount||item.unit_price||0,
+          });
+        });
+      });
+      setTlMappingLines(lines);
+      // Herstel eerder opgeslagen mapping voor dit daktype
+      const savedMapping=JSON.parse(
+        localStorage.getItem(`zonnedak_mapping_${dakbed}`)||"{}"
+      );
+      setTlMappingValues(savedMapping);
+    }catch(e){
+      alert("Lijnposten laden mislukt: "+e.message);
+      setTlMappingOpen(false);
+    }
+    setTlMappingLoading(false);
+  },[buildings,selBuildingId,tlTemplates]);
+
+  // Sla mapping op + maak offerte aan
+  const handleCreateTlQuotation=useCallback(async()=>{
+    if(!tlSelectedDealId||!results) return;
+    const activeBld=buildings.find(b=>b.id===selBuildingId);
+    const dakbed=activeBld?.dakbedekking;
+    const templateId=tlTemplates[dakbed];
+    if(!templateId){
+      alert("Geen template geconfigureerd voor dit daktype.");
+      return;
+    }
+    // Sla mapping op voor hergebruik
+    try{localStorage.setItem(`zonnedak_mapping_${dakbed}`,JSON.stringify(tlMappingValues));}catch{}
+    setTlCreateQuotStatus("loading");setTlCreateQuotUrl(null);setTlMappingOpen(false);
+    try{
+      const appVals=getTlAppValues();
+      const valMap=Object.fromEntries(appVals.map(v=>[v.key,v.value]));
+      // Haal template opnieuw op (verse data)
+      const resp=await TL.apiCall("quotations.info",{id:templateId});
+      const groups=resp?.data?.grouped_lines||[];
+      // Pas hoeveelheden aan op basis van mapping
+      const adjustedGroups=groups.map((g,gi)=>({
+        ...g,
+        items:(g.items||[]).map((item,ii)=>{
+          const lineKey=`${gi}_${ii}`;
+          const mappedKey=tlMappingValues[lineKey];
+          if(!mappedKey||mappedKey==="keep") return item;
+          const newQty=valMap[mappedKey];
+          if(newQty==null||newQty===undefined) return item;
+          return {...item,quantity:newQty};
+        })
+      }));
+      const quotResp=await TL.apiCall("quotations.create",{
+        deal_id:tlSelectedDealId,
+        name:`ZonneDak - ${customer.name||"klant"} - ${activeBld?.label||dakbed}`,
+        grouped_lines:adjustedGroups,
+      });
+      const quotId=quotResp?.data?.id;
+      setTlCreateQuotStatus("ok");
+      setTlCreateQuotUrl(quotId?`https://focus.teamleader.eu/sale_detail.php?id=${tlSelectedDealId}`:null);
+    }catch(e){
+      console.error("TL offerte:",e);
+      setTlCreateQuotStatus("error");
+      alert("Offerte aanmaken mislukt: "+e.message);
+    }
+  },[tlSelectedDealId,buildings,selBuildingId,tlTemplates,tlMappingValues,results,customer,getTlAppValues]);
 
   const handleTlLogin=useCallback(()=>{TL.startTeamleaderLogin();},[]);
   const handleTlLogout=useCallback(()=>{TL.clearUserId();setTlAuth(false);setTlContact(null);setTlResults([]);setTlQuery("");setTlPendingGeo(null);},[]);
@@ -2481,6 +3067,7 @@ export default function App(){
     if(d.annualConsumption!=null) setAnnualConsumption(d.annualConsumption);
     if(d.usageProfile) setUsageProfile(d.usageProfile);
     if(d.buildingAge!=null) setBuildingAge(d.buildingAge);
+    // Herstel dakbedekking per gebouw bij laden project (via buildings-state)
     if(d.tlDealId!==undefined) setTlSelectedDealId(d.tlDealId);
     setTimeout(()=>{suppressAutoSaveRef.current=false;setIsLoadingProject(false);setShowProjectMenu(false);},100);
   },[]);
@@ -3360,6 +3947,7 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
       // Geef altijd de HUIDIGE stringDesign mee (niet de opgeslagen versie)
       // zodat Ingang B correct is ook als er panelen zijn bijgekomen na calculate()
       stringDesign: stringDesign||results.stringDesign||null,
+      _shadowData: computeShadowAnalysis(detectedFaces)||results._shadowData||null,
       // Geef ook de huidige faceEntries mee
       faceEntries: orientationGroups?.map((g,i)=>({
         orientation:g.orientation,slope:g.slope,count:g.count,
@@ -3545,7 +4133,17 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
         <h1>ZonneDak Analyzer</h1>
         <p>GRB Gebouwcontouren · DHM Vlaanderen II LiDAR · AlphaESS G3</p>
       </div>
-      <div className="badge">GRB · DHMV II</div>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginLeft:"auto"}}>
+        <div className="badge">GRB · DHMV II</div>
+        {/* Verdify powered-by logo */}
+        <a href="https://verdify.be" target="_blank" rel="noopener noreferrer"
+           title="Ontwikkeld door Verdify"
+           style={{display:"flex",alignItems:"center",gap:5,textDecoration:"none",
+             background:"rgba(255,255,255,0.12)",borderRadius:6,padding:"3px 8px"}}>
+          <img src={VERDIFY_LOGO_BASE64} alt="Verdify"
+               style={{height:22,width:"auto",objectFit:"contain",filter:"brightness(1.2)"}}/>
+        </a>
+      </div>
     </header>
     <div className="tabs">{TABS.map(t=><button key={t.k} className={`tab ${activeTab===t.k?"active":""}`} onClick={()=>{setActiveTab(t.k);if(t.k==="configuratie")setTimeout(()=>{if(leafRef.current)leafRef.current.invalidateSize?.();},80);}}>{t.l}</button>)}</div>
     <div className="main">
@@ -3607,7 +4205,15 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
                     </div>
                     <div style={{fontSize:9,color:"var(--muted)"}}>{b.area} m²
                       {b.dhmStatus==="loading"&&<span style={{color:"var(--alpha)",marginLeft:4}}>⏳ LiDAR...</span>}
-                      {b.dhmStatus==="ok"&&<span style={{color:"var(--green)",marginLeft:4}}>✅ {b.faces?.length||0} vlak(ken)</span>}
+                      {b.dhmStatus==="ok"&&<span style={{color:"var(--green)",marginLeft:4}}>✅ {b.faces?.length||0} vlak(ken)
+                    {(()=>{
+                      const sh=computeShadowAnalysis(b.faces);
+                      const avgLoss=sh?Math.round(sh.reduce((s,f)=>s+f.avgLoss,0)/sh.length):null;
+                      return avgLoss!=null?<span style={{color:avgLoss<5?"var(--green)":avgLoss<15?"var(--amber)":"var(--red)",marginLeft:4,fontSize:8}}>
+                        🌤️ {avgLoss<5?"Geen schaduw":avgLoss<15?"Lichte schaduw":"Schaduwrisico"} (~{avgLoss}% verlies)
+                      </span>:null;
+                    })()}
+                  </span>}
                       {b.dhmStatus==="error"&&<span style={{color:"var(--red)",marginLeft:4}}>⚠️ Manueel</span>}
                     </div>
                   </div>
@@ -3622,10 +4228,38 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
                     onClick={e=>e.stopPropagation()}/>
                 </div>
 
-                {/* Daktype-picker — alleen voor geselecteerde gebouwen */}
+                {/* Dakvorm-picker */}
                 {isSelected&&isActive&&<div style={{marginTop:7}}>
-                  <div style={{fontSize:8,color:"var(--muted)",marginBottom:3}}>Daktype</div>
+                  <div style={{fontSize:8,color:"var(--muted)",marginBottom:3}}>Dakvorm</div>
                   <DakTypePicker value={b.daktype||"auto"} onChange={dt=>updateBuildingDaktype(b.id,dt)}/>
+                </div>}
+
+                {/* Dakbedekking-picker — bepaalt montagematerialen en TL-offerte-template */}
+                {isSelected&&isActive&&<div style={{marginTop:8}}>
+                  <div style={{fontSize:8,color:"var(--muted)",marginBottom:4}}>
+                    Dakbedekking <span style={{fontSize:7,color:"var(--alpha)"}}>→ bepaalt montagematerialen</span>
+                  </div>
+                  <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                    {[
+                      {id:"pannendak",icon:"🟤",label:"Pannendak"},
+                      {id:"leiendak",icon:"⬛",label:"Leien dak"},
+                      {id:"platdak",icon:"⬜",label:"Plat dak"},
+                      {id:"idedak",icon:"🔩",label:"IDE dak"},
+                    ].map(d=>(
+                      <button key={d.id}
+                        onClick={()=>setBuildings(prev=>prev.map(x=>x.id===b.id?{...x,dakbedekking:d.id}:x))}
+                        style={{padding:"5px 9px",fontFamily:"'IBM Plex Mono',monospace",fontSize:9,
+                          cursor:"pointer",borderRadius:5,whiteSpace:"nowrap",
+                          background:b.dakbedekking===d.id?"var(--alpha)":"var(--bg3)",
+                          border:b.dakbedekking===d.id?"1px solid var(--alpha-border)":"1px solid var(--border-dark)",
+                          color:b.dakbedekking===d.id?"#fff":"var(--muted)"}}>
+                        {d.icon} {d.label}
+                      </button>
+                    ))}
+                  </div>
+                  {!b.dakbedekking&&<div style={{fontSize:8,color:"var(--amber)",marginTop:3}}>
+                    ⚠️ Kies de dakbedekking voor correcte offerte
+                  </div>}
                 </div>}
 
                 {/* Dakvlakken voor actief+geselecteerd gebouw */}
@@ -4157,6 +4791,45 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
             ✅ Klant geladen: <strong>{customer.name}</strong> — {displayName?.split(",").slice(0,2).join(",")}
           </div>}
 
+          {/* ── TL Template-instellingen ── */}
+          {tlAuth?.logged_in&&<div className="customer-section">
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div className="sl">⚙️ TL Offerte-templates per dakbedekking</div>
+              <button className="btn sec sm" onClick={fetchTlQuotations} disabled={tlQuotationLoading}>
+                {tlQuotationLoading?"⏳ Laden...":"🔄 Offertes laden"}
+              </button>
+            </div>
+            <div style={{fontSize:8,color:"var(--muted)",marginBottom:8}}>
+              Koppel per dakbedekking de juiste referentie-offerte in Teamleader.
+              De aantallen worden automatisch aangepast.
+            </div>
+            {[
+              {id:"pannendak",icon:"🟤",label:"Pannendak"},
+              {id:"leiendak",icon:"⬛",label:"Leien dak"},
+              {id:"platdak",icon:"⬜",label:"Plat dak"},
+              {id:"idedak",icon:"🔩",label:"IDE dak"},
+            ].map(d=>(
+              <div key={d.id} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                <div style={{width:90,fontSize:9,fontWeight:600}}>{d.icon} {d.label}</div>
+                {tlQuotationList.length>0
+                  ?<select className="inp" style={{flex:1,fontSize:9}}
+                      value={tlTemplates[d.id]||""}
+                      onChange={e=>saveTlTemplates({...tlTemplates,[d.id]:e.target.value})}>
+                      <option value="">— Kies referentie-offerte —</option>
+                      {tlQuotationList.map(q=><option key={q.id} value={q.id}>{q.name}</option>)}
+                    </select>
+                  :<input className="inp" style={{flex:1,fontSize:8}} placeholder="Plak TL offerte-ID..."
+                      value={tlTemplates[d.id]||""}
+                      onChange={e=>saveTlTemplates({...tlTemplates,[d.id]:e.target.value})}/>
+                }
+                {tlTemplates[d.id]&&<span style={{color:"var(--green)",fontSize:10}}>✓</span>}
+              </div>
+            ))}
+            <div style={{fontSize:8,color:"var(--muted)",marginTop:4}}>
+              Niet beschikbaar? Open een referentie-offerte in TL en kopieer de UUID uit de URL.
+            </div>
+          </div>}
+
         {activeTab==="panelen"&&<div className="section">
           <div className="sl">Panelenlijst</div>
           <div className="info-box" style={{fontSize:8}}><strong>⭐ Standaard:</strong> Qcells 440W en Trina 500W zijn uw meest gebruikte panelen.</div>
@@ -4403,7 +5076,32 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
                 <button className="btn green" onClick={handlePDF} disabled={pdfLoading||!results}>
                   {pdfLoading?<><div className="spinner"/>Luchtfoto + PDF genereren...</>:"📄 Download PDF rapport"}
                 </button>
+                {tlAuth?.logged_in&&tlSelectedDealId&&results&&<button
+                  className={`btn ${tlCreateQuotStatus==="ok"?"green":tlCreateQuotStatus==="error"?"danger":"alpha"}`}
+                  onClick={handleCreateTlQuotation}
+                  disabled={tlCreateQuotStatus==="loading"}
+                  style={{fontSize:10}}>
+                  {tlCreateQuotStatus==="loading"?<><div className="spinner"/>Offerte aanmaken...</>
+                    :tlCreateQuotStatus==="ok"?"✅ Offerte aangemaakt in TL"
+                    :"📋 Maak offerte in Teamleader"}
+                </button>}
               </div>
+              {/* TL offerte status + link */}
+              {tlCreateQuotStatus==="ok"&&<div style={{padding:"6px 10px",background:"var(--green-bg)",
+                border:"1px solid var(--green-border)",borderRadius:6,fontSize:9,marginBottom:6}}>
+                ✅ Offerte aangemaakt in Teamleader!
+                {tlCreateQuotUrl&&<> <a href={tlCreateQuotUrl} target="_blank" rel="noopener noreferrer"
+                  style={{color:"var(--alpha)",fontWeight:600,marginLeft:6}}>Open in TL →</a></>}
+                <br/><span style={{fontSize:8,color:"var(--muted)"}}>
+                  Dakbedekking: {buildings.find(b=>b.id===selBuildingId)?.dakbedekking||"—"} ·
+                  Aantallen aangepast: {results.panelCount} panelen
+                </span>
+              </div>}
+              {/* Waarschuwing als dakbedekking niet ingesteld */}
+              {tlAuth?.logged_in&&tlSelectedDealId&&results&&!buildings.find(b=>b.id===selBuildingId)?.dakbedekking&&
+                <div style={{fontSize:9,color:"var(--amber)",marginBottom:6}}>
+                  ⚠️ Kies eerst de dakbedekking op tab 02 Configuratie voor de juiste template.
+                </div>}
               <div style={{fontSize:8,color:"var(--muted)",lineHeight:1.7}}>
                 <strong>📸 Luchtfoto wordt automatisch gemaakt</strong> bij het genereren (OSM-kaart + panelen).<br/>
                 <strong>Rapport bevat:</strong> klantgegevens · systeemoverzicht · maandgrafiek · terugverdienberekening<br/>
