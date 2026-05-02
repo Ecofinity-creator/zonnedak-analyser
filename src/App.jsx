@@ -3194,65 +3194,68 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
     const L=window.L;
     let osmLayer=null;
     const origTile=baseTileRef.current;
-    const restorations=[];
+    const domRestores=[];
 
     try{
-      if(!window.html2canvas){
+      if(!window.html2canvas)
         await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
-      }
 
       const mapEl=document.getElementById("leaflet-map");
       if(!mapEl) throw new Error("Kaart-element niet gevonden");
 
-      // ── Stap 1: DOM-parent forcering (bypass React state) ────────────
-      // React setState is async — zelfs met RAF kan de DOM commit uitgesteld zijn.
-      // Directe DOM-manipulatie: loop omhoog en maak verborgen parents zichtbaar.
+      // ── Stap 1: Forceer map zichtbaar + vaste afmetingen ─────────────
+      // De tab-CSS kan height:0 geven aan de map-container.
+      // Dat zorgt dat invalidateSize() 0×0 leest en fitBounds niet werkt.
+      // Fix: expliciete w/h instellen vóór invalidateSize.
       let walker=mapEl.parentElement;
       while(walker&&walker!==document.body){
         const cs=getComputedStyle(walker);
-        if(cs.display==="none"||cs.visibility==="hidden"||parseFloat(cs.opacity||"1")<0.01){
-          restorations.push({el:walker,
-            display:walker.style.display,
-            visibility:walker.style.visibility,
-            opacity:walker.style.opacity});
+        if(cs.display==="none"||cs.visibility==="hidden"){
+          domRestores.push({el:walker,prop:"display",val:walker.style.display});
+          domRestores.push({el:walker,prop:"visibility",val:walker.style.visibility});
           walker.style.display="block";
           walker.style.visibility="visible";
-          walker.style.opacity="1";
         }
         walker=walker.parentElement;
       }
-      map.invalidateSize(true);
-      await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+      // Expliciete afmetingen op de map-container zelf
+      const prevW=mapEl.style.width, prevH=mapEl.style.height, prevPos=mapEl.style.position;
+      const prevTop=mapEl.style.top, prevLeft=mapEl.style.left, prevZ=mapEl.style.zIndex;
+      mapEl.style.position="fixed";
+      mapEl.style.top="0"; mapEl.style.left="0";
+      mapEl.style.width="1400px"; mapEl.style.height="800px";
+      mapEl.style.zIndex="99999";
+      // Force reflow
+      void mapEl.getBoundingClientRect();
+      map.invalidateSize({reset:true});
+      await new Promise(r=>setTimeout(r,400));
 
       // ── Stap 2: Zoom op gebouw ────────────────────────────────────────
       if(buildingCoords&&buildingCoords.length>=3){
         const latLngs=buildingCoords.map(([la,ln])=>L.latLng(la,ln));
-        map.fitBounds(L.latLngBounds(latLngs),{padding:[40,40],maxZoom:20});
+        map.fitBounds(L.latLngBounds(latLngs),{padding:[60,60],maxZoom:19});
         await new Promise(resolve=>{
           let done=false;
           const finish=()=>{if(!done){done=true;resolve();}};
           map.once("moveend",finish);
-          setTimeout(finish,1500);
+          setTimeout(finish,1200);
         });
       }
 
-      // ── Stap 3: OSM tiles (CORS-safe, zodat toDataURL werkt) ─────────
+      // ── Stap 3: OSM tiles laden ───────────────────────────────────────
       osmLayer=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        {attribution:"© OpenStreetMap",maxZoom:21,crossOrigin:"anonymous"});
+        {attribution:"© OpenStreetMap",maxZoom:21,crossOrigin:true});
       if(origTile){try{map.removeLayer(origTile);}catch{}}
       osmLayer.addTo(map);
       await new Promise(resolve=>{
         let done=false;
         const finish=()=>{if(!done){done=true;resolve();}};
         osmLayer.on("load",finish);
-        setTimeout(finish,5000);
+        setTimeout(finish,6000); // 6s max
       });
-      map.invalidateSize(true);
-      await new Promise(r=>setTimeout(r,300));
+      await new Promise(r=>setTimeout(r,500));
 
-      // ── Stap 4: Teken panelen NA tile-load ───────────────────────────
-      // Tile-swap triggert Leaflet canvas-redraw → panelen worden gewist.
-      // Teken daarom panelen ALTIJD als allerlaatste stap vóór capture.
+      // ── Stap 4: Panelen tekenen NA tile-load ─────────────────────────
       try{
         Object.values(panelLayersByFaceRef.current||{}).forEach(l=>{try{map.removeLayer(l);}catch{}});
         panelLayersByFaceRef.current={};
@@ -3273,55 +3276,49 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
         } else if(buildingCoords&&selPanel){
           const fp=detectedFaces?.[selFaceIdx]?.polygon||buildingCoords;
           const fdr={current:null};
-          panelLayersByFaceRef.current[`${selBuildingId||"x"}_${selFaceIdx}`]=
+          panelLayersByFaceRef.current[`snap_0`]=
             drawPanelLayer(map,L,fp,panelCount,selPanel,panelRotOffset,panelOrient,fdr,false);
         }
-        // Wacht op canvas renderer paint
         await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
-        await new Promise(r=>setTimeout(r,600));
-      }catch(e){console.warn("[ZonneDak] Panel draw for snapshot:",e);}
+        await new Promise(r=>setTimeout(r,800));
+      }catch(e){console.warn("[Snap] panels:",e);}
 
       // ── Stap 5: Capture ───────────────────────────────────────────────
       const canvas=await window.html2canvas(mapEl,{
-        useCORS:true,
-        allowTaint:false,
-        scale:1.5,
-        logging:false,
-        backgroundColor:"#e8e8e8",
-        foreignObjectRendering:false,
-        imageTimeout:20000,
+        useCORS:true,allowTaint:false,scale:1.5,
+        logging:false,backgroundColor:"#e8e8e8",
+        foreignObjectRendering:false,imageTimeout:20000,
         onclone:(doc)=>{
-          // Zorg dat alle Leaflet canvas/svg layers zichtbaar zijn in de clone
           doc.querySelectorAll(".leaflet-pane,.leaflet-layer").forEach(el=>{
-            el.style.display="block";
-            el.style.visibility="visible";
-            el.style.opacity="1";
+            el.style.display="block";el.style.visibility="visible";el.style.opacity="1";
           });
           doc.querySelectorAll(".leaflet-canvas-pane canvas").forEach(c=>{
-            c.style.display="block";
-            c.style.visibility="visible";
+            c.style.display="block";c.style.visibility="visible";
           });
-          doc.querySelectorAll(".leaflet-overlay-pane svg").forEach(s=>{
-            s.style.overflow="visible";
-          });
+          doc.querySelectorAll(".leaflet-overlay-pane svg").forEach(s=>s.style.overflow="visible");
         },
       });
-
       const dataUrl=canvas.toDataURL("image/jpeg",0.88);
       const mb=map.getBounds();
       return {dataUrl,width:canvas.width,height:canvas.height,timestamp:Date.now(),
         bounds:{north:mb.getNorth(),south:mb.getSouth(),east:mb.getEast(),west:mb.getWest()}};
 
     }finally{
-      // Herstel originele tile layer
+      // Herstel tiles
       if(osmLayer){try{map.removeLayer(osmLayer);}catch{}}
       if(origTile){try{origTile.addTo(map);}catch{}}
-      // Herstel DOM parents (in omgekeerde volgorde)
-      restorations.reverse().forEach(({el,display,visibility,opacity})=>{
-        el.style.display=display;
-        el.style.visibility=visibility;
-        el.style.opacity=opacity;
-      });
+      // Herstel map-container stijlen
+      const mapEl2=document.getElementById("leaflet-map");
+      if(mapEl2){
+        mapEl2.style.position=prevPos||"";
+        mapEl2.style.top=prevTop||""; mapEl2.style.left=prevLeft||"";
+        mapEl2.style.width=prevW||""; mapEl2.style.height=prevH||"";
+        mapEl2.style.zIndex=prevZ||"";
+      }
+      // Herstel DOM ancestors
+      domRestores.reverse().forEach(({el,prop,val})=>el.style[prop]=val);
+      // Herstel map grootte
+      if(leafRef.current) setTimeout(()=>leafRef.current?.invalidateSize?.(),100);
     }
   },[buildings,buildingCoords,selBuildingId,detectedFaces,selFaceIdx,selPanel,panelCount,panelRotOffset,panelOrient]);
 
