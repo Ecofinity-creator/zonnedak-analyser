@@ -1564,7 +1564,14 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     y=doc.lastAutoTable.finalY+5;
     if(y>284-50){doc.addPage();y=20;}
     sf(9,"bold");sc(TXT);doc.text("Detailwaarden per MPPT-ingang",M,y);y+=5;
-    const head=["",...sd.mppts.map((m,i)=>"Ingang "+String.fromCharCode(65+i))];
+    const nMppt=sd.mppts.length;
+    const labelColW=nMppt>1?58:75;
+    const valColW=Math.floor((W-2*M-labelColW)/nMppt);
+    // Header toont naam + oriëntatie
+    const head=[["",...sd.mppts.map((m,i)=>{
+      const ori=m.faces?.map(f2=>f2.orientation).join("+") || m.orientation || "";
+      return "Ingang "+String.fromCharCode(65+i)+(ori?" ("+ori+" · "+(m.slope??slope)+"°)":"");
+    })]];
     const cell=(check,val)=>check===null?val:(check?"+ ":"- ")+val;
     const rows=[
       ["Aantal strings",...sd.mppts.map(m=>m.stringCount+"")],
@@ -1580,10 +1587,13 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
       ["Max. kortsluitstroom MPPT",...sd.mppts.map(()=>sd.config.inverterMaxCurrent+" A")],
       ["Max. kortsluitstroom PV (Isc)",...sd.mppts.map(m=>cell(m.checks.iscOk,m.iscTotal.toFixed(1)+" A"))],
     ];
-    doc.autoTable({startY:y,head:[head],body:rows,
-      styles:{fontSize:7.5,cellPadding:2},
-      headStyles:{fillColor:BL,textColor:WHT,fontStyle:"bold",halign:"right"},
-      columnStyles:{0:{cellWidth:62,textColor:MUT,fontStyle:"normal",halign:"left"}},
+    // Bouw columnStyles dynamisch op basis van aantal MPPT-ingangen
+    const colStyles={0:{cellWidth:labelColW,textColor:MUT,fontStyle:"normal",halign:"left"}};
+    for(let ci=1;ci<=nMppt;ci++) colStyles[ci]={cellWidth:valColW,halign:"right",fontStyle:"bold"};
+    doc.autoTable({startY:y,head,body:rows,
+      styles:{fontSize:nMppt>2?6.5:7.5,cellPadding:2},
+      headStyles:{fillColor:BL,textColor:WHT,fontStyle:"bold",halign:"right",minCellHeight:10},
+      columnStyles:colStyles,
       bodyStyles:{halign:"right",fontStyle:"bold"},
       alternateRowStyles:{fillColor:[239,246,255]},
       margin:{left:M,right:M},tableWidth:W-2*M});
@@ -3173,22 +3183,43 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         await new Promise(r=>setTimeout(r,200));
       }
 
-      // Stap 2: Panelen tekenen — ALTIJD opnieuw vlak voor capture
-      // setActiveTab() triggert redrawRoof() via useEffect → verwijdert panel layer.
-      // Oplossing: teken panelen NADAT de tab geswitcht is en kaart zichtbaar is,
-      // maar vóór fitBounds en tile-swap. Gebruik bestaande panelData (gebruikersposities).
+      // Stap 2: Herteken ALLE vlak-panelen voor capture
+      // Verwijder bestaande lagen eerst — tab-switch triggert re-renders die lagen wissen.
+      // Dan herteken elk vlak met zijn opgeslagen panelData (behoudt gebruikersposities).
       try{
+        // Verwijder alle bestaande panel-lagen
+        Object.values(panelLayersByFaceRef.current||{}).forEach(l=>{try{map.removeLayer(l);}catch{}});
+        panelLayersByFaceRef.current={};
         if(panelLayerRef.current){try{map.removeLayer(panelLayerRef.current);}catch{} panelLayerRef.current=null;}
-        const _sf=detectedFaces?.[selFaceIdx];
-        const _fp=(_sf?.polygon)||buildingCoords;
-        if(_fp&&selPanel){
-          // Bewaar bestaande panelData zodat gebruikersdragging behouden blijft
-          const savedData=panelDataRef.current;
-          panelLayerRef.current=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,panelDataRef,false);
-          if(!panelDataRef.current&&savedData) panelDataRef.current=savedData;
+
+        const snapFaceEntries=Object.entries(panelDataByFaceRef.current||{});
+        if(snapFaceEntries.length>0){
+          for(const [faceKey,faceData] of snapFaceEntries){
+            if(!faceData||faceData.length===0) continue;
+            const parts=faceKey.split("_");
+            const bId=parts.slice(0,-1).join("_");
+            const fIdx=parseInt(parts[parts.length-1])||0;
+            const bld=buildings.find(x=>x.id===bId)||null;
+            const bFaces=(bld?.id===selBuildingId?detectedFaces:bld?.faces)||null;
+            const facePoly=bFaces?.[fIdx]?.polygon||(bld?.coords||buildingCoords);
+            if(!facePoly||!selPanel) continue;
+            const fdr={current:faceData};
+            const newLayer=drawPanelLayer(map,L,facePoly,faceData.length,
+              selPanel,panelRotOffset,panelOrient,fdr,false);
+            panelLayersByFaceRef.current[faceKey]=newLayer;
+          }
+        } else if(buildingCoords&&selPanel){
+          const _sf=detectedFaces?.[selFaceIdx];
+          const _fp=_sf?.polygon||buildingCoords;
+          const faceKey=`${selBuildingId||"main"}_${selFaceIdx}`;
+          const fdr={current:null};
+          const nl=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,fdr,false);
+          panelLayersByFaceRef.current[faceKey]=nl;
+          panelDataByFaceRef.current[faceKey]=fdr.current;
+          panelLayerRef.current=nl;
         }
-        await new Promise(r=>setTimeout(r,400));
-      }catch(e){console.warn("[ZonneDak] Panel tekenen voor snapshot:",e);}
+        await new Promise(r=>setTimeout(r,700)); // wacht op canvas render
+      }catch(e){console.warn("[ZonneDak] Panels hertekenen voor snapshot:",e);}
 
       // Stap 3: Zoom in op gebouw — kleiner padding = panelen groter in beeld
       if(buildingCoords&&buildingCoords.length>=3){
@@ -3382,23 +3413,53 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
   // Bouw per-MPPT stringDesign op
   const buildMpptStringDesign=()=>{
     if(!selPanel?.voc||!selInv?.maxDcVoltage||!orientationGroups) return null;
-    // computeStringDesign voor totaal (compatibiliteit)
-    const base=computeStringDesign(selPanel,selInv,panelCount);
-    if(!base) return null;
-    // Overschrijf mppts met oriëntatie-gebaseerde verdeling
+    // Bereken optimale string-lengte: max panelen in serie zonder Voc-limiet te overschrijden
+    // Bij -7°C (tempMin): Voc_cold = Voc * (1 + tempCoeffVoc/100 * (tempMin - 25))
+    const tempMin=-7;
+    const tempMax=32;
+    const tempConfig=19;
+    const vocColdFactor=1+(selPanel.tempCoeffVoc||-0.25)/100*(tempMin-25);
+    const vmpHotFactor=1+(selPanel.tempCoeffVoc||-0.25)/100*(tempMax-25);
+    const vmpConfigFactor=1+(selPanel.tempCoeffVoc||-0.25)/100*(tempConfig-25);
+    // Max panelen in serie = floor(maxDcVoltage / Voc_cold)
+    const maxSeries=Math.floor((selInv.maxDcVoltage||600)/((selPanel.voc||38)*Math.abs(vocColdFactor)));
+    // Min panelen in serie = ceil(mpptVoltageMin / Vmp_hot)
+    const minSeries=Math.ceil((selInv.mpptVoltageMin||100)/((selPanel.vmp||32)*Math.abs(vmpHotFactor)));
+    // Optimale string-lengte = zo lang mogelijk (max rendement)
+    const optStrLen=Math.min(maxSeries,Math.floor((selInv.mpptVoltageMax||560)/((selPanel.vmp||32))));
+    const strLen=Math.max(minSeries,Math.min(optStrLen,maxSeries))||10;
+
+    const maxCurrentPerMppt=selInv.maxInputCurrentPerMppt||16;
+
     const enrichedMppts=orientationGroups.map((g,i)=>{
-      const baseMppt=base.mppts[i]||base.mppts[0];
-      // Herbereken per ingang op basis van werkelijk aantal panelen op die ingang
       const panelsOnInput=g.count;
-      const strLen=baseMppt?.stringLen||Math.floor(selInv.mpptVoltageMax/(selPanel.vmp||30));
-      const strings=Math.max(1,Math.round(panelsOnInput/strLen));
-      const totalP=strings*strLen;
+      // Bereken optimaal aantal strings en panelen per string
+      // Max strings op basis van stroom: floor(maxCurrent / Isc)
+      const maxStrings=Math.max(1,Math.floor(maxCurrentPerMppt/(selPanel.isc||14)));
+      // Aantal strings: probeer panelen gelijk te verdelen
+      const strings=Math.max(1,Math.min(maxStrings,Math.round(panelsOnInput/strLen)));
+      const panelsPerString=strings>0?Math.round(panelsOnInput/strings):panelsOnInput;
+
+      // Spanningen en stromen per ingang
+      const vocCold=panelsPerString*(selPanel.voc||38)*Math.abs(vocColdFactor);
+      const vmpHot=panelsPerString*(selPanel.vmp||32)*Math.abs(vmpHotFactor);
+      const vmpConfig=panelsPerString*(selPanel.vmp||32)*Math.abs(vmpConfigFactor);
+      const impTotal=strings*(selPanel.imp||13);
+      const iscTotal=strings*(selPanel.isc||14);
+
       return {
-        ...baseMppt,
-        totalPanels:panelsOnInput,
         stringCount:strings,
+        stringLen:panelsPerString,
+        totalPanels:panelsOnInput,
         powerStc:panelsOnInput*selPanel.watt,
-        // Oriëntatie-info voor weergave
+        vocCold,vmpHot,vmpConfig,impTotal,iscTotal,
+        checks:{
+          vocColdOk:vocCold<=(selInv.maxDcVoltage||600),
+          vmpHotOk:vmpHot>=(selInv.mpptVoltageMin||100),
+          vmpConfigOk:vmpConfig<=(selInv.mpptVoltageMax||560),
+          impOk:impTotal<=maxCurrentPerMppt,
+          iscOk:iscTotal<=maxCurrentPerMppt,
+        },
         orientation:g.orientation,
         slope:g.slope,
         faces:g.faces,
@@ -3406,9 +3467,33 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
         multiOrientation:g.faces.length>1,
       };
     });
-    return {...base,mppts:enrichedMppts,
+
+    // Gebruik base voor config-velden
+    const base=computeStringDesign(selPanel,selInv,panelCount)||{config:{},warnings:[]};
+    const config={
+      tempMin,tempMax,tempConfig,
+      inverterMaxDc:selInv.maxDcVoltage||600,
+      inverterMaxAc:selInv.maxAcPower||selInv.kw*1000||5000,
+      inverterMaxDcPower:selInv.maxDcPower||selInv.maxPv||10000,
+      inverterMpptMin:selInv.mpptVoltageMin||100,
+      inverterMpptMax:selInv.mpptVoltageMax||560,
+      inverterMaxCurrent:maxCurrentPerMppt,
+      sizingFactor:panelCount>0?(panelCount*selPanel.watt/(selInv.maxAcPower||selInv.kw*1000||5000)*100):null,
+    };
+    // Waarschuwingen
+    const warnings=[...(base.warnings||[])];
+    if(orientationGroups.length>(selInv.mpptCount||selInv.mppt||2)){
+      warnings.push({severity:"warning",title:"Meer oriëntaties dan MPPT-ingangen",
+        detail:`${orientationGroups.length} dakrichtingen op ${selInv.mpptCount||selInv.mppt||2} MPPT-ingangen. Overweeg een omvormer met meer ingangen.`});
+    }
+    enrichedMppts.forEach((m,i)=>{
+      if(!m.checks.vocColdOk) warnings.push({severity:"critical",title:`Ingang ${String.fromCharCode(65+i)}: Voc te hoog`,detail:`${m.vocCold.toFixed(0)}V > ${selInv.maxDcVoltage}V max`});
+      if(!m.checks.vmpHotOk) warnings.push({severity:"warning",title:`Ingang ${String.fromCharCode(65+i)}: Vmp te laag bij hoge temperatuur`,detail:`${m.vmpHot.toFixed(0)}V < ${selInv.mpptVoltageMin}V min`});
+    });
+
+    return {mppts:enrichedMppts,config,warnings,
       totalPower:panelCount*selPanel.watt,
-      tooManyOrientations:orientationGroups.length>(selInv.mpptCount||2)};
+      tooManyOrientations:orientationGroups.length>(selInv.mpptCount||selInv.mppt||2)};
   };
 
   const stringDesign=(selPanel?.voc&&selInv?.maxDcVoltage)?buildMpptStringDesign():null;
