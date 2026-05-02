@@ -1574,29 +1574,35 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
       const sl=m.slope??slope;
       return "Ingang "+String.fromCharCode(65+i)+(ori?" · "+ori+" "+sl+"°":"");
     })]];
-    const cell=(check,val)=>check===null?val:(check?"+ ":"- ")+val; // + = ok, - = overschreden
+    const GRN=[34,197,94],RED=[220,38,38],NEU=[30,64,175];
+    // Gebruik {content, styles} objecten voor gekleurde cellen (groen/rood)
+    const cv=(check,val)=>{
+      if(check===null) return {content:val,styles:{textColor:NEU}};
+      return check
+        ?{content:"OK  "+val,styles:{textColor:GRN,fontStyle:"bold"}}
+        :{content:"!!  "+val,styles:{textColor:RED,fontStyle:"bold"}};
+    };
     const rows=[
-      ["Aantal strings",...sd.mppts.map(m=>m.stringCount+"")],
-      ["PV-panelen",...sd.mppts.map(m=>m.totalPanels+"")],
-      ["Piekvermogen",...sd.mppts.map(m=>(m.powerStc/1000).toFixed(2)+" kWp")],
-      ["Min. DC-spanning WR",...sd.mppts.map(()=>sd.config.inverterMpptMin+" V")],
-      ["Typ. PV-spanning ("+sd.config.tempConfig+"°C)",...sd.mppts.map(m=>cell(m.checks.vmpConfigOk,m.vmpConfig.toFixed(0)+" V"))],
-      ["Min. PV-spanning ("+sd.config.tempMax+"°C)",...sd.mppts.map(m=>cell(m.checks.vmpHotOk,m.vmpHot.toFixed(0)+" V"))],
-      ["Max. DC-spanning omvormer",...sd.mppts.map(()=>sd.config.inverterMaxDc+" V")],
-      ["Max. PV-spanning ("+sd.config.tempMin+"°C)",...sd.mppts.map(m=>cell(m.checks.vocColdOk,m.vocCold.toFixed(0)+" V"))],
-      ["Max. ingangsstroom MPPT",...sd.mppts.map(()=>sd.config.inverterMaxCurrent+" A")],
-      ["Max. PV-generatorstroom (Imp)",...sd.mppts.map(m=>cell(m.checks.impOk,m.impTotal.toFixed(1)+" A"))],
-      ["Max. kortsluitstroom MPPT",...sd.mppts.map(()=>sd.config.inverterMaxCurrent+" A")],
-      ["Max. kortsluitstroom PV (Isc)",...sd.mppts.map(m=>cell(m.checks.iscOk,m.iscTotal.toFixed(1)+" A"))],
+      ["Aantal strings",...sd.mppts.map(m=>({content:m.stringCount+"",styles:{textColor:NEU,fontStyle:"bold"}}))],
+      ["PV-panelen",...sd.mppts.map(m=>({content:m.totalPanels+"",styles:{textColor:NEU,fontStyle:"bold"}}))],
+      ["Piekvermogen",...sd.mppts.map(m=>({content:(m.powerStc/1000).toFixed(2)+" kWp",styles:{textColor:NEU,fontStyle:"bold"}}))],
+      ["Min. DC-spanning WR",...sd.mppts.map(()=>({content:sd.config.inverterMpptMin+" V",styles:{}}))],
+      ["Typ. PV-spanning ("+sd.config.tempConfig+"°C)",...sd.mppts.map(m=>cv(m.checks.vmpConfigOk,m.vmpConfig.toFixed(0)+" V"))],
+      ["Min. PV-spanning ("+sd.config.tempMax+"°C)",...sd.mppts.map(m=>cv(m.checks.vmpHotOk,m.vmpHot.toFixed(0)+" V"))],
+      ["Max. DC-spanning omvormer",...sd.mppts.map(()=>({content:sd.config.inverterMaxDc+" V",styles:{}}))],
+      ["Max. PV-spanning ("+sd.config.tempMin+"°C)",...sd.mppts.map(m=>cv(m.checks.vocColdOk,m.vocCold.toFixed(0)+" V"))],
+      ["Max. ingangsstroom MPPT",...sd.mppts.map(()=>({content:sd.config.inverterMaxCurrent+" A",styles:{}}))],
+      ["Max. PV-generatorstroom (Imp)",...sd.mppts.map(m=>cv(m.checks.impOk,m.impTotal.toFixed(1)+" A"))],
+      ["Max. kortsluitstroom MPPT",...sd.mppts.map(()=>({content:sd.config.inverterMaxCurrent+" A",styles:{}}))],
+      ["Max. kortsluitstroom PV (Isc)",...sd.mppts.map(m=>cv(m.checks.iscOk,m.iscTotal.toFixed(1)+" A"))],
     ];
-    // Bouw columnStyles dynamisch op basis van aantal MPPT-ingangen
     const colStyles={0:{cellWidth:labelColW,textColor:MUT,fontStyle:"normal",halign:"left"}};
-    for(let ci=1;ci<=nMppt;ci++) colStyles[ci]={cellWidth:valColW,halign:"right",fontStyle:"bold"};
+    for(let ci=1;ci<=nMppt;ci++) colStyles[ci]={cellWidth:valColW,halign:"right"};
     doc.autoTable({startY:y,head,body:rows,
       styles:{fontSize:nMppt>2?6.5:7.5,cellPadding:2},
       headStyles:{fillColor:BL,textColor:WHT,fontStyle:"bold",halign:"right",minCellHeight:10},
       columnStyles:colStyles,
-      bodyStyles:{halign:"right",fontStyle:"bold"},
+      bodyStyles:{halign:"right"},
       alternateRowStyles:{fillColor:[239,246,255]},
       margin:{left:M,right:M},tableWidth:W-2*M});
     y=doc.lastAutoTable.finalY+4;
@@ -3300,27 +3306,36 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
         }
       }
 
-      // Stap 5: Capture — extra wacht zodat Leaflet SVG (panelen) volledig gerenderd is
-      await new Promise(r=>setTimeout(r,500));
+      // Stap 5: Capture
+      // Forceer een volledige map-redraw zodat canvas pane up-to-date is
+      map.invalidateSize(true);
+      await new Promise(r=>setTimeout(r,300));
+      // Extra raf zodat browser echt gepaints heeft na invalidateSize
+      await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+
       const canvas=await window.html2canvas(mapEl,{
-        useCORS:true,allowTaint:false,scale:1.5,
-        logging:false,backgroundColor:"#e8e8e8",
-        foreignObjectRendering:false,imageTimeout:15000,
+        useCORS:true,
+        allowTaint:true,  // sta tainted canvas toe — vermijdt lege output bij CORS-problemen
+        scale:1.5,
+        logging:false,
+        backgroundColor:"#e8e8e8",
+        foreignObjectRendering:false,
+        imageTimeout:20000,
         onclone:(doc)=>{
-          // Zorg dat alle Leaflet panes zichtbaar zijn (incl. canvas pane met panelen)
-          doc.querySelectorAll(".leaflet-pane").forEach(p=>{
-            p.style.display="block";
-            p.style.visibility="visible";
+          // Forceer zichtbaarheid van alle Leaflet lagen inclusief canvas pane
+          doc.querySelectorAll(".leaflet-pane,.leaflet-layer").forEach(el=>{
+            el.style.display="block";
+            el.style.visibility="visible";
+            el.style.opacity="1";
           });
-          // Canvas renderer pane specifiek
-          doc.querySelectorAll(".leaflet-canvas-pane canvas, .leaflet-overlay-pane canvas").forEach(c=>{
+          doc.querySelectorAll(".leaflet-canvas-pane canvas").forEach(c=>{
             c.style.display="block";
             c.style.visibility="visible";
+            c.style.opacity="1";
+            c.style.position="absolute";
           });
-          // SVG overlay ook meenemen (voor building outlines)
           doc.querySelectorAll(".leaflet-overlay-pane svg").forEach(s=>{
             s.style.overflow="visible";
-            s.style.display="block";
           });
         },
       });
@@ -4138,14 +4153,14 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
           </div>
         </div>}
 
-          {/* ── Bevestigingsknop: onderaan na alle stappen ─────────────── */}
-          {tlContact&&<div className="customer-section" style={{
+          {/* ── Bevestigingsknop: toon alleen als TL-klant geselecteerd is maar kaart nog niet geladen ─── */}
+          {tlContact&&!coords&&<div className="customer-section" style={{
             background:"var(--amber-light)",border:"2px solid var(--amber)",borderRadius:10,padding:14}}>
             <div className="sl" style={{marginBottom:8}}>4️⃣ Bevestig en laad de kaart</div>
             {!tlPendingGeo&&<div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>
-              ⚠️ Geen adres geselecteerd. Kies een adres in stap 1.
+              ⚠️ Geen adres geselecteerd — kies een adres in stap 1.
             </div>}
-            {!tlSelectedDealId&&<div style={{fontSize:9,color:"var(--amber)",marginBottom:6,fontWeight:600}}>
+            {tlPendingGeo&&!tlSelectedDealId&&<div style={{fontSize:9,color:"var(--amber)",marginBottom:6,fontWeight:600}}>
               ⚠️ Koppel eerst een deal aan in stap 1.
             </div>}
             <button style={{
@@ -4163,6 +4178,10 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
             {tlPendingGeo&&<div style={{fontSize:8,color:"var(--amber)",marginTop:6,textAlign:"center"}}>
               📍 {tlPendingGeo.display_name?.split(",").slice(0,3).join(", ")}
             </div>}
+          </div>}
+          {/* Toon bevestiging als kaart al geladen is */}
+          {tlContact&&coords&&<div style={{padding:"8px 12px",background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:8,fontSize:9,color:"var(--green)"}}>
+            ✅ Klant geladen: <strong>{customer.name}</strong> — {displayName?.split(",").slice(0,2).join(",")}
           </div>}
 
         {activeTab==="panelen"&&<div className="section">
