@@ -2542,125 +2542,9 @@ function ProjectPanel({customer,projectList,lastSavedAt,isLoadingProject,
       </div>}
       {isLoadingProject&&<div style={{fontSize:9,color:"var(--alpha)"}}>⏳ Project wordt geladen...</div>}
 
-      {/* ────── TL MAPPING EDITOR MODAL ────── */}
-      {tlMappingOpen&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:99998,
-        display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
-        <div style={{background:"var(--bg1)",borderRadius:12,width:"min(740px,95vw)",
-          maxHeight:"90vh",display:"flex",flexDirection:"column",boxShadow:"0 20px 60px rgba(0,0,0,0.4)"}}>
-
-          {/* Header */}
-          <div style={{padding:"14px 20px",borderBottom:"2px solid var(--amber)",
-            background:"var(--amber-light)",borderRadius:"12px 12px 0 0",flexShrink:0,
-            display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <div>
-              <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:16,color:"var(--amber)"}}>
-                📋 Offerte-mapping instellen
-              </div>
-              <div style={{fontSize:9,color:"var(--muted)",marginTop:2}}>
-                Dakbedekking: <strong style={{color:"var(--amber)"}}>{buildings.find(b=>b.id===selBuildingId)?.dakbedekking||"—"}</strong>
-                {" · "}Koppel per lijnpost welke berekende waarde de hoeveelheid bepaalt
-              </div>
-            </div>
-            <button onClick={()=>setTlMappingOpen(false)}
-              style={{background:"none",border:"none",fontSize:22,cursor:"pointer",color:"var(--muted)",lineHeight:1}}>✕</button>
-          </div>
-
-          {tlMappingLoading&&<div style={{padding:50,textAlign:"center",color:"var(--alpha)"}}>
-            <div className="spinner"/><div style={{marginTop:10}}>Lijnposten laden uit Teamleader...</div>
-          </div>}
-
-          {!tlMappingLoading&&<>
-            {/* Beschikbare waarden */}
-            <div style={{padding:"10px 20px",background:"var(--bg2)",borderBottom:"1px solid var(--border)",flexShrink:0}}>
-              <div style={{fontSize:9,fontWeight:700,marginBottom:6,color:"var(--text)"}}>Beschikbare berekende waarden:</div>
-              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
-                {getTlAppValues().filter(v=>v.key!=="keep"&&v.value!=null).map(v=>(
-                  <div key={v.key} style={{padding:"2px 9px",borderRadius:20,fontSize:9,
-                    background:"var(--blue-bg)",border:"1px solid var(--blue-border)",color:"var(--blue)",
-                    fontFamily:"'IBM Plex Mono',monospace"}}>
-                    <strong>{v.value}</strong>{v.unit?" "+v.unit:""} — {v.label}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Tabel */}
-            <div style={{overflowY:"auto",flex:1,padding:"8px 20px"}}>
-              <table style={{width:"100%",borderCollapse:"collapse"}}>
-                <thead style={{position:"sticky",top:0,background:"var(--bg1)",zIndex:1}}>
-                  <tr style={{borderBottom:"2px solid var(--border)"}}>
-                    <th style={{textAlign:"left",padding:"7px 4px",fontSize:9,color:"var(--muted)",fontWeight:600}}>Lijnpost</th>
-                    <th style={{textAlign:"right",padding:"7px 4px",fontSize:9,color:"var(--muted)",fontWeight:600,width:65}}>Huidig</th>
-                    <th style={{textAlign:"left",padding:"7px 4px",fontSize:9,color:"var(--muted)",fontWeight:600,width:230}}>Koppel aan →</th>
-                    <th style={{textAlign:"right",padding:"7px 4px",fontSize:9,color:"var(--green)",fontWeight:700,width:65}}>Nieuw</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {tlMappingLines.map((line)=>{
-                    const mapped=tlMappingValues[line.key];
-                    const appVal=getTlAppValues().find(v=>v.key===mapped);
-                    const newQty=(mapped&&mapped!=="keep"&&appVal?.value!=null)?appVal.value:null;
-                    const isLinked=mapped&&mapped!=="keep";
-                    return(
-                      <tr key={line.key} style={{borderBottom:"1px solid var(--border)",
-                        background:isLinked?"var(--green-bg)":"transparent",transition:"background .1s"}}>
-                        <td style={{padding:"8px 4px"}}>
-                          <div style={{fontWeight:600,fontSize:11,color:"var(--text)"}}>{line.description}</div>
-                          {line.unitPrice>0&&<div style={{fontSize:8,color:"var(--muted)"}}>€ {Number(line.unitPrice).toFixed(2)}/stuk</div>}
-                        </td>
-                        <td style={{padding:"8px 4px",textAlign:"right",
-                          fontFamily:"'IBM Plex Mono',monospace",fontSize:11,color:"var(--muted)"}}>
-                          {line.currentQty}{line.unit?" "+line.unit:""}
-                        </td>
-                        <td style={{padding:"8px 4px"}}>
-                          <select style={{width:"100%",padding:"4px 6px",fontSize:9,borderRadius:5,
-                            border:"1.5px solid "+(isLinked?"var(--green)":"var(--border-dark)"),
-                            background:"var(--bg3)",color:"var(--text)",fontFamily:"inherit"}}
-                            value={mapped||"keep"}
-                            onChange={e=>setTlMappingValues(prev=>({...prev,[line.key]:e.target.value}))}>
-                            <option value="keep">⬜ Ongewijzigd laten ({line.currentQty})</option>
-                            <optgroup label="── Berekende waarden ──">
-                              {getTlAppValues().filter(v=>v.key!=="keep"&&v.value!=null).map(v=>(
-                                <option key={v.key} value={v.key}>{v.value}{v.unit?" "+v.unit:""} — {v.label}</option>
-                              ))}
-                            </optgroup>
-                          </select>
-                        </td>
-                        <td style={{padding:"8px 4px",textAlign:"right",
-                          fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,fontSize:13,
-                          color:newQty!=null?"var(--green)":"var(--muted)"}}>
-                          {newQty!=null?<span>{newQty}<span style={{fontSize:9,marginLeft:2}}>{line.unit}</span></span>
-                            :<span style={{fontSize:10}}>{line.currentQty}</span>}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Footer */}
-            <div style={{padding:"12px 20px",borderTop:"2px solid var(--border)",
-              background:"var(--bg2)",borderRadius:"0 0 12px 12px",flexShrink:0,
-              display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
-              <div style={{fontSize:9,color:"var(--muted)"}}>
-                <strong>{Object.values(tlMappingValues).filter(v=>v&&v!=="keep").length}</strong> van <strong>{tlMappingLines.length}</strong> lijnposten gekoppeld
-                <br/><span style={{fontSize:8,color:"var(--alpha)"}}>Mapping wordt bewaard per daktype voor hergebruik</span>
-              </div>
-              <div style={{display:"flex",gap:8}}>
-                <button className="btn sec" onClick={()=>setTlMappingOpen(false)}>Annuleren</button>
-                <button className="btn green" style={{fontWeight:700,fontSize:11}}
-                  onClick={handleCreateTlQuotation} disabled={tlCreateQuotStatus==="loading"}>
-                  {tlCreateQuotStatus==="loading"?<><div className="spinner"/>Aanmaken...</>
-                    :"✅ Offerte aanmaken in Teamleader"}
-                </button>
-              </div>
-            </div>
-          </>}
-        </div>
-      </div>}
 
     </div>
+
   );
 }
 
@@ -4392,51 +4276,8 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
                 :<><strong style={{color:"#92400e"}}>⚠️ LiDAR niet beschikbaar</strong> — GRB-contour gebruikt<span style={{display:"block",marginTop:3,fontSize:8,color:"var(--muted)"}}>{dhmError}</span></>
               }
             </div>
-            <div className="face-grid">
-              {detectedFaces.map((f,i)=>{
-                const q=ZONE_Q[f.orientation]||ZONE_Q.Z;
-                const isGood=BEST_SOUTH[f.orientation]!==false;
-                const qC=isGood?q[0]:q[1];
-                const conf=f.confidence??0;
-                const confColor=conf>=0.7?"var(--green)":conf>=0.4?"var(--amber)":"var(--red)";
-                const face2d=f.area2d_manual||(detectedArea||80)*(f.pct/100);
-                const face3d=f.area3d_manual||compute3dArea(face2d,f.slope);
-                return(
-                  <button key={i} className={`face-btn ${selFaceIdx===i?"active":""}`} onClick={()=>selectFace(i,detectedFaces)}>
-                    <span className="fb-main">{f.isFlatRoof?"🏢 ":""}{f.orientation} · {f.slope}°{f.status==="manual"&&<span style={{fontSize:7,color:"var(--amber)",marginLeft:4}}>✏️</span>}</span>
-                    <span className="fb-sub">{f.pct}% · {f.avgH}m hoogte</span>
-                    <span style={{fontSize:8,color:"var(--blue)",display:"block",marginTop:2}}>3D: {face3d.toFixed(0)}m² <span style={{color:"var(--muted)"}}>(2D: {face2d.toFixed(0)}m²)</span></span>
-                    <span style={{fontSize:8,color:selFaceIdx===i?"var(--alpha)":qC.c,display:"block"}}>{qC.l}</span>
-                    {conf>0&&<span style={{fontSize:7,color:confColor,display:"block"}}>{conf>=0.7?"✅":conf>=0.4?"⚠️":"❌"} conf: {Math.round(conf*100)}%</span>}
-                  </button>
-                );
-              })}
-            </div>
-            <div style={{display:"flex",gap:5,marginTop:6,flexWrap:"wrap"}}>
-              {!editMode
-                ?<button className="btn sec sm" style={{flex:1}} onClick={()=>{
-                    if(!detectedFaces[selFaceIdx]?.polygon){
-                      const withPolys=generateFacePolygons(buildingCoords,detectedFaces,detectedFaces[0]?.ridgeAngleDeg);
-                      setDetectedFaces(withPolys);setTimeout(()=>setEditMode(true),50);
-                    } else {setEditMode(true);}
-                  }}>✏️ Dakvlak aanpassen</button>
-                :<>
-                  <button className="btn green sm" style={{flex:1}} onClick={()=>{setDetectedFaces(prev=>prev?.map((f,i)=>i===selFaceIdx?{...f,status:"manual"}:f));setEditMode(false);}}>✅ Bevestig</button>
-                  <button className="btn danger sm" onClick={()=>setEditMode(false)}>✕</button>
-                </>
-              }
-              {!editMode&&detectedFaces.length<4&&<button className="btn sec sm" onClick={()=>{
-                const f=detectedFaces[selFaceIdx];
-                if(!f?.polygon||f.polygon.length<4) return;
-                const mid=Math.floor(f.polygon.length/2);
-                const half1={...f,polygon:[...f.polygon.slice(0,mid+1)],pct:Math.round(f.pct/2),status:"manual"};
-                const half2={...f,orientation:DIRS8[(DIRS8.indexOf(f.orientation)+2)%8]||f.orientation,polygon:[...f.polygon.slice(mid)],pct:Math.round(f.pct/2),status:"manual"};
-                setDetectedFaces(prev=>[...prev.slice(0,selFaceIdx),half1,half2,...prev.slice(selFaceIdx+1)]);
-              }}>➕ Splits</button>}
-            </div>
-            {editMode&&<div className="info-box" style={{marginTop:5,background:"#fffbeb",borderColor:"#fde68a",fontSize:9}}><strong>✏️ Editeer modus</strong> — Versleep oranje bolletjes op de kaart.</div>}
-          </div>}
           {dhmStatus==="error"&&!detectedFaces&&<div className="info-box err"><strong>⚠️ LiDAR niet beschikbaar</strong><br/><span style={{fontSize:8,color:"var(--muted)"}}>{dhmError}</span><br/>Stel helling &amp; richting handmatig in hieronder.</div>}
+        </div>}
         </div>}
 
         <div className="divider"/>
@@ -4625,6 +4466,88 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
           <strong>📡 Databronnen</strong><br/>GRB · GRB Gebouwcontouren · 1m<br/>DHM WCS · DSM+DTM · Horn's methode<br/>Lambert72 · Helmert 7-parameter<br/>© Agentschap Digitaal Vlaanderen
         </div>
       </aside>
+
+      {/* ────── TL MAPPING EDITOR MODAL ────── */}
+      {tlMappingOpen&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:99998,
+        display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+        <div style={{background:"var(--bg1)",borderRadius:12,width:"min(740px,95vw)",
+          maxHeight:"90vh",display:"flex",flexDirection:"column",boxShadow:"0 20px 60px rgba(0,0,0,0.4)"}}>
+
+          {/* Header */}
+          <div style={{padding:"14px 20px",borderBottom:"2px solid var(--amber)",
+            background:"var(--amber-light)",borderRadius:"12px 12px 0 0",flexShrink:0,
+            display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:16,color:"var(--amber)"}}>
+                📋 Offerte-mapping instellen
+              </div>
+              <div style={{fontSize:9,color:"var(--muted)",marginTop:2}}>
+                Dakbedekking: <strong style={{color:"var(--amber)"}}>{buildings.find(b=>b.id===selBuildingId)?.dakbedekking||"—"}</strong>
+                {" · "}Koppel per lijnpost welke berekende waarde de hoeveelheid bepaalt
+              </div>
+            </div>
+            <button onClick={()=>setTlMappingOpen(false)}
+              style={{background:"none",border:"none",fontSize:22,cursor:"pointer",color:"var(--muted)",lineHeight:1}}>✕</button>
+          </div>
+
+          {tlMappingLoading&&<div style={{padding:50,textAlign:"center",color:"var(--alpha)"}}>
+            <div className="spinner"/><div style={{marginTop:10}}>Lijnposten laden uit Teamleader...</div>
+          </div>}
+          {!tlMappingLoading&&<>
+            <div style={{padding:"10px 20px",background:"var(--bg2)",borderBottom:"1px solid var(--border)",flexShrink:0}}>
+              <div style={{fontSize:9,fontWeight:700,marginBottom:6}}>Beschikbare waarden:</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {getTlAppValues().filter(v=>v.key!=="keep"&&v.value!=null).map(v=>(
+                  <div key={v.key} style={{padding:"2px 9px",borderRadius:20,fontSize:9,background:"var(--blue-bg)",color:"var(--blue)"}}><strong>{v.value}</strong>{v.unit?" "+v.unit:""} — {v.label}</div>
+                ))}
+              </div>
+            </div>
+            <div style={{overflowY:"auto",flex:1,padding:"8px 20px"}}>
+              <table style={{width:"100%",borderCollapse:"collapse"}}>
+                <thead><tr style={{borderBottom:"2px solid var(--border)"}}>
+                  <th style={{textAlign:"left",padding:"7px 4px",fontSize:9,color:"var(--muted)",fontWeight:600}}>Lijnpost</th>
+                  <th style={{textAlign:"right",padding:"7px 4px",fontSize:9,color:"var(--muted)",fontWeight:600,width:65}}>Huidig</th>
+                  <th style={{textAlign:"left",padding:"7px 4px",fontSize:9,color:"var(--muted)",fontWeight:600,width:230}}>Koppel aan</th>
+                  <th style={{textAlign:"right",padding:"7px 4px",fontSize:9,color:"var(--green)",fontWeight:700,width:65}}>Nieuw</th>
+                </tr></thead>
+                <tbody>
+                  {tlMappingLines.map((ln)=>{
+                    const mapped=tlMappingValues[ln.key];
+                    const appVal=getTlAppValues().find(v=>v.key===mapped);
+                    const newQty=(mapped&&mapped!=="keep"&&appVal?.value!=null)?appVal.value:null;
+                    const linked=mapped&&mapped!=="keep";
+                    return(
+                      <tr key={ln.key} style={{borderBottom:"1px solid var(--border)",background:linked?"var(--green-bg)":"transparent"}}>
+                        <td style={{padding:"8px 4px",fontWeight:600,fontSize:11}}>{ln.description}</td>
+                        <td style={{padding:"8px 4px",textAlign:"right",color:"var(--muted)",fontSize:11}}>{ln.currentQty}</td>
+                        <td style={{padding:"8px 4px"}}>
+                          <select style={{width:"100%",padding:"4px",fontSize:9,borderRadius:5,border:"1px solid var(--border-dark)",background:"var(--bg3)",color:"var(--text)"}}
+                            value={mapped||"keep"} onChange={e=>setTlMappingValues(prev=>({...prev,[ln.key]:e.target.value}))}>
+                            <option value="keep">⬜ Ongewijzigd ({ln.currentQty})</option>
+                            <optgroup label="Berekende waarden">{getTlAppValues().filter(v=>v.key!=="keep"&&v.value!=null).map(v=>(
+                              <option key={v.key} value={v.key}>{v.value}{v.unit?" "+v.unit:""} — {v.label}</option>
+                            ))}</optgroup>
+                          </select>
+                        </td>
+                        <td style={{padding:"8px 4px",textAlign:"right",fontWeight:700,fontSize:13,color:newQty!=null?"var(--green)":"var(--muted)"}}>{newQty!=null?newQty:ln.currentQty}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{padding:"12px 20px",borderTop:"2px solid var(--border)",background:"var(--bg2)",borderRadius:"0 0 12px 12px",flexShrink:0,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
+              <div style={{fontSize:9,color:"var(--muted)"}}><strong>{Object.values(tlMappingValues).filter(v=>v&&v!=="keep").length}</strong> / <strong>{tlMappingLines.length}</strong> gekoppeld</div>
+              <div style={{display:"flex",gap:8}}>
+                <button className="btn sec" onClick={()=>setTlMappingOpen(false)}>Annuleren</button>
+                <button className="btn green" style={{fontWeight:700}} onClick={handleCreateTlQuotation} disabled={tlCreateQuotStatus==="loading"}>
+                  {tlCreateQuotStatus==="loading"?<><div className="spinner"/>Aanmaken...</>:"✅ Offerte aanmaken in Teamleader"}
+                </button>
+              </div>
+            </div>
+          </>}
+        </div>
+      </div>}
 
       <div className="content-area">
         <div className="map-area" style={{display:activeTab==="configuratie"?"flex":"none",flex:1,position:"relative",minHeight:0}}>
