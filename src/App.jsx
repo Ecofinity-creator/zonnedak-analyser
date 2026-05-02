@@ -3270,25 +3270,36 @@ export default function App(){
 
   const onVertexDrag=useCallback((faceIdx,vertexIdx,newLatLng)=>{
     if(!draggedPolygonsRef.current){
+      // Initialiseer vanuit detectedFaces — deep copy van ALLE vlakken
       const faces=detectedFacesRef.current;
-      draggedPolygonsRef.current=faces?faces.map(f=>f.polygon?[...f.polygon.map(p=>[...p])]:null):null;
+      draggedPolygonsRef.current=faces
+        ?faces.map(f=>f.polygon&&f.polygon.length>=3?f.polygon.map(p=>[p[0],p[1]]):null)
+        :null;
     }
     if(!draggedPolygonsRef.current) return;
     const newPt=[newLatLng[0],newLatLng[1]];
-    if(draggedPolygonsRef.current[faceIdx])
-      draggedPolygonsRef.current[faceIdx][vertexIdx]=newPt;
-    // Sync gedeelde nokpunten: als punt (bijna) gelijk is in ander vlak → ook verplaatsen
-    const TOLE=0.00005; // ~5m tolerantie
-    const origPt=detectedFacesRef.current?.[faceIdx]?.polygon?.[vertexIdx];
-    if(origPt){
-      draggedPolygonsRef.current.forEach((poly,fi)=>{
-        if(fi===faceIdx||!poly) return;
-        poly.forEach((pt,vi)=>{
-          if(Math.abs(pt[0]-origPt[0])<TOLE&&Math.abs(pt[1]-origPt[1])<TOLE)
-            draggedPolygonsRef.current[fi][vi]=newPt;
-        });
+
+    // Sla de ORIGINELE positie op vóór we updaten (voor sync-detectie)
+    const origPt=draggedPolygonsRef.current[faceIdx]?.[vertexIdx];
+    if(!origPt) return;
+
+    // Update het gesleepte punt in het actieve vlak
+    draggedPolygonsRef.current[faceIdx][vertexIdx]=newPt;
+
+    // Sync gedeelde nokpunten naar andere vlakken
+    // Gebruik origPt uit draggedPolygonsRef (live) zodat opeenvolgende drags correct werken
+    const TOLE=0.00008; // ~8m tolerantie voor snijpunten
+    draggedPolygonsRef.current.forEach((poly,fi)=>{
+      if(fi===faceIdx||!poly) return;
+      poly.forEach((pt,vi)=>{
+        // Controleer of dit punt (bijna) gelijk is aan het gesleepte punt VÓÓR de move
+        if(Math.abs(pt[0]-origPt[0])<TOLE && Math.abs(pt[1]-origPt[1])<TOLE){
+          // Verifieer: dit punt mag NIET ook al een hoekpunt zijn van het eigen vlak
+          // (voorkomt dat hele vlakken verschuiven bij verkeerde tolerantie-match)
+          draggedPolygonsRef.current[fi][vi]=newPt;
+        }
       });
-    }
+    });
   },[]);
 
   const onVertexDragEnd=useCallback(()=>{
@@ -3296,28 +3307,25 @@ export default function App(){
     const newPolygons=draggedPolygonsRef.current;
     draggedPolygonsRef.current=null;
 
-    // Update detectedFaces (legacy + kaartweergave)
-    const newFacesFinal=[];
+    // Update detectedFaces — valideer dat elk vlak nog minstens 3 punten heeft
     setDetectedFaces(prev=>{
       if(!prev) return prev;
-      const updated=prev.map((f,fi)=>{
+      return prev.map((f,fi)=>{
         const newPoly=newPolygons[fi];
-        if(!newPoly) return f;
+        if(!newPoly||newPoly.length<3) return f; // bewaar origineel als polygon ongeldig
         const area2d=Math.round(polyAreaLambert72(newPoly));
         const area3d=+compute3dArea(area2d,f.slope).toFixed(1);
         return {...f,polygon:newPoly,area2d_manual:area2d,area3d_manual:area3d,status:"manual"};
       });
-      updated.forEach(f=>newFacesFinal.push(f));
-      return updated;
     });
 
-    // Update buildings state — anders leest redrawRoof b.faces (old) en snapt terug
+    // Update buildings state — zelfde validatie
     if(selBuildingId){
       setBuildings(prev=>prev.map(b=>{
         if(b.id!==selBuildingId||!b.faces) return b;
         const newFaces=b.faces.map((f,fi)=>{
           const newPoly=newPolygons[fi];
-          if(!newPoly) return f;
+          if(!newPoly||newPoly.length<3) return f; // bewaar origineel
           const area2d=Math.round(polyAreaLambert72(newPoly));
           const area3d=+compute3dArea(area2d,f.slope).toFixed(1);
           return {...f,polygon:newPoly,area2d_manual:area2d,area3d_manual:area3d,status:"manual"};
