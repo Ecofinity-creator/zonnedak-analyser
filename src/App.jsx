@@ -2771,6 +2771,11 @@ export default function App(){
   const[tlQuotationLoading,setTlQuotationLoading]=useState(false);
   const[tlCreateQuotStatus,setTlCreateQuotStatus]=useState(null);
   const[tlCreateQuotUrl,setTlCreateQuotUrl]=useState(null);
+  // State voor de mapping-editor
+  const[tlMappingOpen,setTlMappingOpen]=useState(false);
+  const[tlMappingLines,setTlMappingLines]=useState([]); // geladen lijnposten uit template
+  const[tlMappingValues,setTlMappingValues]=useState({}); // {lineKey: appValueKey}
+  const[tlMappingLoading,setTlMappingLoading]=useState(false);
   const[showNewDealForm,setShowNewDealForm]=useState(false);
   const[newDealTitle,setNewDealTitle]=useState("");
   const[newDealValue,setNewDealValue]=useState("");
@@ -2827,6 +2832,7 @@ export default function App(){
     if(geo) setTlPendingGeo({lat:String(geo.lat),lon:String(geo.lng),display_name:geo.displayName});
   },[tlContact]);
 
+
   // Haal lijst van bestaande TL-offertes op voor template-mapping
   const fetchTlQuotations=useCallback(async()=>{
     if(!tlAuth?.logged_in) return;
@@ -2839,11 +2845,7 @@ export default function App(){
     setTlQuotationLoading(false);
   },[tlAuth]);
 
-  // State voor de mapping-editor
-  const[tlMappingOpen,setTlMappingOpen]=useState(false);
-  const[tlMappingLines,setTlMappingLines]=useState([]); // geladen lijnposten uit template
-  const[tlMappingValues,setTlMappingValues]=useState({}); // {lineKey: appValueKey}
-  const[tlMappingLoading,setTlMappingLoading]=useState(false);
+
   // Berekende waarden die je kan koppelen aan lijnposten
   const getTlAppValues=useCallback(()=>{
     if(!results) return [];
