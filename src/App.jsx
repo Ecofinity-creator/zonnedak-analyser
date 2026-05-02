@@ -1572,7 +1572,7 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
       const ori=m.faces?.map(f2=>f2.orientation).join("+") || m.orientation || "";
       return "Ingang "+String.fromCharCode(65+i)+(ori?" ("+ori+" · "+(m.slope??slope)+"°)":"");
     })]];
-    const cell=(check,val)=>check===null?val:(check?"+ ":"- ")+val;
+    const cell=(check,val)=>check===null?val:(check?"✓ ":"✗ ")+val;
     const rows=[
       ["Aantal strings",...sd.mppts.map(m=>m.stringCount+"")],
       ["PV-panelen",...sd.mppts.map(m=>m.totalPanels+"")],
@@ -2687,8 +2687,21 @@ export default function App(){
       const faces=detectedFacesRef.current;
       draggedPolygonsRef.current=faces?faces.map(f=>f.polygon?[...f.polygon.map(p=>[...p])]:null):null;
     }
-    if(draggedPolygonsRef.current?.[faceIdx]){
-      draggedPolygonsRef.current[faceIdx][vertexIdx]=[newLatLng[0],newLatLng[1]];
+    if(!draggedPolygonsRef.current) return;
+    const newPt=[newLatLng[0],newLatLng[1]];
+    if(draggedPolygonsRef.current[faceIdx])
+      draggedPolygonsRef.current[faceIdx][vertexIdx]=newPt;
+    // Sync gedeelde nokpunten: als punt (bijna) gelijk is in ander vlak → ook verplaatsen
+    const TOLE=0.00005; // ~5m tolerantie
+    const origPt=detectedFacesRef.current?.[faceIdx]?.polygon?.[vertexIdx];
+    if(origPt){
+      draggedPolygonsRef.current.forEach((poly,fi)=>{
+        if(fi===faceIdx||!poly) return;
+        poly.forEach((pt,vi)=>{
+          if(Math.abs(pt[0]-origPt[0])<TOLE&&Math.abs(pt[1]-origPt[1])<TOLE)
+            draggedPolygonsRef.current[fi][vi]=newPt;
+        });
+      });
     }
   },[]);
 
@@ -3194,12 +3207,14 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
       // Stap 1: Schakel naar configuratie tab — html2canvas vangt display:none niet
       const mapEl=document.getElementById("leaflet-map");
       if(!mapEl) throw new Error("Kaart-element niet gevonden");
-      // Altijd naar configuratie tab switchen — html2canvas vangt display:none niet.
-      // Ook als de kaart "zichtbaar lijkt": React kan de DOM nog niet gesynct hebben.
+      // Altijd naar configuratie tab — html2canvas pakt geen display:none.
+      // Gebruik requestAnimationFrame na de setState om te garanderen dat de DOM gepaints is.
       setActiveTab("configuratie");
-      await new Promise(r=>setTimeout(r,500)); // wacht op React render
+      // Wacht op React render + twee animatieframes (= DOM echt zichtbaar)
+      await new Promise(r=>setTimeout(r,200));
+      await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
       map.invalidateSize(true);
-      await new Promise(r=>setTimeout(r,300));
+      await new Promise(r=>setTimeout(r,400));
 
       // Stap 2: Herteken ALLE vlak-panelen voor capture
       // Verwijder bestaande lagen eerst — tab-switch triggert re-renders die lagen wissen.
@@ -4125,6 +4140,33 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
             </div>}
           </div>
         </div>}
+
+          {/* ── Bevestigingsknop: onderaan na alle stappen ─────────────── */}
+          {tlContact&&<div className="customer-section" style={{
+            background:"var(--amber-light)",border:"2px solid var(--amber)",borderRadius:10,padding:14}}>
+            <div className="sl" style={{marginBottom:8}}>4️⃣ Bevestig en laad de kaart</div>
+            {!tlPendingGeo&&<div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>
+              ⚠️ Geen adres geselecteerd. Kies een adres in stap 1.
+            </div>}
+            {!tlSelectedDealId&&<div style={{fontSize:9,color:"var(--amber)",marginBottom:6,fontWeight:600}}>
+              ⚠️ Koppel eerst een deal aan in stap 1.
+            </div>}
+            <button style={{
+              width:"100%",padding:"14px 0",fontSize:14,fontWeight:800,
+              background:(!tlPendingGeo||!tlSelectedDealId)?"var(--bg3)":"var(--amber)",
+              color:(!tlPendingGeo||!tlSelectedDealId)?"var(--muted)":"#fff",
+              border:"none",borderRadius:8,cursor:(!tlPendingGeo||!tlSelectedDealId)?"not-allowed":"pointer",
+              fontFamily:"'Syne',sans-serif"}}
+              onClick={handleTlConfirm}
+              disabled={!tlPendingGeo||!tlSelectedDealId}>
+              {!tlPendingGeo?"📍 Adres niet gevonden"
+                :!tlSelectedDealId?"🤝 Koppel eerst een deal"
+                :"✅ Bevestig klant + laad kaart →"}
+            </button>
+            {tlPendingGeo&&<div style={{fontSize:8,color:"var(--amber)",marginTop:6,textAlign:"center"}}>
+              📍 {tlPendingGeo.display_name?.split(",").slice(0,3).join(", ")}
+            </div>}
+          </div>}
 
         {activeTab==="panelen"&&<div className="section">
           <div className="sl">Panelenlijst</div>
