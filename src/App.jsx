@@ -2427,6 +2427,8 @@ export default function App(){
   const[manualPanelPrice,setManualPanelPrice]=useState("");
   const[manualBatteryPrice,setManualBatteryPrice]=useState("");
   const[annualConsumption,setAnnualConsumption]=useState(3500);
+  const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
+  const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
 
   const autoSaverRef=useRef(null);
   const[lastSavedAt,setLastSavedAt]=useState(null);
@@ -2440,7 +2442,7 @@ export default function App(){
   const buildProjectSnapshot=useCallback(()=>({
     customer,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
     selPanelId,selInvId,selBattId,battEnabled,customCount,panelOrient,panelRotOffset,
-    orientation,slope,manualPanelPrice,manualBatteryPrice,annualConsumption,
+    orientation,slope,manualPanelPrice,manualBatteryPrice,annualConsumption,usageProfile,buildingAge,
     tlContactType:tlContact?.type||null,tlContactId:tlContact?.id||null,tlDealId:tlSelectedDealId,
   }),[customer,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
       selPanelId,selInvId,selBattId,battEnabled,customCount,panelOrient,panelRotOffset,
@@ -2481,6 +2483,8 @@ export default function App(){
     if(d.manualPanelPrice!=null) setManualPanelPrice(d.manualPanelPrice);
     if(d.manualBatteryPrice!=null) setManualBatteryPrice(d.manualBatteryPrice);
     if(d.annualConsumption!=null) setAnnualConsumption(d.annualConsumption);
+    if(d.usageProfile) setUsageProfile(d.usageProfile);
+    if(d.buildingAge!=null) setBuildingAge(d.buildingAge);
     if(d.tlDealId!==undefined) setTlSelectedDealId(d.tlDealId);
     setTimeout(()=>{suppressAutoSaveRef.current=false;setIsLoadingProject(false);setShowProjectMenu(false);},100);
   },[]);
@@ -3092,7 +3096,7 @@ export default function App(){
       orientation:effectiveOrientation,slope:effectiveSlope,
       faceSummary, // alle vlakken voor PDF systeemoverzicht
       faceEntries, // detail per vlak
-      stringDesign:stringDesign||null,consumption:Math.round(consumption),
+      stringDesign:stringDesign||null,consumption:Math.round(consumption),usageProfile,buildingAge,
       selfKwhBase:Math.round(selfKwhBase),injectKwhBase:Math.round(injectKwhBase),
       selfRatioBase,priceBuy:PRIJS_AANKOOP,priceInject:PRIJS_INJECTIE,
       // Paneel- en polygoondata voor vectortekening in PDF
@@ -3107,39 +3111,54 @@ export default function App(){
     }
     setActiveTab("resultaten");setAiLoading(true);setAiText("");setEditableAiText("");
     try{
-      const dhmStr=dhmStatus==="ok"&&detectedFaces?`\nDHM LiDAR: ${detectedFaces.map(f=>`${f.orientation} ${f.slope}° (${f.pct}%)`).join(", ")}`:"\nHandmatige invoer.";
-      const invStr=selInv?`\nOmvormer: ${selInv.brand} ${selInv.model} (${selInv.kw}kW)`:"Geen omvormer.";
+      const dhmStr=dhmStatus==="ok"&&detectedFaces?`\nLiDAR: ${detectedFaces.map(f=>`${f.orientation} ${f.slope}° (${f.pct}%)`).join(", ")}`:"\nHandmatige invoer.";
+      const invStr=selInv?`\nOmvormer: ${selInv.brand} ${selInv.model} (${selInv.kw}kW)`:"\nGeen omvormer.";
       const battStr=battResult?`\nBatterij: ${selBatt.brand} ${selBatt.model} (${selBatt.kwh}kWh) · Extra: €${battResult.extraSav}/j · Terugverdien: ${battResult.payback}j`:"Geen batterij.";
+      const PROFILE_LABELS={
+        gepensioneerd:"Gepensioneerd koppel (thuis overdag, hoog dagverbruik ~4500 kWh/j, ideaal PV-zelfverbruik)",
+        thuiswerker:"Thuiswerker(s) (hoog dagverbruik ~4000 kWh/j, uitstekend zelfverbruik)",
+        gezin:"Gezin met kinderen (gemiddeld verbruikspatroon ~4200 kWh/j)",
+        werkend_koppel:"Werkend koppel (overdag afwezig ~3200 kWh/j, batterij interessant)",
+        alleenstaand:"Alleenstaande werkend (overdag afwezig ~2000 kWh/j, kleine installatie)",
+        bedrijf:"KMO/Bedrijf (hoog dagverbruik, variabel, capaciteitstarief cruciaal)",
+      };
+      const BTW_LABELS={
+        voor2015:"Woning ouder dan 10 jaar → 6% BTW van toepassing - expliciet vermelden in offerte",
+        "2015_2019":"Woning 5–10 jaar → BTW-tarief controleren op exacte opleverdatum (6% of 21%)",
+        na2019:"Woning jonger dan 5 jaar → 21% BTW - klant expliciet informeren",
+        onbekend:"Bouwjaar onbekend → BTW-tarief navragen bij klant vóór offerte",
+      };
+      const profielStr=PROFILE_LABELS[usageProfile]||"Niet opgegeven";
+      const btwStr=BTW_LABELS[buildingAge]||"Bouwjaar niet opgegeven";
       const resp=await fetch(AI_PROXY_URL,{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,
-          messages:[{role:"user",content:`Je bent een onafhankelijk PV-installatie expert voor woningen in Vlaanderen, België. Geef een beknopt en professioneel advies in het Nederlands voor onderstaande installatie.
+          messages:[{role:"user",content:`Je bent een onafhankelijk PV-expert voor Vlaanderen, België. Geef beknopt professioneel advies.
 
 CONTEXT VLAANDEREN 2026:
-- Salderen bestaat NIET meer. Eigen verbruik bespaart ~€0,28/kWh, injectie levert ~€0,03–0,06/kWh.
-- Capaciteitstarief van toepassing. Batterij kan piekverbruik drukken.
-- BTW 6% enkel bij woning ouder dan 10 jaar. Geen REG-premie meer.
-- Realistisch terugverdien: 7–11 jaar PV zonder batterij, 9–13 jaar met.
+- Salderen bestaat NIET meer. Eigen verbruik: ~€0,28/kWh, injectie: ~€0,04/kWh.
+- Capaciteitstarief actief. Batterij drukt pieken.
+- BTW: ${btwStr}
+- Terugverdien realistisch: 7–11j PV, 9–13j met batterij.
+
+KLANTPROFIEL: ${profielStr}
 
 INSTALLATIE:
 Locatie: ${displayName}
-Dak: ${grbStatus==="ok"?"GRB-contour":"Schatting"} · ${detectedArea||80} m²${dhmStr}
-Paneel: ${selPanel.brand} ${selPanel.model} (${selPanel.watt}W, ${selPanel.eff}%)
-Aantal: ${panelCount} · ${Math.round(actualArea)} m² · ${((panelCount*selPanel.watt)/1000).toFixed(1)} kWp
-Vlakken: ${results?.faceSummary||orientation+" "+slope+"°"} · Irradiantie: ${irr} kWh/m²/j
+Panelen: ${panelCount}× ${selPanel.brand} ${selPanel.watt}W = ${((panelCount*selPanel.watt)/1000).toFixed(1)} kWp
+Vlakken: ${results?.faceSummary||orientation+" "+slope+"°"} · ${irr} kWh/m²/j irradiantie${dhmStr}
 ${invStr}
-Opbrengst: ${annualKwh} kWh/j · CO₂: ${co2} kg/j
-Klant verbruik: ${consumption} kWh · dekking ${coverage}% · zelfverbruik ${Math.round(selfRatioBase*100)}%
-Investering: ${investPanels!==null?"€"+investPanels.toLocaleString():"niet ingevuld"} · Besparing: €${annualBase}/j · Terugverdien: ${paybackBase!==null?paybackBase+"j":"—"}
+Opbrengst: ${annualKwh} kWh/j · Verbruik klant: ${consumption} kWh/j
+Dekking: ${coverage}% · Investering: ${investPanels?"€"+investPanels.toLocaleString():"n.i."} · Besparing: €${annualBase}/j
 ${battStr}
 
-GEEF ADVIES VAN MAX 200 WOORDEN:
-1. Paneelkeuze en daksituatie beoordeling
-2. Eigen verbruik tips
-3. Capaciteitstarief implicaties
-4. Realistisch terugverdientijd verwachting
-5. Aandachtspunten (BTW, AREI, C10/11)
+ADVIES (max 220 woorden):
+1. Beoordeling voor dit klantprofiel
+2. Zelfverbruikstips voor hun leefpatroon  
+3. Capaciteitstarief voor dit profiel
+4. BTW-actie voor installateur
+5. Realistisch terugverdientijd
 
-Wees concreet en feitelijk. Geen verkooppraat.`}]})});
+Concreet en feitelijk. Geen verkooppraat.`}]})});
       const d=await resp.json();
       const text=d.content?.find(b=>b.type==="text")?.text||"Analyse niet beschikbaar.";
       setAiText(text);setEditableAiText(text);
@@ -3175,13 +3194,12 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
       // Stap 1: Schakel naar configuratie tab — html2canvas vangt display:none niet
       const mapEl=document.getElementById("leaflet-map");
       if(!mapEl) throw new Error("Kaart-element niet gevonden");
-      const mapIsHidden=mapEl.offsetParent===null||getComputedStyle(mapEl).display==="none";
-      if(mapIsHidden){
-        setActiveTab("configuratie");
-        await new Promise(r=>setTimeout(r,400));
-        map.invalidateSize(true);
-        await new Promise(r=>setTimeout(r,200));
-      }
+      // Altijd naar configuratie tab switchen — html2canvas vangt display:none niet.
+      // Ook als de kaart "zichtbaar lijkt": React kan de DOM nog niet gesynct hebben.
+      setActiveTab("configuratie");
+      await new Promise(r=>setTimeout(r,500)); // wacht op React render
+      map.invalidateSize(true);
+      await new Promise(r=>setTimeout(r,300));
 
       // Stap 2: Herteken ALLE vlak-panelen voor capture
       // Verwijder bestaande lagen eerst — tab-switch triggert re-renders die lagen wissen.
@@ -3371,9 +3389,21 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
   const buildOrientationGroups=()=>{
     if(!selPanel?.voc||!selInv?.maxDcVoltage) return null;
 
-    // Gebruik faceEntries als beschikbaar (na berekening), anders enkelvoudig vlak
-    const entries=results?.faceEntries?.length>0
-      ? results.faceEntries
+    // Gebruik panelCountsByFace (altijd actueel) of faceEntries uit results
+    // panelCountsByFace is React state en altijd gesynchroniseerd met de getekende panelen
+    const pcfEntries=Object.entries(panelCountsByFace||{})
+      .filter(([,cnt])=>cnt>0)
+      .map(([key,cnt])=>{
+        const parts=key.split("_");
+        const bId=parts.slice(0,-1).join("_");
+        const fIdx=parseInt(parts[parts.length-1])||0;
+        const bld=buildings.find(x=>x.id===bId);
+        const faces=(bld?.id===selBuildingId?detectedFaces:bld?.faces)||detectedFaces;
+        const f=faces?.[fIdx];
+        return {orientation:f?.orientation||orientation,slope:f?.slope||slope,count:cnt};
+      });
+    const entries=pcfEntries.length>0 ? pcfEntries
+      : results?.faceEntries?.length>0 ? results.faceEntries
       : [{orientation,slope,count:panelCount}];
 
     // Groepeer op oriëntatie
@@ -4033,6 +4063,66 @@ Wees concreet en feitelijk. Geen verkooppraat.`}]})});
                    onChange={e=>setAnnualConsumption(parseInt(e.target.value)||3500)}
                    placeholder="bv. 3500"/>
             <div style={{fontSize:8,color:"var(--muted)",marginTop:2}}>Vlaams gemiddelde gezin: 3500 kWh/jaar.</div>
+          </div>
+
+          {/* ── Gebruiksprofiel ─────────────────────────────────────── */}
+          <div className="customer-section">
+            <div className="sl">3️⃣ Gebruiksprofiel & woningtype</div>
+            <div style={{fontSize:9,color:"var(--muted)",marginBottom:8}}>
+              Bepaalt het zelfverbruiksprofiel en de BTW-adviezen in het rapport.
+            </div>
+
+            <div className="inp-label" style={{fontSize:9,fontWeight:600}}>Gezinssituatie / verbruikspatroon</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginTop:4}}>
+              {[
+                {id:"gepensioneerd",icon:"👴",label:"Gepensioneerd koppel",desc:"Thuis overdag · hoog dagverbruik · ~4500 kWh/j",kwh:4500},
+                {id:"thuiswerker",icon:"💻",label:"Thuiswerker(s)",desc:"Werkt van thuis · hoog dagverbruik · ~4000 kWh/j",kwh:4000},
+                {id:"gezin",icon:"👨‍👩‍👧",label:"Gezin met kinderen",desc:"Gemiddeld patroon · ~3500–5000 kWh/j",kwh:4200},
+                {id:"werkend_koppel",icon:"🏢",label:"Werkend koppel",desc:"Overdag afwezig · laag dagverbruik · ~3200 kWh/j",kwh:3200},
+                {id:"alleenstaand",icon:"🧑",label:"Alleenstaande werkend",desc:"Overdag afwezig · laag verbruik · ~2000 kWh/j",kwh:2000},
+                {id:"bedrijf",icon:"🏭",label:"KMO / Bedrijf",desc:"Hoog dagverbruik · variabel patroon",kwh:15000},
+              ].map(p=>(
+                <div key={p.id} onClick={()=>{setUsageProfile(p.id);if(!annualConsumption||annualConsumption===3500)setAnnualConsumption(p.kwh);}}
+                  style={{padding:"8px 10px",borderRadius:7,cursor:"pointer",
+                    background:usageProfile===p.id?"var(--amber-light)":"var(--bg3)",
+                    border:`1.5px solid ${usageProfile===p.id?"var(--amber)":"var(--border-dark)"}`,
+                    transition:"all .15s"}}>
+                  <div style={{fontSize:14,marginBottom:2}}>{p.icon}</div>
+                  <div style={{fontSize:10,fontWeight:700,color:usageProfile===p.id?"var(--amber)":"var(--text)"}}>{p.label}</div>
+                  <div style={{fontSize:8,color:"var(--muted)",marginTop:2,lineHeight:1.4}}>{p.desc}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Woningouderdom → BTW-advies */}
+            <div className="inp-label" style={{fontSize:9,fontWeight:600,marginTop:12}}>Bouwjaar woning (voor BTW-advies)</div>
+            <div style={{display:"flex",gap:6,marginTop:4,flexWrap:"wrap"}}>
+              {[
+                {id:"voor2015",label:"Vóór 2015",desc:"≥ 10 jaar → 6% BTW",color:"var(--green)"},
+                {id:"2015_2019",label:"2015–2019",desc:"5–10 jaar → check",color:"var(--amber)"},
+                {id:"na2019",label:"Na 2019",desc:"< 5 jaar → 21% BTW",color:"var(--red)"},
+                {id:"onbekend",label:"Onbekend",desc:"Navragen bij klant",color:"var(--muted)"},
+              ].map(b=>(
+                <div key={b.id} onClick={()=>setBuildingAge(b.id)}
+                  style={{flex:"1 1 calc(50% - 6px)",padding:"7px 10px",borderRadius:6,cursor:"pointer",
+                    background:buildingAge===b.id?"var(--bg2)":"var(--bg3)",
+                    border:`1.5px solid ${buildingAge===b.id?b.color:"var(--border)"}`,
+                    transition:"all .15s"}}>
+                  <div style={{fontSize:10,fontWeight:700,color:buildingAge===b.id?b.color:"var(--text)"}}>{b.label}</div>
+                  <div style={{fontSize:8,color:b.color,marginTop:1}}>{b.desc}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* BTW-advies melding */}
+            {buildingAge&&buildingAge!=="onbekend"&&<div style={{marginTop:8,padding:"6px 10px",borderRadius:6,
+              background:buildingAge==="voor2015"?"var(--green-bg)":buildingAge==="na2019"?"#fef2f2":"#fffbeb",
+              border:`1px solid ${buildingAge==="voor2015"?"var(--green-border)":buildingAge==="na2019"?"#fca5a5":"#fde68a"}`,
+              fontSize:9}}>
+              {buildingAge==="voor2015"&&<><strong style={{color:"var(--green)"}}>✅ 6% BTW van toepassing</strong> — woning ouder dan 10 jaar. Controleer ook of de klant de woning zelf bewoont.</>}
+              {buildingAge==="2015_2019"&&<><strong style={{color:"var(--amber)"}}>⚠️ BTW-tarief controleren</strong> — woning tussen 5–10 jaar. Afhankelijk van exacte opleverdatum kan 6% of 21% van toepassing zijn.</>}
+              {buildingAge==="na2019"&&<><strong style={{color:"var(--red)"}}>❌ 21% BTW van toepassing</strong> — woning jonger dan 5 jaar. Informeer de klant expliciet over de hogere BTW.</>}
+            </div>}
           </div>
         </div>}
 
