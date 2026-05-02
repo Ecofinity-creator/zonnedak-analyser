@@ -1598,11 +1598,11 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     ];
     const colStyles={0:{cellWidth:labelColW,textColor:MUT,fontStyle:"normal",halign:"left"}};
     for(let ci=1;ci<=nMppt;ci++) colStyles[ci]={cellWidth:valColW,halign:"right"};
+    // bodyStyles bevat GEEN textColor/fontStyle — anders overschrijven ze de cel-level stijlen
     doc.autoTable({startY:y,head,body:rows,
-      styles:{fontSize:nMppt>2?6.5:7.5,cellPadding:2},
+      styles:{fontSize:nMppt>2?6.5:7.5,cellPadding:2,halign:"right"},
       headStyles:{fillColor:BL,textColor:WHT,fontStyle:"bold",halign:"right",minCellHeight:10},
       columnStyles:colStyles,
-      bodyStyles:{halign:"right"},
       alternateRowStyles:{fillColor:[239,246,255]},
       margin:{left:M,right:M},tableWidth:W-2*M});
     y=doc.lastAutoTable.finalY+4;
@@ -2314,7 +2314,8 @@ export default function App(){
   const[tlLoadingDetails,setTlLoadingDetails]=useState(false);
   const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
   const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
-  const[tlPendingGeo,setTlPendingGeo]=useState(null); // geocode resultaat wachtend op bevestiging
+  const[tlPendingGeo,setTlPendingGeo]=useState(null);
+  const[tlConfirmed,setTlConfirmed]=useState(false);
   const[showNewDealForm,setShowNewDealForm]=useState(false);
   const[newDealTitle,setNewDealTitle]=useState("");
   const[newDealValue,setNewDealValue]=useState("");
@@ -2380,6 +2381,7 @@ export default function App(){
     if(!tlPendingGeo) return;
     await selectAddr({lat:tlPendingGeo.lat,lon:tlPendingGeo.lon,display_name:tlPendingGeo.display_name});
     setTlPendingGeo(null);
+    setTlConfirmed(true);
   },[tlPendingGeo]);
 
   const handleOpenNewDeal=useCallback(async()=>{
@@ -2491,7 +2493,7 @@ export default function App(){
     setCustomCount(10);setPanelRotOffset(0);setManualPanelPrice("");setManualBatteryPrice("");
     setAnnualConsumption(3500);setResults(null);setAiText("");setEditableAiText("");
     setMapSnapshot(null);setPanelsDrawn(false);
-    setTlContact(null);setTlQuery("");setTlResults([]);setTlSelectedDealId(null);setTlPendingGeo(null);
+    setTlContact(null);setTlQuery("");setTlResults([]);setTlSelectedDealId(null);setTlPendingGeo(null);setTlConfirmed(false);
     setBuildings([]);setSelBuildingId(null);
     // Verwijder alle panel-lagen
     if(leafRef.current&&window.L){
@@ -3198,26 +3200,51 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
         await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
       }
 
-      // Stap 1: Schakel naar configuratie tab — html2canvas vangt display:none niet
-      const mapEl=document.getElementById("leaflet-map");
-      if(!mapEl) throw new Error("Kaart-element niet gevonden");
-      // Altijd naar configuratie tab — html2canvas pakt geen display:none.
-      // Gebruik requestAnimationFrame na de setState om te garanderen dat de DOM gepaints is.
+      // ── Stap 1: Configuratie-tab zodat kaart zichtbaar is ───────────
       setActiveTab("configuratie");
-      // Wacht op React render + twee animatieframes (= DOM echt zichtbaar)
-      await new Promise(r=>setTimeout(r,200));
+      await new Promise(r=>setTimeout(r,250));
       await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
       map.invalidateSize(true);
-      await new Promise(r=>setTimeout(r,400));
+      await new Promise(r=>setTimeout(r,250));
 
-      // Stap 2: Herteken ALLE vlak-panelen voor capture
-      // Verwijder bestaande lagen eerst — tab-switch triggert re-renders die lagen wissen.
-      // Dan herteken elk vlak met zijn opgeslagen panelData (behoudt gebruikersposities).
+      const mapEl=document.getElementById("leaflet-map");
+      if(!mapEl) throw new Error("Kaart-element niet gevonden");
+
+      // ── Stap 2: Zoom in op gebouw ────────────────────────────────────
+      if(buildingCoords&&buildingCoords.length>=3){
+        const latLngs=buildingCoords.map(([la,ln])=>L.latLng(la,ln));
+        map.fitBounds(L.latLngBounds(latLngs),{padding:[40,40],maxZoom:21});
+        await new Promise(resolve=>{
+          let done=false;
+          const finish=()=>{if(!done){done=true;resolve();}};
+          map.once("moveend",finish);
+          setTimeout(finish,1200);
+        });
+      }
+
+      // ── Stap 3: Wissel naar OSM tiles (CORS-safe) ───────────────────
+      // Doe dit VÓÓR panelen tekenen zodat de tile-redraw de canvas niet wist
+      osmLayer=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        {attribution:"© OpenStreetMap",maxZoom:21,crossOrigin:""});
+      if(origTile) map.removeLayer(origTile);
+      osmLayer.addTo(map);
+      await new Promise(resolve=>{
+        let done=false;
+        const finish=()=>{if(!done){done=true;resolve();}};
+        osmLayer.on("load",finish);
+        setTimeout(finish,4000);
+      });
+      map.invalidateSize(true);
+      await new Promise(r=>setTimeout(r,300));
+      await new Promise(r=>requestAnimationFrame(r));
+
+      // ── Stap 4: Teken panelen NADAT tiles klaar zijn ────────────────
+      // Cruciaal: tile-swap wist de Leaflet canvas-pane. Panelen MOETEN
+      // getekend worden NA de tile-load, anders zijn ze niet zichtbaar.
       try{
-        // Verwijder alle bestaande panel-lagen
+        // Verwijder alle oude panel-lagen
         Object.values(panelLayersByFaceRef.current||{}).forEach(l=>{try{map.removeLayer(l);}catch{}});
         panelLayersByFaceRef.current={};
-        if(panelLayerRef.current){try{map.removeLayer(panelLayerRef.current);}catch{} panelLayerRef.current=null;}
 
         const snapFaceEntries=Object.entries(panelDataByFaceRef.current||{});
         if(snapFaceEntries.length>0){
@@ -3243,86 +3270,22 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
           const nl=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,fdr,false);
           panelLayersByFaceRef.current[faceKey]=nl;
           panelDataByFaceRef.current[faceKey]=fdr.current;
-          panelLayerRef.current=nl;
         }
-        await new Promise(r=>setTimeout(r,700)); // wacht op canvas render
-      }catch(e){console.warn("[ZonneDak] Panels hertekenen voor snapshot:",e);}
+        // Wacht tot canvas renderer klaar is met tekenen
+        await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+        await new Promise(r=>setTimeout(r,400));
+      }catch(e){console.warn("[ZonneDak] Panels tekenen voor snapshot:",e);}
 
-      // Stap 3: Zoom in op gebouw — kleiner padding = panelen groter in beeld
-      if(buildingCoords&&buildingCoords.length>=3){
-        const latLngs=buildingCoords.map(([la,ln])=>L.latLng(la,ln));
-        // Pad van 40px: gebouw vult ±70% van het beeld → panelen goed zichtbaar
-        map.fitBounds(L.latLngBounds(latLngs),{padding:[40,40],maxZoom:21});
-        await new Promise(resolve=>{
-          let done=false;
-          const finish=()=>{if(!done){done=true;resolve();}};
-          map.once("moveend",finish);
-          setTimeout(finish,1000);
-        });
-      }
-
-      // Stap 4: Luchtfoto tiles voor capture
-      // Probeer volgorde: Esri (crossOrigin) → Digitaal Vlaanderen orthofoto → OSM fallback
-      // Esri ondersteunt soms CORS afhankelijk van de regio/server
-      const tileProviders=[
-        {url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-         opt:{attribution:"© Esri",maxZoom:21,maxNativeZoom:18,crossOrigin:"anonymous"}},
-        {url:"https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-         opt:{attribution:"© OpenStreetMap",maxZoom:21,crossOrigin:""}},
-      ];
-
-      let captureOk=false;
-      for(const provider of tileProviders){
-        if(osmLayer){try{map.removeLayer(osmLayer);}catch{}}
-        osmLayer=L.tileLayer(provider.url,provider.opt);
-        if(origTile) map.removeLayer(origTile);
-        osmLayer.addTo(map);
-        await new Promise(resolve=>{
-          let done=false;
-          const finish=()=>{if(!done){done=true;resolve();}};
-          osmLayer.on("load",finish);
-          setTimeout(finish,3500);
-        });
-        map.invalidateSize(true);
-        await new Promise(r=>setTimeout(r,300));
-
-        // Test of toDataURL werkt (CORS check)
-        try{
-          const testCanvas=document.createElement("canvas");
-          testCanvas.width=10;testCanvas.height=10;
-          const testCtx=testCanvas.getContext("2d");
-          // Capture een klein stukje van de kaart als test
-          const tmpCanvas=await window.html2canvas(mapEl,{
-            useCORS:true,allowTaint:false,scale:0.1,logging:false,
-            width:50,height:50,x:0,y:0,
-            backgroundColor:"#000",imageTimeout:3000,
-          });
-          tmpCanvas.toDataURL("image/jpeg"); // gooit SecurityError als tainted
-          captureOk=true;
-          break; // deze provider werkt
-        }catch(corsErr){
-          console.warn("[ZonneDak] Tile provider CORS fout, probeer volgende:",corsErr.message);
-          captureOk=false;
-        }
-      }
-
-      // Stap 5: Capture
-      // Forceer een volledige map-redraw zodat canvas pane up-to-date is
-      map.invalidateSize(true);
-      await new Promise(r=>setTimeout(r,300));
-      // Extra raf zodat browser echt gepaints heeft na invalidateSize
-      await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
-
+      // ── Stap 5: Capture ─────────────────────────────────────────────
       const canvas=await window.html2canvas(mapEl,{
         useCORS:true,
-        allowTaint:true,  // sta tainted canvas toe — vermijdt lege output bij CORS-problemen
+        allowTaint:false,
         scale:1.5,
         logging:false,
         backgroundColor:"#e8e8e8",
         foreignObjectRendering:false,
         imageTimeout:20000,
         onclone:(doc)=>{
-          // Forceer zichtbaarheid van alle Leaflet lagen inclusief canvas pane
           doc.querySelectorAll(".leaflet-pane,.leaflet-layer").forEach(el=>{
             el.style.display="block";
             el.style.visibility="visible";
@@ -3332,22 +3295,23 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
             c.style.display="block";
             c.style.visibility="visible";
             c.style.opacity="1";
-            c.style.position="absolute";
           });
           doc.querySelectorAll(".leaflet-overlay-pane svg").forEach(s=>{
             s.style.overflow="visible";
           });
         },
       });
+
       const dataUrl=canvas.toDataURL("image/jpeg",0.88);
       const mb=map.getBounds();
       return {dataUrl,width:canvas.width,height:canvas.height,timestamp:Date.now(),
         bounds:{north:mb.getNorth(),south:mb.getSouth(),east:mb.getEast(),west:mb.getWest()}};
+
     }finally{
       if(osmLayer){try{map.removeLayer(osmLayer);}catch{}}
       if(origTile){try{origTile.addTo(map);}catch{}}
     }
-  },[panelsDrawn,buildingCoords,selPanel,detectedFaces,selFaceIdx,panelCount,panelRotOffset,panelOrient]);
+  },[buildings,buildingCoords,selBuildingId,detectedFaces,selFaceIdx,selPanel,panelCount,panelRotOffset,panelOrient]);
 
   const handleSnapshot=useCallback(async()=>{
     if(!leafRef.current){alert("Kaart nog niet geladen. Probeer opnieuw.");return;}
@@ -4154,7 +4118,7 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
         </div>}
 
           {/* ── Bevestigingsknop: toon alleen als TL-klant geselecteerd is maar kaart nog niet geladen ─── */}
-          {tlContact&&!coords&&<div className="customer-section" style={{
+          {tlContact&&!tlConfirmed&&<div className="customer-section" style={{
             background:"var(--amber-light)",border:"2px solid var(--amber)",borderRadius:10,padding:14}}>
             <div className="sl" style={{marginBottom:8}}>4️⃣ Bevestig en laad de kaart</div>
             {!tlPendingGeo&&<div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>
@@ -4180,7 +4144,7 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
             </div>}
           </div>}
           {/* Toon bevestiging als kaart al geladen is */}
-          {tlContact&&coords&&<div style={{padding:"8px 12px",background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:8,fontSize:9,color:"var(--green)"}}>
+          {tlContact&&tlConfirmed&&<div style={{padding:"8px 12px",background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:8,fontSize:9,color:"var(--green)"}}>
             ✅ Klant geladen: <strong>{customer.name}</strong> — {displayName?.split(",").slice(0,2).join(",")}
           </div>}
 
