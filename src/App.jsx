@@ -1978,7 +1978,7 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     const imgData=mapSnapshot?.dataUrl||null;
     const imgRatio=imgData?(mapSnapshot.height/mapSnapshot.width):0.6;
     const panelData=results._panelData;
-    const panelCount3=panelData?.length||results.panelCount||0;
+    const panelCount3=results.panelCount||panelData?.length||0;
     const kWp3=panelCount3>0?((panelCount3*results.panel.watt)/1000).toFixed(1):"—";
 
     doc.addPage();
@@ -3644,14 +3644,22 @@ Opbrengst: ${annualKwh} kWh/j · Verbruik klant: ${consumption} kWh/j
 Dekking: ${coverage}% · Investering: ${investPanels?"€"+investPanels.toLocaleString():"n.i."} · Besparing: €${annualBase}/j
 ${battStr}
 
-ADVIES (max 220 woorden):
-1. Beoordeling voor dit klantprofiel
-2. Zelfverbruikstips voor hun leefpatroon  
-3. Capaciteitstarief voor dit profiel
-4. BTW-actie voor installateur
-5. Realistisch terugverdientijd
+ADVIES (max 280 woorden):
+1. Beoordeling installatie voor dit profiel (gebruik ${consumption} kWh/j - NIET de profielschatting)
+2. Zelfverbruikstips voor dit leefpatroon (concrete timing grote verbruikers)
+3. Batterijadvies op maat (zie hieronder)
+4. Capaciteitstarief voor dit profiel
+5. BTW-actie installateur
+6. Terugverdientijd realistisch
 
-Concreet en feitelijk. Geen verkooppraat.`}]})});
+Gebruik de werkelijke klantdata (verbruik ${consumption} kWh/j, productie ${annualKwh} kWh/j).
+
+BATTERIJADVIES op maat (punt 3):
+- Gepensioneerd/thuiswerker: kunnen grote verbruikers overdag laten draaien → bereken of batterij rendabel is gezien hoog dagzelfverbruik
+- Werkend koppel/alleenstaand: berekenen hoeveel kWh batterij avondpiek dekt → concrete aanbeveling in kWh
+- Geef altijd een concreet getal (bv. "5 kWh batterij dekt X% van avondverbruik")
+
+Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
       const d=await resp.json();
       const text=d.content?.find(b=>b.type==="text")?.text||"Analyse niet beschikbaar.";
       setAiText(text);setEditableAiText(text);
@@ -3716,16 +3724,27 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
       map.invalidateSize({reset:true});
       await new Promise(r=>setTimeout(r,400));
 
-      // ── Stap 2: Zoom op gebouw ────────────────────────────────────────
-      if(buildingCoords&&buildingCoords.length>=3){
-        const latLngs=buildingCoords.map(([la,ln])=>L.latLng(la,ln));
-        map.fitBounds(L.latLngBounds(latLngs),{padding:[20,20],maxZoom:20});
-        await new Promise(resolve=>{
-          let done=false;
-          const finish=()=>{if(!done){done=true;resolve();}};
-          map.once("moveend",finish);
-          setTimeout(finish,1200);
+      // ── Stap 2: Zoom op ALLE gebouwen met panelen ────────────────────
+      {
+        // Verzamel coördinaten van alle gebouwen die panelen hebben
+        const snapCoords=[];
+        Object.keys(panelDataByFaceRef.current||{}).forEach(key=>{
+          const bId=key.split("_").slice(0,-1).join("_");
+          const bld=buildings.find(x=>x.id===bId);
+          (bld?.coords||[]).forEach(([la,ln])=>snapCoords.push(L.latLng(la,ln)));
         });
+        // Fallback: active building
+        if(snapCoords.length===0&&buildingCoords)
+          buildingCoords.forEach(([la,ln])=>snapCoords.push(L.latLng(la,ln)));
+        if(snapCoords.length>=2){
+          map.fitBounds(L.latLngBounds(snapCoords),{padding:[15,15],maxZoom:20});
+          await new Promise(resolve=>{
+            let done=false;
+            const finish=()=>{if(!done){done=true;resolve();}};
+            map.once("moveend",finish);
+            setTimeout(finish,1200);
+          });
+        }
       }
 
       // ── Stap 3: Esri luchtfoto tiles (crossOrigin voor html2canvas) ─────────
@@ -4041,7 +4060,7 @@ Concreet en feitelijk. Geen verkooppraat.`}]})});
            style={{display:"flex",alignItems:"center",gap:5,textDecoration:"none",
              background:"rgba(255,255,255,0.12)",borderRadius:6,padding:"3px 8px"}}>
           <img src={VERDIFY_LOGO_BASE64} alt="Verdify"
-               style={{height:34,width:"auto",objectFit:"contain",filter:"brightness(1.3) drop-shadow(0 1px 2px rgba(0,0,0,0.3))"}}/>
+               style={{height:42,width:"auto",objectFit:"contain",filter:"brightness(1.2) drop-shadow(0 1px 3px rgba(0,0,0,0.4))"}}/>
         </a>
       </div>
     </header>
