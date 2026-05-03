@@ -4052,7 +4052,7 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
     {k:"klant",l:"01 Klant"},{k:"configuratie",l:"02 Configuratie"},
     {k:"panelen",l:"03 Panelen"},{k:"omvormers",l:"04 AlphaESS"},
     {k:"batterij",l:"05 Batterij"},{k:"technisch",l:"06 Technisch"},
-    {k:"resultaten",l:"07 Resultaten"}
+    {k:"resultaten",l:"07 Resultaten"},{k:"instellingen",l:"⚙️"},
   ];
 
 
@@ -4492,14 +4492,12 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
         <div className="info-box">
           <strong>📡 Databronnen</strong><br/>GRB · GRB Gebouwcontouren · 1m<br/>DHM WCS · DSM+DTM · Horn's methode<br/>Lambert72 · Helmert 7-parameter<br/>© Agentschap Digitaal Vlaanderen
         </div>
-        {/* Verdify powered-by logo in sidebar */}
-        <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid var(--border)",
-          display:"flex",alignItems:"center",justifyContent:"center"}}>
+        {/* Verdify powered-by logo in sidebar - volle breedte */}
+        <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid var(--border)"}}>
           <a href="https://verdify.be" target="_blank" rel="noopener noreferrer"
-             title="Ontwikkeld door Verdify" style={{textDecoration:"none",
-               display:"flex",alignItems:"center",gap:6,opacity:0.85}}>
+             title="Ontwikkeld door Verdify" style={{textDecoration:"none",display:"block"}}>
             <img src={VERDIFY_LOGO_BASE64} alt="Verdify"
-                 style={{height:28,width:"auto",objectFit:"contain"}}/>
+                 style={{width:"100%",height:"auto",objectFit:"contain",display:"block",opacity:0.9}}/>
           </a>
         </div>
       </aside>
