@@ -3724,42 +3724,54 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
       map.invalidateSize({reset:true});
       await new Promise(r=>setTimeout(r,400));
 
-      // ── Stap 2: Zoom op ALLE gebouwen met panelen ────────────────────
+      // ── Stap 2: Esri luchtfoto tiles laden EERST ─────────────────────
+      // (tiles moeten er al zijn vóór zoom, anders reset Leaflet de viewport)
+      osmLayer=L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        {attribution:"© Esri",maxZoom:19,maxNativeZoom:18,crossOrigin:""});
+      if(origTile){try{map.removeLayer(origTile);}catch{}}
+      osmLayer.addTo(map);
+      // Eerste tile-load op huidige zoom
+      await new Promise(resolve=>{
+        let done=false;
+        const finish=()=>{if(!done){done=true;resolve();}};
+        osmLayer.on("load",finish);
+        setTimeout(finish,4000);
+      });
+
+      // ── Stap 3: Zoom STRAK op alle gebouwen met panelen ──────────────
       {
-        // Verzamel coördinaten van alle gebouwen die panelen hebben
         const snapCoords=[];
         Object.keys(panelDataByFaceRef.current||{}).forEach(key=>{
           const bId=key.split("_").slice(0,-1).join("_");
           const bld=buildings.find(x=>x.id===bId);
           (bld?.coords||[]).forEach(([la,ln])=>snapCoords.push(L.latLng(la,ln)));
         });
-        // Fallback: active building
         if(snapCoords.length===0&&buildingCoords)
           buildingCoords.forEach(([la,ln])=>snapCoords.push(L.latLng(la,ln)));
+
         if(snapCoords.length>=2){
-          map.fitBounds(L.latLngBounds(snapCoords),{padding:[15,15],maxZoom:20});
+          const bounds=L.latLngBounds(snapCoords);
+          // Zoom naar bounds, minimum zoom 18 voor goede detail
+          map.fitBounds(bounds,{padding:[10,10],maxZoom:19});
           await new Promise(resolve=>{
             let done=false;
             const finish=()=>{if(!done){done=true;resolve();}};
             map.once("moveend",finish);
-            setTimeout(finish,1200);
+            setTimeout(finish,800);
           });
+          // Forceer minimum zoom 18 als gebouwen heel klein zijn
+          if(map.getZoom()<18) map.setZoom(18);
+          // Wacht op nieuwe tiles bij hogere zoom
+          await new Promise(resolve=>{
+            let done=false;
+            const finish=()=>{if(!done){done=true;resolve();}};
+            osmLayer.on("load",finish);
+            setTimeout(finish,4000);
+          });
+          await new Promise(r=>setTimeout(r,300));
         }
       }
-
-      // ── Stap 3: Esri luchtfoto tiles (crossOrigin voor html2canvas) ─────────
-      osmLayer=L.tileLayer(
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        {attribution:"© Esri",maxZoom:19,maxNativeZoom:18,crossOrigin:""});
-      if(origTile){try{map.removeLayer(origTile);}catch{}}
-      osmLayer.addTo(map);
-      await new Promise(resolve=>{
-        let done=false;
-        const finish=()=>{if(!done){done=true;resolve();}};
-        osmLayer.on("load",finish);
-        setTimeout(finish,6000);
-      });
-      await new Promise(r=>setTimeout(r,400));
 
       // ── Stap 4: Panelen tekenen NA tile-load ─────────────────────────
       try{
@@ -4054,14 +4066,9 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
       </div>
       <div style={{display:"flex",alignItems:"center",gap:10,marginLeft:"auto"}}>
         <div className="badge">GRB · DHMV II</div>
-        {/* Verdify powered-by logo */}
-        <a href="https://verdify.be" target="_blank" rel="noopener noreferrer"
-           title="Ontwikkeld door Verdify"
-           style={{display:"flex",alignItems:"center",gap:5,textDecoration:"none",
-             background:"rgba(255,255,255,0.12)",borderRadius:6,padding:"3px 8px"}}>
-          <img src={VERDIFY_LOGO_BASE64} alt="Verdify"
-               style={{height:42,width:"auto",objectFit:"contain",filter:"brightness(1.2) drop-shadow(0 1px 3px rgba(0,0,0,0.4))"}}/>
-        </a>
+        {/* EcoFinity logo rechts in header */}
+        <img src={ECOFINITY_LOGO_BASE64} alt="EcoFinity"
+             style={{height:42,width:"auto",objectFit:"contain",filter:"brightness(1.1) drop-shadow(0 1px 3px rgba(0,0,0,0.3))"}}/>
       </div>
     </header>
     <div className="tabs">{TABS.map(t=><button key={t.k} className={`tab ${activeTab===t.k?"active":""}`} onClick={()=>{setActiveTab(t.k);if(t.k==="configuratie")setTimeout(()=>{if(leafRef.current)leafRef.current.invalidateSize?.();},80);}}>{t.l}</button>)}</div>
@@ -4484,6 +4491,16 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
         </button>
         <div className="info-box">
           <strong>📡 Databronnen</strong><br/>GRB · GRB Gebouwcontouren · 1m<br/>DHM WCS · DSM+DTM · Horn's methode<br/>Lambert72 · Helmert 7-parameter<br/>© Agentschap Digitaal Vlaanderen
+        </div>
+        {/* Verdify powered-by logo in sidebar */}
+        <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid var(--border)",
+          display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <a href="https://verdify.be" target="_blank" rel="noopener noreferrer"
+             title="Ontwikkeld door Verdify" style={{textDecoration:"none",
+               display:"flex",alignItems:"center",gap:6,opacity:0.85}}>
+            <img src={VERDIFY_LOGO_BASE64} alt="Verdify"
+                 style={{height:28,width:"auto",objectFit:"contain"}}/>
+          </a>
         </div>
       </aside>
 
