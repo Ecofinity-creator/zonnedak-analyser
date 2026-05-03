@@ -2747,6 +2747,13 @@ export default function App(){
   const[tlLoadingDetails,setTlLoadingDetails]=useState(false);
   const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
   const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
+  // Extra klantgegevens
+  const[hasExistingPV,setHasExistingPV]=useState("onbekend"); // ja|nee|onbekend
+  const[hasDigitalMeter,setHasDigitalMeter]=useState("onbekend"); // ja|nee|onbekend
+  const[futureConsumers,setFutureConsumers]=useState([]); // ["warmtepomp","ev","airco","boiler"]
+  const[focusGoal,setFocusGoal]=useState(""); // maxrendement|maxzelfverbruik|spreiding|maxpanelen|budget
+  const[technicianNotes,setTechnicianNotes]=useState(""); // opmerkingen technieker
+  const[internalNotes,setInternalNotes]=useState(""); // interne opmerkingen Ecofinity
   // Werkbon (work order) state
   const[tlWorkOrders,setTlWorkOrders]=useState([]); // lijst werkbonnen
   const[tlWorkOrdersLoading,setTlWorkOrdersLoading]=useState(false);
@@ -3215,13 +3222,6 @@ export default function App(){
   const[annualConsumption,setAnnualConsumption]=useState(3500);
   const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
   const[gridFase,setGridFase]=useState(""); // aansluitspanning: mono|3f400|3f230
-  // Extra klantgegevens
-  const[hasExistingPV,setHasExistingPV]=useState("onbekend"); // ja|nee|onbekend
-  const[hasDigitalMeter,setHasDigitalMeter]=useState("onbekend"); // ja|nee|onbekend
-  const[futureConsumers,setFutureConsumers]=useState([]); // ["warmtepomp","ev","airco","boiler"]
-  const[focusGoal,setFocusGoal]=useState(""); // maxrendement|maxzelfverbruik|spreiding|maxpanelen|budget
-  const[technicianNotes,setTechnicianNotes]=useState(""); // opmerkingen technieker
-  const[internalNotes,setInternalNotes]=useState(""); // interne opmerkingen Ecofinity
   const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
 
   const autoSaverRef=useRef(null);
