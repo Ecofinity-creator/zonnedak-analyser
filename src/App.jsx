@@ -1726,6 +1726,15 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     ["2D dakoppervlak",(results.footprintArea2d||80)+" m²"],
     ["3D dakoppervlak",(results.totalSlope3d||"—")+" m²"],
   ];
+  // Extra klantinfo in PDF
+  const extraL=[
+    results.hasExistingPV!=="onbekend"?["Bestaande PV",results.hasExistingPV]:null,
+    results.hasDigitalMeter!=="onbekend"?["Digitale meter",results.hasDigitalMeter]:null,
+  ].filter(Boolean);
+  const extraR=[
+    results.futureConsumers?.length>0?["Extra verbruikers",results.futureConsumers.join(", ")]:null,
+    results.focusGoal?["Gewenste focus",results.focusGoal]:null,
+  ].filter(Boolean);
   const cW=(W-2*M)/2-2;
   [[cfgL,M],[cfgR,M+cW+4]].forEach(([rows,cx])=>{
     let ry=y;
@@ -1737,6 +1746,18 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
     });
   });
   y+=cfgL.length*7+6;
+  // Extra klantgegevens (1 rij breed)
+  if(extraL.length>0||extraR.length>0){
+    const allExtra=[...extraL,...extraR];
+    sf(8,"bold");sc(OR);doc.text("Klantgegevens werkbon:",M,y);y+=5;
+    allExtra.forEach(([k,v],ri)=>{
+      if(ri%2===0){doc.setFillColor(...BG);doc.rect(M,y-3,W-2*M,7,"F");}
+      sf(8,"normal");sc(MUT);doc.text(k+":",M+2,y+1);
+      sf(9,"bold");sc(TXT);doc.text(String(v).substring(0,60),M+70,y+1);
+      y+=7;
+    });
+    y+=4;
+  }
 
   doc.addPage();miniHeader(2);y=22;
 
@@ -2376,6 +2397,7 @@ function NewBattForm({onAdd}){
 
 function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearching,
   tlContact,tlLoadingDetails,tlSelectedAddressIdx,tlSelectedDealId,setTlSelectedDealId,
+  tlWorkOrders,tlWorkOrdersLoading,tlSelectedWorkOrder,tlWorkOrderData,onApplyWorkOrder,
   onLogin,onLogout,onSelectContact,onSelectAddress,
   showNewDealForm,newDealTitle,setNewDealTitle,newDealValue,setNewDealValue,
   dealOptions,newDealPipelineId,setNewDealPipelineId,creatingDeal,
@@ -2503,6 +2525,87 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
           </div>
         </div>}
 
+      {/* ── Werkbonnen ────────────────────────────────────────────────── */}
+      <div style={{marginTop:12}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+          <div className="sl" style={{fontSize:9}}>📋 Werkbonnen / Bezoeken</div>
+          {tlWorkOrdersLoading&&<div style={{fontSize:8,color:"var(--alpha)"}}>⏳ laden...</div>}
+          {!tlWorkOrdersLoading&&tlWorkOrders.length===0&&<div style={{fontSize:8,color:"var(--muted)"}}>Geen gevonden</div>}
+        </div>
+
+        {tlWorkOrders.length>0&&<div style={{maxHeight:220,overflowY:"auto",display:"flex",flexDirection:"column",gap:5}}>
+          {tlWorkOrders.map(wo=>{
+            const isSel=tlSelectedWorkOrder?.id===wo.id&&tlSelectedWorkOrder?.source===wo.source;
+            return(
+              <div key={wo.id+wo.source}
+                style={{padding:"7px 10px",borderRadius:6,cursor:"pointer",
+                  background:isSel?"var(--alpha-bg)":"var(--bg2)",
+                  border:`1.5px solid ${isSel?"var(--alpha)":"var(--border)"}`,
+                  transition:"all .12s"}}
+                onClick={()=>onApplyWorkOrder(wo)}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6}}>
+                  <div style={{fontSize:10,fontWeight:600,color:isSel?"var(--alpha)":"var(--text)",flex:1,minWidth:0}}>
+                    {wo.source==="appointment"?"📅":wo.source==="file"?"📄":"⏱"} {wo.title}
+                  </div>
+                  <div style={{fontSize:8,color:"var(--muted)",whiteSpace:"nowrap",flexShrink:0}}>
+                    {wo.date?(new Date(wo.date)).toLocaleDateString("nl-BE",{day:"2-digit",month:"2-digit",year:"numeric"}):"—"}
+                  </div>
+                </div>
+                {wo.description&&wo.description!==wo.title&&<div style={{fontSize:8,color:"var(--muted)",marginTop:3,
+                  overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  {wo.description.substring(0,80)}{wo.description.length>80?"…":""}
+                </div>}
+                {wo.status&&<div style={{marginTop:3}}>
+                  <span style={{fontSize:7,padding:"1px 5px",borderRadius:3,background:"var(--bg3)",color:"var(--muted)"}}>
+                    {wo.status}
+                  </span>
+                </div>}
+                {isSel&&<div style={{marginTop:5,fontSize:8,color:"var(--alpha)",fontWeight:600}}>
+                  ✅ Geselecteerd als bron
+                </div>}
+              </div>
+            );
+          })}
+        </div>}
+
+        {/* Geëxtraheerde werkbondata */}
+        {tlWorkOrderData&&<div style={{marginTop:8,padding:"8px 10px",borderRadius:6,
+          background:"var(--bg2)",border:"1px solid var(--border)"}}>
+          <div style={{fontSize:9,fontWeight:700,marginBottom:6,color:"var(--text)"}}>
+            📥 Automatisch ingevuld uit werkbon:
+          </div>
+          {[
+            {label:"Jaarverbruik",key:"annualConsumptionKwh",fmt:v=>`${v} kWh/j`},
+            {label:"Bouwjaar",key:"buildingYear",fmt:v=>`${v}`},
+            {label:"Gezinssituatie",key:"familySituation",fmt:v=>v},
+            {label:"Digitale meter",key:"hasDigitalMeter",fmt:v=>v},
+            {label:"Bestaande PV",key:"hasExistingPV",fmt:v=>v},
+            {label:"Extra verbruikers",key:"futureConsumers",fmt:v=>v.join(", ")},
+            {label:"Technieker nota",key:"technicianNotes",fmt:v=>v.substring(0,60)+(v.length>60?"…":"")},
+          ].filter(({key})=>tlWorkOrderData[key]!=null).map(({label,key,fmt})=>{
+            const conf=tlWorkOrderData.confidence?.[key]||"";
+            const toVerify=tlWorkOrderData.fieldsToVerify?.includes(key);
+            return(
+              <div key={key} style={{display:"flex",alignItems:"flex-start",gap:6,marginBottom:3}}>
+                <div style={{fontSize:8,color:"var(--muted)",width:80,flexShrink:0}}>{label}</div>
+                <div style={{fontSize:8,flex:1}}>
+                  <span style={{color:conf==="high"?"var(--green)":conf==="medium"?"var(--amber)":"var(--red)"}}
+                    title={conf==="high"?"Hoge betrouwbaarheid":conf==="medium"?"Te controleren":"Onzeker"}>
+                    {fmt(tlWorkOrderData[key])}
+                    {conf==="high"&&" ✓"}
+                    {toVerify&&" ⚠️"}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+          {tlWorkOrderData.fieldsToVerify?.length>0&&<div style={{fontSize:7,color:"var(--amber)",marginTop:4,
+            padding:"3px 6px",background:"#fffbeb",borderRadius:3}}>
+            ⚠️ Velden met ⚠️ zijn onzeker — controleer ze vóór gebruik.
+          </div>}
+        </div>}
+      </div>
+
       </>}
     </div>
   );
@@ -2604,6 +2707,9 @@ export default function App(){
   const panelDataByFaceRef=useRef({});   // {key: panelData[]}
   const [panelCountsByFace,setPanelCountsByFace]=useState({}); // {key:count} triggers re-render
   const panelLayerRef=useRef(null); // actieve laag (voor move-mode)
+  // Sla oriëntatie + helling op per vlak op het moment van tekenen
+  // (gebruiker kan oriëntatie handmatig overschrijven → LiDAR waarde is dan verouderd)
+  const panelFaceOrientRef=useRef({}); // {faceKey: {orientation, slope}}
 
   const[panels,setPanels]=useState(DEFAULT_PANELS);
   const[selPanelId,setSelPanelId]=useState(1);
@@ -2641,6 +2747,11 @@ export default function App(){
   const[tlLoadingDetails,setTlLoadingDetails]=useState(false);
   const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
   const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
+  // Werkbon (work order) state
+  const[tlWorkOrders,setTlWorkOrders]=useState([]); // lijst werkbonnen
+  const[tlWorkOrdersLoading,setTlWorkOrdersLoading]=useState(false);
+  const[tlSelectedWorkOrder,setTlSelectedWorkOrder]=useState(null); // gekozen werkbon
+  const[tlWorkOrderData,setTlWorkOrderData]=useState(null); // geëxtraheerde data
   const[tlPendingGeo,setTlPendingGeo]=useState(null);
   const[tlConfirmed,setTlConfirmed]=useState(false);
   // TL offerte-templates per dakbedekking
@@ -2694,7 +2805,9 @@ export default function App(){
     const details=await TL.getContactDetails(item.type,item.id);
     setTlLoadingDetails(false);
     if(details?.error){alert("Kon details niet ophalen: "+details.error);return;}
-    setTlContact(details);setTlSelectedAddressIdx(0);setTlSelectedDealId(null);
+    setTlContact(details);
+    if(details?.id) fetchWorkOrders(details.id,details.type||"contact");
+    setTlSelectedAddressIdx(0);setTlSelectedDealId(null);
     const primaryEmail=details.emails?.[0]?.email||"";
     const primaryAddress=details.addresses?.[0];
     // Vul klantdata in maar navigeer NIET automatisch — wacht op deal + bevestiging
@@ -2847,6 +2960,208 @@ export default function App(){
     }
   },[tlSelectedDealId,buildings,selBuildingId,tlTemplates,tlMappingValues,results,customer,getTlAppValues]);
 
+  // ── Werkbon parsing: extraheer klantdata uit tekst ─────────────────────────
+  const parseWerkbonText=useCallback((rawText)=>{
+    if(!rawText) return {};
+    const txt=rawText.toLowerCase();
+    const result={rawText,confidence:{}};
+
+    // Jaarverbruik
+    const kwhMatch=rawText.match(/(\d[\d.,]*)\s*(?:MWh|mwh)/i);
+    const kwhMatch2=rawText.match(/(?:verbruik|elektriciteit|kWh|kwh)[^\d]{0,30}?(\d[\d.,]{0,8})\s*kWh/i)
+      ||rawText.match(/(\d[\d.,]{2,8})\s*kWh/i);
+    if(kwhMatch){
+      // MWh → kWh
+      const v=parseFloat(kwhMatch[1].replace(/\./g,"").replace(",","."))*1000;
+      if(v>100&&v<100000){result.annualConsumptionKwh=Math.round(v);result.confidence.annualConsumptionKwh="high";}
+    } else if(kwhMatch2){
+      const raw=kwhMatch2[1].replace(/\./g,"").replace(",",".");
+      const v=parseFloat(raw);
+      if(v>100&&v<100000){result.annualConsumptionKwh=Math.round(v);
+        result.confidence.annualConsumptionKwh=v>500?"high":"medium";}
+    }
+
+    // Bouwjaar
+    const byMatch=rawText.match(/(?:bouwjaar|bj|gebouwd|woning van|opgeleverd)[^\d]{0,15}(\d{4})/i)
+      ||rawText.match(/(19[2-9]\d|20[0-2]\d)/);
+    if(byMatch){
+      const yr=parseInt(byMatch[1]);
+      if(yr>=1900&&yr<=2025){result.buildingYear=yr;
+        result.confidence.buildingYear=rawText.match(/(?:bouwjaar|bj)/i)?"high":"medium";}
+    }
+
+    // Gezinssituatie
+    const gezinMatch=rawText.match(/gezin[^.]{0,60}/i)
+      ||rawText.match(/(\d)\s*(?:volwassen\w*)[^.]{0,40}/i)
+      ||rawText.match(/koppel|alleenstaand|gepensioneer\w+/i);
+    if(gezinMatch){
+      result.familySituation=gezinMatch[0].trim().substring(0,80);
+      result.confidence.familySituation="medium";
+    }
+    const persMatch=rawText.match(/(\d+)\s*persone?n?/i);
+    if(persMatch){
+      result.familySituation=(result.familySituation||"")+` (${persMatch[0]})`;
+      result.familySituation=result.familySituation.trim();
+      result.confidence.familySituation="high";
+    }
+
+    // Digitale meter
+    if(/digitale\s*meter/i.test(txt)){
+      result.hasDigitalMeter=/geen|niet|neen/i.test(rawText.match(/(?:geen|niet)?[^.]{0,10}digitale\s*meter/i)?.[0]||"")
+        ?"nee":"ja";
+      result.confidence.hasDigitalMeter="medium";
+    }
+
+    // Bestaande PV
+    if(/(?:bestaande|reeds|al|huidige)\s*(?:zonnepanelen?|pv|installatie)/i.test(txt)){
+      result.hasExistingPV="ja"; result.confidence.hasExistingPV="medium";
+    } else if(/geen\s*(?:zonnepanelen?|pv)/i.test(txt)){
+      result.hasExistingPV="nee"; result.confidence.hasExistingPV="high";
+    }
+
+    // Extra verbruikers
+    const futureConsumers=[];
+    if(/warmtepomp/i.test(txt)) futureConsumers.push("warmtepomp");
+    if(/elektrische\s*(?:wagen|auto)|EV|laadpaal/i.test(rawText)) futureConsumers.push("elektrische wagen");
+    if(/airco/i.test(txt)) futureConsumers.push("airco");
+    if(/elektrische\s*boiler|warmwater/i.test(txt)) futureConsumers.push("elektrische boiler");
+    if(futureConsumers.length>0){result.futureConsumers=futureConsumers;result.confidence.futureConsumers="medium";}
+
+    // Opmerkingen techniker: alles na "opmerking" of "nota"
+    const notaMatch=rawText.match(/(?:opmerking|nota|comment|remark)[^a-z]{0,5}([^\r\n]{10,200})/i);
+    if(notaMatch){result.technicianNotes=notaMatch[1].trim();result.confidence.technicianNotes="high";}
+
+    // Velden die controle nodig hebben
+    result.fieldsToVerify=Object.entries(result.confidence)
+      .filter(([,v])=>v==="medium"||v==="low")
+      .map(([k])=>k);
+
+    return result;
+  },[]);
+
+  // ── Haal werkbonnen op voor geselecteerde klant ─────────────────────────────
+  const fetchWorkOrders=useCallback(async(contactId,contactType)=>{
+    if(!tlAuth?.logged_in||!contactId) return;
+    setTlWorkOrdersLoading(true);
+    setTlWorkOrders([]);
+    setTlSelectedWorkOrder(null);
+    setTlWorkOrderData(null);
+    try{
+      // Strategie 1: appointments.list (bezoeken = werkbonnen)
+      const apptResp=await TL.apiCall("appointments.list",{
+        filter:{attendee_participant_ids:[{id:contactId,type:contactType}]},
+        sort:[{field:"starts_at",order:"desc"}],
+        page:{size:25,number:1}
+      });
+      const appts=(apptResp?.data||[]).map(a=>({
+        id:a.id,source:"appointment",
+        title:a.title||a.description||"Bezoek",
+        date:a.starts_at?.date||a.starts_at||"",
+        status:a.status||"",
+        description:a.description||a.title||"",
+        raw:a,
+      }));
+
+      // Strategie 2: timeTracking.list (tijdregistraties met notities)
+      let tracks=[];
+      try{
+        const ttResp=await TL.apiCall("timeTracking.list",{
+          filter:{subject:{id:contactId,type:contactType}},
+          sort:[{field:"started_at",order:"desc"}],
+          page:{size:25,number:1}
+        });
+        tracks=(ttResp?.data||[])
+          .filter(t=>t.description&&t.description.length>10)
+          .map(t=>({
+            id:t.id,source:"timetracking",
+            title:t.description?.substring(0,60)||"Tijdregistratie",
+            date:t.started_at?.date||t.started_at||"",
+            status:"",
+            description:t.description||"",
+            raw:t,
+          }));
+      }catch{}
+
+      // Strategie 3: deals met files (PDF werkbonnen)
+      let dealFiles=[];
+      const deals=tlContact?.deals||[];
+      for(const deal of deals.slice(0,3)){
+        try{
+          const dResp=await TL.apiCall("deals.info",{id:deal.id,include:"files"});
+          const files=(dResp?.data?.files||[]).filter(f=>/pdf|werkbon/i.test(f.name||""));
+          files.forEach(f=>dealFiles.push({
+            id:f.id,source:"file",
+            title:f.name||"PDF bestand",
+            date:f.added_at?.date||"",
+            status:"pdf",
+            description:`PDF bestand van deal ${deal.title||deal.id}`,
+            fileUrl:f.url||null,
+            raw:f,
+          }));
+        }catch{}
+      }
+
+      const all=[...appts,...tracks,...dealFiles]
+        .sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+      setTlWorkOrders(all);
+    }catch(e){
+      console.warn("Werkbonnen ophalen mislukt:",e);
+    }
+    setTlWorkOrdersLoading(false);
+  },[tlAuth,tlContact]);
+
+  // ── Gebruik werkbon als bron: extraheer en vul velden in ─────────────────
+  const applyWorkOrder=useCallback(async(wo)=>{
+    setTlSelectedWorkOrder(wo);
+    // Combineer alle tekstvelden
+    let raw=[wo.title,wo.description,wo.raw?.note,wo.raw?.text,wo.raw?.internal_remark]
+      .filter(Boolean).join("\n");
+    
+    // Haal appointment details op voor meer info
+    if(wo.source==="appointment"&&wo.id){
+      try{
+        const detail=await TL.apiCall("appointments.info",{id:wo.id});
+        const d=detail?.data;
+        if(d){
+          raw=[raw,d.description,d.title,d.note,d.location].filter(Boolean).join("\n");
+          // Koppelde deal voor context
+          if(d.activity_types?.length>0) raw+="\nType: "+d.activity_types.map(t=>t.name).join(", ");
+        }
+      }catch{}
+    }
+
+    // Parse de tekst
+    const parsed=parseWerkbonText(raw);
+    parsed.teamleaderWorkOrderId=wo.id;
+    parsed.sourceType="teamleader_"+wo.source;
+    parsed.title=wo.title;
+    parsed.date=wo.date;
+    setTlWorkOrderData(parsed);
+
+    // Vul velden automatisch in (alleen high/medium confidence)
+    if(parsed.annualConsumptionKwh&&(parsed.confidence.annualConsumptionKwh==="high"||parsed.confidence.annualConsumptionKwh==="medium")){
+      setAnnualConsumption(parsed.annualConsumptionKwh);
+    }
+    if(parsed.buildingYear){
+      const yr=parsed.buildingYear;
+      if(yr<2015) setBuildingAge("voor2015");
+      else if(yr<2020) setBuildingAge("2015_2019");
+      else setBuildingAge("na2019");
+    }
+    if(parsed.familySituation&&parsed.confidence.familySituation==="high"){
+      const sit=parsed.familySituation.toLowerCase();
+      if(/gepensioneer/i.test(sit)) setUsageProfile("gepensioneerd");
+      else if(/alleenstaand/i.test(sit)) setUsageProfile("alleenstaand");
+      else if(/werkend/i.test(sit)) setUsageProfile("werkend_koppel");
+      else if(/thuis\s*werk/i.test(sit)) setUsageProfile("thuiswerker");
+    }
+    if(parsed.hasExistingPV) setHasExistingPV(parsed.hasExistingPV);
+    if(parsed.hasDigitalMeter) setHasDigitalMeter(parsed.hasDigitalMeter);
+    if(parsed.futureConsumers?.length>0) setFutureConsumers(parsed.futureConsumers);
+    if(parsed.technicianNotes) setTechnicianNotes(parsed.technicianNotes);
+  },[parseWerkbonText,setAnnualConsumption,setBuildingAge,setUsageProfile,
+     setHasExistingPV,setHasDigitalMeter,setFutureConsumers,setTechnicianNotes]);
+
   const handleTlLogin=useCallback(()=>{TL.startTeamleaderLogin();},[]);
   const handleTlLogout=useCallback(()=>{TL.clearUserId();setTlAuth(false);setTlContact(null);setTlResults([]);setTlQuery("");setTlPendingGeo(null);},[]);
 
@@ -2899,6 +3214,14 @@ export default function App(){
   const[manualBatteryPrice,setManualBatteryPrice]=useState("");
   const[annualConsumption,setAnnualConsumption]=useState(3500);
   const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
+  const[gridFase,setGridFase]=useState(""); // aansluitspanning: mono|3f400|3f230
+  // Extra klantgegevens
+  const[hasExistingPV,setHasExistingPV]=useState("onbekend"); // ja|nee|onbekend
+  const[hasDigitalMeter,setHasDigitalMeter]=useState("onbekend"); // ja|nee|onbekend
+  const[futureConsumers,setFutureConsumers]=useState([]); // ["warmtepomp","ev","airco","boiler"]
+  const[focusGoal,setFocusGoal]=useState(""); // maxrendement|maxzelfverbruik|spreiding|maxpanelen|budget
+  const[technicianNotes,setTechnicianNotes]=useState(""); // opmerkingen technieker
+  const[internalNotes,setInternalNotes]=useState(""); // interne opmerkingen Ecofinity
   const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
 
   const autoSaverRef=useRef(null);
@@ -2913,7 +3236,7 @@ export default function App(){
   const buildProjectSnapshot=useCallback(()=>({
     customer,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
     selPanelId,selInvId,selBattId,battEnabled,customCount,panelOrient,panelRotOffset,
-    orientation,slope,manualPanelPrice,manualBatteryPrice,annualConsumption,usageProfile,buildingAge,
+    orientation,slope,manualPanelPrice,manualBatteryPrice,annualConsumption,usageProfile,buildingAge,gridFase,hasExistingPV,hasDigitalMeter,futureConsumers,focusGoal,technicianNotes,internalNotes,
     tlContactType:tlContact?.type||null,tlContactId:tlContact?.id||null,tlDealId:tlSelectedDealId,
   }),[customer,coords,displayName,buildingCoords,detectedFaces,selFaceIdx,
       selPanelId,selInvId,selBattId,battEnabled,customCount,panelOrient,panelRotOffset,
@@ -2955,6 +3278,13 @@ export default function App(){
     if(d.manualBatteryPrice!=null) setManualBatteryPrice(d.manualBatteryPrice);
     if(d.annualConsumption!=null) setAnnualConsumption(d.annualConsumption);
     if(d.usageProfile) setUsageProfile(d.usageProfile);
+    if(d.gridFase) setGridFase(d.gridFase);
+    if(d.hasExistingPV) setHasExistingPV(d.hasExistingPV);
+    if(d.hasDigitalMeter) setHasDigitalMeter(d.hasDigitalMeter);
+    if(d.futureConsumers) setFutureConsumers(d.futureConsumers);
+    if(d.focusGoal) setFocusGoal(d.focusGoal);
+    if(d.technicianNotes) setTechnicianNotes(d.technicianNotes);
+    if(d.internalNotes) setInternalNotes(d.internalNotes);
     if(d.buildingAge!=null) setBuildingAge(d.buildingAge);
     // Herstel dakbedekking per gebouw bij laden project (via buildings-state)
     if(d.tlDealId!==undefined) setTlSelectedDealId(d.tlDealId);
@@ -2978,6 +3308,7 @@ export default function App(){
     panelLayersByFaceRef.current={};
     panelDataByFaceRef.current={};
     panelDataRef.current=null;
+    panelFaceOrientRef.current={};
     setPanelCountsByFace({});
     setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");
     setTimeout(()=>{suppressAutoSaveRef.current=false;setShowProjectMenu(false);},100);
@@ -3534,7 +3865,12 @@ export default function App(){
         const bld=buildings.find(x=>x.id===bId);
         const faces=(bld?.id===selBuildingId?detectedFaces:bld?.faces)||detectedFaces;
         const f=faces?.[fIdx];
-        return {key,count:cnt,orientation:f?.orientation||orientation,slope:f?.slope||slope,bld};
+        // Gebruik opgeslagen oriëntatie van het moment van tekenen (meest actueel)
+        // Fallback: bld.faces (LiDAR) → detectedFaces → orientation state
+        const storedOrient=panelFaceOrientRef.current[key];
+        return {key,count:cnt,
+          orientation:storedOrient?.orientation||f?.orientation||orientation,
+          slope:storedOrient?.slope||f?.slope||slope,bld};
       });
 
     // Totaal geplaatste panelen
@@ -3590,6 +3926,7 @@ export default function App(){
       faceSummary, // alle vlakken voor PDF systeemoverzicht
       faceEntries, // detail per vlak
       stringDesign:stringDesign||null,consumption:Math.round(consumption),usageProfile,buildingAge,
+      hasExistingPV,hasDigitalMeter,futureConsumers,focusGoal,technicianNotes,
       selfKwhBase:Math.round(selfKwhBase),injectKwhBase:Math.round(injectKwhBase),
       selfRatioBase,priceBuy:PRIJS_AANKOOP,priceInject:PRIJS_INJECTIE,
       // Paneel- en polygoondata voor vectortekening in PDF
@@ -3622,6 +3959,13 @@ export default function App(){
         onbekend:"Bouwjaar onbekend → BTW-tarief navragen bij klant vóór offerte",
       };
       const profielStr=PROFILE_LABELS[usageProfile]||"Niet opgegeven";
+      const pvContext=[
+        hasExistingPV!=="onbekend"?`Bestaande PV: ${hasExistingPV}`:"",
+        hasDigitalMeter!=="onbekend"?`Digitale meter: ${hasDigitalMeter}`:"",
+        futureConsumers?.length>0?`Toekomstige verbruikers: ${futureConsumers.join(", ")}`:"",
+        focusGoal?`Gewenste focus: ${focusGoal}`:"",
+        technicianNotes?`Technieker nota: ${technicianNotes.substring(0,200)}`:"",
+      ].filter(Boolean).join(" | ");
       const btwStr=BTW_LABELS[buildingAge]||"Bouwjaar niet opgegeven";
       const resp=await fetch(AI_PROXY_URL,{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,
@@ -3634,6 +3978,7 @@ CONTEXT VLAANDEREN 2026:
 - Terugverdien realistisch: 7–11j PV, 9–13j met batterij.
 
 KLANTPROFIEL: ${profielStr}
+${pvContext?`Extra info: ${pvContext}`:""}
 
 INSTALLATIE:
 Locatie: ${displayName}
@@ -3751,25 +4096,25 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
           buildingCoords.forEach(([la,ln])=>snapCoords.push(L.latLng(la,ln)));
 
         if(snapCoords.length>=2){
+          // Gebruik setView met vaste zoom 18 zodat gebouwen groot genoeg zijn
+          // fitBounds kiest soms een te lage zoom als gebouwen ver uit elkaar liggen
           const bounds=L.latLngBounds(snapCoords);
-          // Zoom naar bounds, minimum zoom 18 voor goede detail
-          map.fitBounds(bounds,{padding:[10,10],maxZoom:19});
+          const center=bounds.getCenter();
+          map.setView(center,18,{animate:false});
           await new Promise(resolve=>{
             let done=false;
             const finish=()=>{if(!done){done=true;resolve();}};
             map.once("moveend",finish);
             setTimeout(finish,800);
           });
-          // Forceer minimum zoom 18 als gebouwen heel klein zijn
-          if(map.getZoom()<18) map.setZoom(18);
-          // Wacht op nieuwe tiles bij hogere zoom
+          // Wacht op nieuwe tiles bij zoom 18
           await new Promise(resolve=>{
             let done=false;
             const finish=()=>{if(!done){done=true;resolve();}};
             osmLayer.on("load",finish);
-            setTimeout(finish,4000);
+            setTimeout(finish,5000);
           });
-          await new Promise(r=>setTimeout(r,300));
+          await new Promise(r=>setTimeout(r,400));
         }
       }
 
@@ -3891,7 +4236,15 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
     setPdfLoading(false);
   };
 
-  const filteredInv=invFilter==="alle"?inverters:inverters.filter(i=>i.fase===invFilter);
+  // Filtereer omvormers op basis van aansluitspanning + handmatig filter
+  const filteredInv=inverters.filter(inv=>{
+    // Aansluitspanning filter: mono of 3f230 → enkel 1-fase; 3f400 → enkel 3-fase
+    if(gridFase==="mono"||gridFase==="3f230") return inv.fase==="1-fase";
+    if(gridFase==="3f400") return inv.fase==="3-fase";
+    // Geen aansluitspanning ingesteld → gebruik handmatig filter
+    if(invFilter==="alle") return true;
+    return inv.fase===invFilter;
+  });
   const filteredBatt=battFilter==="alle"?batteries:battFilter==="alpha"?batteries.filter(b=>b.isAlpha):batteries.filter(b=>!b.isAlpha);
   const zq=ZONE_Q[orientation]||ZONE_Q.Z;
   const dhmHits=new Set(detectedFaces?.map(f=>f.orientation)||[]);
@@ -4418,6 +4771,8 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
             panelDataByFaceRef.current[faceKey]=faceDataRef.current;
             panelLayerRef.current=newLayer;
             panelDataRef.current=faceDataRef.current;
+            // Sla de HUIDIGE oriëntatie + helling op (gebruiker kan die handmatig aangepast hebben)
+            panelFaceOrientRef.current[faceKey]={orientation,slope:_sf?.slope||slope};
             // State update triggert re-render → badge wordt zichtbaar
             setPanelCountsByFace(prev=>({...prev,[faceKey]:faceDataRef.current?.length||0}));
             setPanelsDrawn(true);
@@ -4644,6 +4999,9 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
             tlContact={tlContact} tlLoadingDetails={tlLoadingDetails}
             tlSelectedAddressIdx={tlSelectedAddressIdx}
             tlSelectedDealId={tlSelectedDealId} setTlSelectedDealId={setTlSelectedDealId}
+            tlWorkOrders={tlWorkOrders} tlWorkOrdersLoading={tlWorkOrdersLoading}
+            tlSelectedWorkOrder={tlSelectedWorkOrder} tlWorkOrderData={tlWorkOrderData}
+            onApplyWorkOrder={applyWorkOrder}
             onLogin={handleTlLogin} onLogout={handleTlLogout}
             onSelectContact={handleSelectTlContact} onSelectAddress={handleSelectAddress}
             showNewDealForm={showNewDealForm}
@@ -4732,6 +5090,144 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
             </div>}
           </div>
         </div>}
+
+        {/* ── Aansluitspanning ─────────────────────────────────────── */}
+        <div className="customer-section">
+          <div className="sl" style={{marginBottom:8}}>⚡ Aansluitspanning</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {[
+              {id:"mono",   icon:"1~", label:"Monofasig",      sub:"230V · 1-fase",   color:"var(--green)"},
+              {id:"3f230",  icon:"3~", label:"Driefasig 230V", sub:"3×230V · 1-fase omvormer", color:"var(--amber)"},
+              {id:"3f400",  icon:"3~", label:"Driefasig 400V", sub:"3×400V · 3-fase omvormer", color:"var(--blue)"},
+            ].map(g=>(
+              <div key={g.id} onClick={()=>setGridFase(prev=>prev===g.id?"":g.id)}
+                style={{flex:"1 1 calc(33% - 6px)",padding:"8px 10px",borderRadius:7,cursor:"pointer",
+                  background:gridFase===g.id?"var(--bg2)":"var(--bg3)",
+                  border:`2px solid ${gridFase===g.id?g.color:"var(--border)"}`,
+                  transition:"all .15s",textAlign:"center"}}>
+                <div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:800,fontSize:14,
+                  color:gridFase===g.id?g.color:"var(--muted)"}}>{g.icon}</div>
+                <div style={{fontSize:9,fontWeight:700,color:gridFase===g.id?g.color:"var(--text)",marginTop:2}}>{g.label}</div>
+                <div style={{fontSize:8,color:"var(--muted)",marginTop:1}}>{g.sub}</div>
+              </div>
+            ))}
+          </div>
+          {gridFase&&<div style={{marginTop:8,padding:"6px 10px",borderRadius:6,fontSize:9,
+            background:gridFase==="3f400"?"var(--blue-bg)":"var(--green-bg)",
+            border:`1px solid ${gridFase==="3f400"?"var(--blue-border)":"var(--green-border)"}`,
+            color:gridFase==="3f400"?"var(--blue)":"var(--green)"}}>
+            {(gridFase==="mono")&&"✅ Monofasig: enkel 1-fase omvormers beschikbaar op tab 04."}
+            {(gridFase==="3f230")&&"✅ Driefasig 230V: 1-fase omvormers (asymmetrisch laden vermijden) beschikbaar op tab 04."}
+            {(gridFase==="3f400")&&"✅ Driefasig 400V: 3-fase omvormers aanbevolen en geselecteerd op tab 04."}
+          </div>}
+          {!gridFase&&<div style={{fontSize:8,color:"var(--muted)",marginTop:6}}>
+            Kies de aansluitspanning → filtert automatisch de beschikbare omvormers.
+          </div>}
+        </div>
+
+        {/* ── Bestaande situatie ─────────────────────────────────────── */}
+        <div className="customer-section">
+          <div className="sl" style={{marginBottom:8}}>🏠 Bestaande situatie</div>
+          <div style={{display:"flex",gap:10,marginBottom:10}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:9,fontWeight:600,marginBottom:4}}>Bestaande PV-installatie</div>
+              <div style={{display:"flex",gap:4}}>
+                {["nee","ja","onbekend"].map(v=>(
+                  <button key={v} onClick={()=>setHasExistingPV(v)}
+                    style={{flex:1,padding:"5px 4px",borderRadius:5,cursor:"pointer",fontSize:9,
+                      background:hasExistingPV===v?"var(--alpha)":"var(--bg3)",
+                      border:`1.5px solid ${hasExistingPV===v?"var(--alpha)":"var(--border)"}`,
+                      color:hasExistingPV===v?"#fff":"var(--muted)",fontWeight:hasExistingPV===v?700:400}}>
+                    {v==="nee"?"❌ Nee":v==="ja"?"✅ Ja":"❓ Onbekend"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{flex:1}}>
+              <div style={{fontSize:9,fontWeight:600,marginBottom:4}}>Digitale meter</div>
+              <div style={{display:"flex",gap:4}}>
+                {["nee","ja","onbekend"].map(v=>(
+                  <button key={v} onClick={()=>setHasDigitalMeter(v)}
+                    style={{flex:1,padding:"5px 4px",borderRadius:5,cursor:"pointer",fontSize:9,
+                      background:hasDigitalMeter===v?"var(--alpha)":"var(--bg3)",
+                      border:`1.5px solid ${hasDigitalMeter===v?"var(--alpha)":"var(--border)"}`,
+                      color:hasDigitalMeter===v?"#fff":"var(--muted)",fontWeight:hasDigitalMeter===v?700:400}}>
+                    {v==="nee"?"❌ Nee":v==="ja"?"✅ Ja":"❓ Onbekend"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Extra verbruikers */}
+          <div style={{fontSize:9,fontWeight:600,marginBottom:4}}>Toekomstige extra verbruikers</div>
+          <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+            {[
+              {id:"warmtepomp",icon:"🌡️",label:"Warmtepomp"},
+              {id:"ev",icon:"🚗",label:"Elektrische wagen"},
+              {id:"laadpaal",icon:"⚡",label:"Laadpaal"},
+              {id:"airco",icon:"❄️",label:"Airco"},
+              {id:"boiler",icon:"🚿",label:"Elec. boiler"},
+            ].map(c=>{
+              const active=futureConsumers.includes(c.id);
+              return(
+                <button key={c.id}
+                  onClick={()=>setFutureConsumers(prev=>active?prev.filter(x=>x!==c.id):[...prev,c.id])}
+                  style={{padding:"4px 8px",borderRadius:5,cursor:"pointer",fontSize:9,
+                    background:active?"var(--alpha)":"var(--bg3)",
+                    border:`1.5px solid ${active?"var(--alpha)":"var(--border)"}`,
+                    color:active?"#fff":"var(--muted)"}}>
+                  {c.icon} {c.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ── Gewenste focus ─────────────────────────────────────────── */}
+        <div className="customer-section">
+          <div className="sl" style={{marginBottom:8}}>🎯 Gewenste focus installatie</div>
+          <div style={{display:"flex",flexDirection:"column",gap:5}}>
+            {[
+              {id:"maxrendement",icon:"📈",label:"Maximaal rendement",sub:"Hoogste jaaropbrengst"},
+              {id:"maxzelfverbruik",icon:"🏠",label:"Maximaal eigenverbruik",sub:"Zo weinig mogelijk terugleveren"},
+              {id:"spreiding",icon:"⚖️",label:"Goede spreiding over de dag",sub:"Ochtend én namiddag productie"},
+              {id:"maxpanelen",icon:"🔢",label:"Maximaal aantal panelen",sub:"Alle geschikte dakvlakken benutten"},
+              {id:"budget",icon:"💶",label:"Budgetvriendelijk",sub:"Beste prijs-kwaliteit verhouding"},
+            ].map(f=>{
+              const active=focusGoal===f.id;
+              return(
+                <div key={f.id} onClick={()=>setFocusGoal(prev=>prev===f.id?"":f.id)}
+                  style={{padding:"7px 10px",borderRadius:6,cursor:"pointer",
+                    background:active?"var(--alpha-bg)":"var(--bg2)",
+                    border:`1.5px solid ${active?"var(--alpha)":"var(--border)"}`,
+                    transition:"all .12s",display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{fontSize:16,lineHeight:1}}>{f.icon}</div>
+                  <div>
+                    <div style={{fontSize:10,fontWeight:700,color:active?"var(--alpha)":"var(--text)"}}>{f.label}</div>
+                    <div style={{fontSize:8,color:"var(--muted)"}}>{f.sub}</div>
+                  </div>
+                  {active&&<div style={{marginLeft:"auto",color:"var(--alpha)",fontSize:12}}>✓</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ── Opmerkingen ───────────────────────────────────────────── */}
+        <div className="customer-section">
+          <div className="sl" style={{marginBottom:8}}>📝 Opmerkingen</div>
+          <div className="inp-label" style={{fontSize:9,fontWeight:600}}>Opmerkingen technieker</div>
+          <textarea className="inp" rows={3}
+            style={{resize:"vertical",fontSize:9,lineHeight:1.5,marginBottom:8}}
+            placeholder="Notities van het plaatsbezoek, specifieke situatie, obstakels..."
+            value={technicianNotes} onChange={e=>setTechnicianNotes(e.target.value)}/>
+          <div className="inp-label" style={{fontSize:9,fontWeight:600}}>Interne opmerkingen Ecofinity</div>
+          <textarea className="inp" rows={2}
+            style={{resize:"vertical",fontSize:9,lineHeight:1.5}}
+            placeholder="Interne notities, opvolging, bijzonderheden..."
+            value={internalNotes} onChange={e=>setInternalNotes(e.target.value)}/>
+        </div>
 
           {/* ── Bevestigingsknop: toon alleen als TL-klant geselecteerd is maar kaart nog niet geladen ─── */}
           {tlContact&&!tlConfirmed&&<div className="customer-section" style={{
@@ -4827,7 +5323,16 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
         {activeTab==="omvormers"&&<div className="section">
           <div className="sl">AlphaESS SMILE-G3</div>
           <div className="info-box alpha-info"><strong>🔆 AlphaESS SMILE-G3</strong> · LiFePO4 · 10j · IP65 · 97%+ eff. · Fluvius · Jabba · AlphaCloud</div>
-          <div className="filter-row">{["alle","1-fase","3-fase"].map(f=><button key={f} className={`filter-btn af ${invFilter===f?"active":""}`} onClick={()=>setInvFilter(f)}>{f}</button>)}</div>
+          {/* Aansluitspanning bepaalt beschikbare omvormers */}
+          {gridFase&&<div style={{padding:"6px 10px",borderRadius:6,fontSize:9,marginBottom:6,
+            background:gridFase==="3f400"?"var(--blue-bg)":"var(--green-bg)",
+            border:"1px solid "+(gridFase==="3f400"?"var(--blue-border)":"var(--green-border)"),
+            color:gridFase==="3f400"?"var(--blue)":"var(--green)"}}>
+            {gridFase==="mono"&&"⚡ Monofasig aansluiting → enkel 1-fase omvormers"}
+            {gridFase==="3f230"&&"⚡ Driefasig 230V → enkel 1-fase omvormers (geen asymmetrische belasting)"}
+            {gridFase==="3f400"&&"⚡ Driefasig 400V → 3-fase omvormer aanbevolen"}
+          </div>}
+          {!gridFase&&<div className="filter-row">{["alle","1-fase","3-fase"].map(f=><button key={f} className={`filter-btn af ${invFilter===f?"active":""}`} onClick={()=>setInvFilter(f)}>{f}</button>)}</div>}
           {selInv&&<div style={{display:"flex",justifyContent:"flex-end"}}><button className="btn sec sm" onClick={()=>setSelInvId(null)}>✕ Verwijder keuze</button></div>}
           <div className="list">{filteredInv.map(inv=>(
             <InverterCard key={inv.id} inv={inv} selected={inv.id===selInvId} onSelect={setSelInvId}
