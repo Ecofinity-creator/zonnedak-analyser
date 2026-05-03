@@ -5133,9 +5133,9 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
           </div>}
         </div>
 
-        {/* ── Bestaande situatie ─────────────────────────────────────── */}
-        <div className="customer-section">
-          <div className="sl" style={{marginBottom:8}}>🏠 Bestaande situatie</div>
+          {/* ── Bestaande situatie ─────────────────────────────────────── */}
+          <div className="customer-section">
+            <div className="sl" style={{marginBottom:8}}>🏠 Bestaande situatie</div>
           <div style={{display:"flex",gap:10,marginBottom:10}}>
             <div style={{flex:1}}>
               <div style={{fontSize:9,fontWeight:600,marginBottom:4}}>Bestaande PV-installatie</div>
@@ -5192,9 +5192,9 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
           </div>
         </div>
 
-        {/* ── Gewenste focus ─────────────────────────────────────────── */}
-        <div className="customer-section">
-          <div className="sl" style={{marginBottom:8}}>🎯 Gewenste focus installatie</div>
+          {/* ── Gewenste focus ─────────────────────────────────────────── */}
+          <div className="customer-section">
+            <div className="sl" style={{marginBottom:8}}>🎯 Gewenste focus installatie</div>
           <div style={{display:"flex",flexDirection:"column",gap:5}}>
             {[
               {id:"maxrendement",icon:"📈",label:"Maximaal rendement",sub:"Hoogste jaaropbrengst"},
@@ -5222,9 +5222,9 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
           </div>
         </div>
 
-        {/* ── Opmerkingen ───────────────────────────────────────────── */}
-        <div className="customer-section">
-          <div className="sl" style={{marginBottom:8}}>📝 Opmerkingen</div>
+          {/* ── Opmerkingen ───────────────────────────────────────────── */}
+          <div className="customer-section">
+            <div className="sl" style={{marginBottom:8}}>📝 Opmerkingen</div>
           <div className="inp-label" style={{fontSize:9,fontWeight:600}}>Opmerkingen technieker</div>
           <textarea className="inp" rows={3}
             style={{resize:"vertical",fontSize:9,lineHeight:1.5,marginBottom:8}}
