@@ -2971,6 +2971,66 @@ export default function App(){
     }
   },[tlSelectedDealId,buildings,selBuildingId,tlTemplates,tlMappingValues,results,customer,getTlAppValues]);
 
+  const handleTlLogin=useCallback(()=>{TL.startTeamleaderLogin();},[]);
+  const handleTlLogout=useCallback(()=>{TL.clearUserId();setTlAuth(false);setTlContact(null);setTlResults([]);setTlQuery("");setTlPendingGeo(null);},[]);
+
+  // Bevestig klant: geocode was al gedaan bij contact/adres selectie,
+  // nu pas navigeren naar de kaart + GRB laden
+  const handleTlConfirm=useCallback(async()=>{
+    if(!tlPendingGeo) return;
+    await selectAddr({lat:tlPendingGeo.lat,lon:tlPendingGeo.lon,display_name:tlPendingGeo.display_name});
+    setTlPendingGeo(null);
+    setTlConfirmed(true);
+  },[tlPendingGeo]);
+
+  const handleOpenNewDeal=useCallback(async()=>{
+    setShowNewDealForm(true);setNewDealTitle("Zonnepanelen");setNewDealValue("");
+    if(!dealOptions){
+      const opts=await TL.getDealOptions();
+      if(opts?.error){alert("Kon pipelines niet laden: "+opts.error);setShowNewDealForm(false);return;}
+      setDealOptions(opts);
+      if(opts.pipelines?.length>0){setNewDealPipelineId(opts.pipelines[0].id);}
+    }
+  },[tlContact,customer.name,dealOptions]);
+
+  const handleCancelNewDeal=useCallback(()=>{setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");},[]);
+
+  const handleCreateDeal=useCallback(async()=>{
+    if(!tlContact){alert("Geen klant geselecteerd");return;}
+    if(!newDealTitle.trim()){alert("Vul een titel in");return;}
+    if(!newDealPipelineId){alert("Kies een pipeline");return;}
+    const pipeline=dealOptions?.pipelines?.find(p=>p.id===newDealPipelineId);
+    if(!pipeline?.firstPhaseId){alert("Deze pipeline heeft geen phases. Configureer eerst phases in Teamleader.");return;}
+    setCreatingDeal(true);
+    const valueNum=parseFloat(newDealValue);
+    const result=await TL.createDeal({
+      title:newDealTitle.trim(),contactType:tlContact.type,contactId:tlContact.id,
+      phaseId:pipeline.firstPhaseId,responsibleUserId:dealOptions.currentUserId||undefined,
+      estimatedValueEur:isFinite(valueNum)&&valueNum>0?valueNum:undefined,
+    });
+    setCreatingDeal(false);
+    if(result.error){alert("Deal aanmaken mislukt: "+result.error);return;}
+    setTlContact(prev=>prev?{...prev,deals:[result.deal,...(prev.deals||[])]}:prev);
+    setTlSelectedDealId(result.deal.id);
+    setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");
+  },[tlContact,newDealTitle,newDealPipelineId,newDealValue,dealOptions]);
+
+  const[pdfLoading,setPdfLoading]=useState(false);
+  const[mapSnapshot,setMapSnapshot]=useState(null);
+  const[snapshotLoading,setSnapshotLoading]=useState(false);
+  const[editableAiText,setEditableAiText]=useState("");
+  const[manualPanelPrice,setManualPanelPrice]=useState("");
+  const[manualBatteryPrice,setManualBatteryPrice]=useState("");
+  const[annualConsumption,setAnnualConsumption]=useState(3500);
+  const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
+  const[gridFase,setGridFase]=useState(""); // aansluitspanning: mono|3f400|3f230
+  const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
+
+  const autoSaverRef=useRef(null);
+  const[lastSavedAt,setLastSavedAt]=useState(null);
+  const[projectList,setProjectList]=useState([]);
+  const[showProjectMenu,setShowProjectMenu]=useState(false);
+  const[isLoadingProject,setIsLoadingProject]=useState(false);
   // ── Werkbon parsing: extraheer klantdata uit tekst ─────────────────────────
   const parseWerkbonText=useCallback((rawText)=>{
     if(!rawText) return {};
@@ -3173,66 +3233,7 @@ export default function App(){
   },[parseWerkbonText,setAnnualConsumption,setBuildingAge,setUsageProfile,
      setHasExistingPV,setHasDigitalMeter,setFutureConsumers,setTechnicianNotes]);
 
-  const handleTlLogin=useCallback(()=>{TL.startTeamleaderLogin();},[]);
-  const handleTlLogout=useCallback(()=>{TL.clearUserId();setTlAuth(false);setTlContact(null);setTlResults([]);setTlQuery("");setTlPendingGeo(null);},[]);
 
-  // Bevestig klant: geocode was al gedaan bij contact/adres selectie,
-  // nu pas navigeren naar de kaart + GRB laden
-  const handleTlConfirm=useCallback(async()=>{
-    if(!tlPendingGeo) return;
-    await selectAddr({lat:tlPendingGeo.lat,lon:tlPendingGeo.lon,display_name:tlPendingGeo.display_name});
-    setTlPendingGeo(null);
-    setTlConfirmed(true);
-  },[tlPendingGeo]);
-
-  const handleOpenNewDeal=useCallback(async()=>{
-    setShowNewDealForm(true);setNewDealTitle("Zonnepanelen");setNewDealValue("");
-    if(!dealOptions){
-      const opts=await TL.getDealOptions();
-      if(opts?.error){alert("Kon pipelines niet laden: "+opts.error);setShowNewDealForm(false);return;}
-      setDealOptions(opts);
-      if(opts.pipelines?.length>0){setNewDealPipelineId(opts.pipelines[0].id);}
-    }
-  },[tlContact,customer.name,dealOptions]);
-
-  const handleCancelNewDeal=useCallback(()=>{setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");},[]);
-
-  const handleCreateDeal=useCallback(async()=>{
-    if(!tlContact){alert("Geen klant geselecteerd");return;}
-    if(!newDealTitle.trim()){alert("Vul een titel in");return;}
-    if(!newDealPipelineId){alert("Kies een pipeline");return;}
-    const pipeline=dealOptions?.pipelines?.find(p=>p.id===newDealPipelineId);
-    if(!pipeline?.firstPhaseId){alert("Deze pipeline heeft geen phases. Configureer eerst phases in Teamleader.");return;}
-    setCreatingDeal(true);
-    const valueNum=parseFloat(newDealValue);
-    const result=await TL.createDeal({
-      title:newDealTitle.trim(),contactType:tlContact.type,contactId:tlContact.id,
-      phaseId:pipeline.firstPhaseId,responsibleUserId:dealOptions.currentUserId||undefined,
-      estimatedValueEur:isFinite(valueNum)&&valueNum>0?valueNum:undefined,
-    });
-    setCreatingDeal(false);
-    if(result.error){alert("Deal aanmaken mislukt: "+result.error);return;}
-    setTlContact(prev=>prev?{...prev,deals:[result.deal,...(prev.deals||[])]}:prev);
-    setTlSelectedDealId(result.deal.id);
-    setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");
-  },[tlContact,newDealTitle,newDealPipelineId,newDealValue,dealOptions]);
-
-  const[pdfLoading,setPdfLoading]=useState(false);
-  const[mapSnapshot,setMapSnapshot]=useState(null);
-  const[snapshotLoading,setSnapshotLoading]=useState(false);
-  const[editableAiText,setEditableAiText]=useState("");
-  const[manualPanelPrice,setManualPanelPrice]=useState("");
-  const[manualBatteryPrice,setManualBatteryPrice]=useState("");
-  const[annualConsumption,setAnnualConsumption]=useState(3500);
-  const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
-  const[gridFase,setGridFase]=useState(""); // aansluitspanning: mono|3f400|3f230
-  const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
-
-  const autoSaverRef=useRef(null);
-  const[lastSavedAt,setLastSavedAt]=useState(null);
-  const[projectList,setProjectList]=useState([]);
-  const[showProjectMenu,setShowProjectMenu]=useState(false);
-  const[isLoadingProject,setIsLoadingProject]=useState(false);
   const suppressAutoSaveRef=useRef(false);
 
   if(!autoSaverRef.current){ autoSaverRef.current=createAutoSaver(1000); }
