@@ -5097,177 +5097,177 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
               {buildingAge==="na2019"&&<><strong style={{color:"var(--red)"}}>❌ 21% BTW van toepassing</strong> — woning jonger dan 5 jaar. Informeer de klant expliciet over de hogere BTW.</>}
             </div>}
           </div>
-        </div>}
 
-        {/* ── Aansluitspanning ─────────────────────────────────────── */}
-        <div className="customer-section">
-          <div className="sl" style={{marginBottom:8}}>⚡ Aansluitspanning</div>
-          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-            {[
-              {id:"mono",   icon:"1~", label:"Monofasig",      sub:"230V · 1-fase",   color:"var(--green)"},
-              {id:"3f230",  icon:"3~", label:"Driefasig 230V", sub:"3×230V · 1-fase omvormer", color:"var(--amber)"},
-              {id:"3f400",  icon:"3~", label:"Driefasig 400V", sub:"3×400V · 3-fase omvormer", color:"var(--blue)"},
-            ].map(g=>(
-              <div key={g.id} onClick={()=>setGridFase(prev=>prev===g.id?"":g.id)}
-                style={{flex:"1 1 calc(33% - 6px)",padding:"8px 10px",borderRadius:7,cursor:"pointer",
-                  background:gridFase===g.id?"var(--bg2)":"var(--bg3)",
-                  border:`2px solid ${gridFase===g.id?g.color:"var(--border)"}`,
-                  transition:"all .15s",textAlign:"center"}}>
-                <div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:800,fontSize:14,
-                  color:gridFase===g.id?g.color:"var(--muted)"}}>{g.icon}</div>
-                <div style={{fontSize:9,fontWeight:700,color:gridFase===g.id?g.color:"var(--text)",marginTop:2}}>{g.label}</div>
-                <div style={{fontSize:8,color:"var(--muted)",marginTop:1}}>{g.sub}</div>
-              </div>
-            ))}
-          </div>
-          {gridFase&&<div style={{marginTop:8,padding:"6px 10px",borderRadius:6,fontSize:9,
-            background:gridFase==="3f400"?"var(--blue-bg)":"var(--green-bg)",
-            border:`1px solid ${gridFase==="3f400"?"var(--blue-border)":"var(--green-border)"}`,
-            color:gridFase==="3f400"?"var(--blue)":"var(--green)"}}>
-            {(gridFase==="mono")&&"✅ Monofasig: enkel 1-fase omvormers beschikbaar op tab 04."}
-            {(gridFase==="3f230")&&"✅ Driefasig 230V: 1-fase omvormers (asymmetrisch laden vermijden) beschikbaar op tab 04."}
-            {(gridFase==="3f400")&&"✅ Driefasig 400V: 3-fase omvormers aanbevolen en geselecteerd op tab 04."}
-          </div>}
-          {!gridFase&&<div style={{fontSize:8,color:"var(--muted)",marginTop:6}}>
-            Kies de aansluitspanning → filtert automatisch de beschikbare omvormers.
-          </div>}
-        </div>
-
-          {/* ── Bestaande situatie ─────────────────────────────────────── */}
+          {/* ── Aansluitspanning ─────────────────────────────────────── */}
           <div className="customer-section">
-            <div className="sl" style={{marginBottom:8}}>🏠 Bestaande situatie</div>
-          <div style={{display:"flex",gap:10,marginBottom:10}}>
-            <div style={{flex:1}}>
-              <div style={{fontSize:9,fontWeight:600,marginBottom:4}}>Bestaande PV-installatie</div>
-              <div style={{display:"flex",gap:4}}>
-                {["nee","ja","onbekend"].map(v=>(
-                  <button key={v} onClick={()=>setHasExistingPV(v)}
-                    style={{flex:1,padding:"5px 4px",borderRadius:5,cursor:"pointer",fontSize:9,
-                      background:hasExistingPV===v?"var(--alpha)":"var(--bg3)",
-                      border:`1.5px solid ${hasExistingPV===v?"var(--alpha)":"var(--border)"}`,
-                      color:hasExistingPV===v?"#fff":"var(--muted)",fontWeight:hasExistingPV===v?700:400}}>
-                    {v==="nee"?"❌ Nee":v==="ja"?"✅ Ja":"❓ Onbekend"}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div style={{flex:1}}>
-              <div style={{fontSize:9,fontWeight:600,marginBottom:4}}>Digitale meter</div>
-              <div style={{display:"flex",gap:4}}>
-                {["nee","ja","onbekend"].map(v=>(
-                  <button key={v} onClick={()=>setHasDigitalMeter(v)}
-                    style={{flex:1,padding:"5px 4px",borderRadius:5,cursor:"pointer",fontSize:9,
-                      background:hasDigitalMeter===v?"var(--alpha)":"var(--bg3)",
-                      border:`1.5px solid ${hasDigitalMeter===v?"var(--alpha)":"var(--border)"}`,
-                      color:hasDigitalMeter===v?"#fff":"var(--muted)",fontWeight:hasDigitalMeter===v?700:400}}>
-                    {v==="nee"?"❌ Nee":v==="ja"?"✅ Ja":"❓ Onbekend"}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Extra verbruikers */}
-          <div style={{fontSize:9,fontWeight:600,marginBottom:4}}>Toekomstige extra verbruikers</div>
-          <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-            {[
-              {id:"warmtepomp",icon:"🌡️",label:"Warmtepomp"},
-              {id:"ev",icon:"🚗",label:"Elektrische wagen"},
-              {id:"laadpaal",icon:"⚡",label:"Laadpaal"},
-              {id:"airco",icon:"❄️",label:"Airco"},
-              {id:"boiler",icon:"🚿",label:"Elec. boiler"},
-            ].map(c=>{
-              const active=futureConsumers.includes(c.id);
-              return(
-                <button key={c.id}
-                  onClick={()=>setFutureConsumers(prev=>active?prev.filter(x=>x!==c.id):[...prev,c.id])}
-                  style={{padding:"4px 8px",borderRadius:5,cursor:"pointer",fontSize:9,
-                    background:active?"var(--alpha)":"var(--bg3)",
-                    border:`1.5px solid ${active?"var(--alpha)":"var(--border)"}`,
-                    color:active?"#fff":"var(--muted)"}}>
-                  {c.icon} {c.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-          {/* ── Gewenste focus ─────────────────────────────────────────── */}
-          <div className="customer-section">
-            <div className="sl" style={{marginBottom:8}}>🎯 Gewenste focus installatie</div>
-          <div style={{display:"flex",flexDirection:"column",gap:5}}>
-            {[
-              {id:"maxrendement",icon:"📈",label:"Maximaal rendement",sub:"Hoogste jaaropbrengst"},
-              {id:"maxzelfverbruik",icon:"🏠",label:"Maximaal eigenverbruik",sub:"Zo weinig mogelijk terugleveren"},
-              {id:"spreiding",icon:"⚖️",label:"Goede spreiding over de dag",sub:"Ochtend én namiddag productie"},
-              {id:"maxpanelen",icon:"🔢",label:"Maximaal aantal panelen",sub:"Alle geschikte dakvlakken benutten"},
-              {id:"budget",icon:"💶",label:"Budgetvriendelijk",sub:"Beste prijs-kwaliteit verhouding"},
-            ].map(f=>{
-              const active=focusGoal===f.id;
-              return(
-                <div key={f.id} onClick={()=>setFocusGoal(prev=>prev===f.id?"":f.id)}
-                  style={{padding:"7px 10px",borderRadius:6,cursor:"pointer",
-                    background:active?"var(--alpha-bg)":"var(--bg2)",
-                    border:`1.5px solid ${active?"var(--alpha)":"var(--border)"}`,
-                    transition:"all .12s",display:"flex",alignItems:"center",gap:8}}>
-                  <div style={{fontSize:16,lineHeight:1}}>{f.icon}</div>
-                  <div>
-                    <div style={{fontSize:10,fontWeight:700,color:active?"var(--alpha)":"var(--text)"}}>{f.label}</div>
-                    <div style={{fontSize:8,color:"var(--muted)"}}>{f.sub}</div>
-                  </div>
-                  {active&&<div style={{marginLeft:"auto",color:"var(--alpha)",fontSize:12}}>✓</div>}
+            <div className="sl" style={{marginBottom:8}}>⚡ Aansluitspanning</div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              {[
+                {id:"mono",   icon:"1~", label:"Monofasig",      sub:"230V · 1-fase",   color:"var(--green)"},
+                {id:"3f230",  icon:"3~", label:"Driefasig 230V", sub:"3×230V · 1-fase omvormer", color:"var(--amber)"},
+                {id:"3f400",  icon:"3~", label:"Driefasig 400V", sub:"3×400V · 3-fase omvormer", color:"var(--blue)"},
+              ].map(g=>(
+                <div key={g.id} onClick={()=>setGridFase(prev=>prev===g.id?"":g.id)}
+                  style={{flex:"1 1 calc(33% - 6px)",padding:"8px 10px",borderRadius:7,cursor:"pointer",
+                    background:gridFase===g.id?"var(--bg2)":"var(--bg3)",
+                    border:`2px solid ${gridFase===g.id?g.color:"var(--border)"}`,
+                    transition:"all .15s",textAlign:"center"}}>
+                  <div style={{fontFamily:"'IBM Plex Mono',monospace",fontWeight:800,fontSize:14,
+                    color:gridFase===g.id?g.color:"var(--muted)"}}>{g.icon}</div>
+                  <div style={{fontSize:9,fontWeight:700,color:gridFase===g.id?g.color:"var(--text)",marginTop:2}}>{g.label}</div>
+                  <div style={{fontSize:8,color:"var(--muted)",marginTop:1}}>{g.sub}</div>
                 </div>
-              );
-            })}
+              ))}
+            </div>
+            {gridFase&&<div style={{marginTop:8,padding:"6px 10px",borderRadius:6,fontSize:9,
+              background:gridFase==="3f400"?"var(--blue-bg)":"var(--green-bg)",
+              border:`1px solid ${gridFase==="3f400"?"var(--blue-border)":"var(--green-border)"}`,
+              color:gridFase==="3f400"?"var(--blue)":"var(--green)"}}>
+              {(gridFase==="mono")&&"✅ Monofasig: enkel 1-fase omvormers beschikbaar op tab 04."}
+              {(gridFase==="3f230")&&"✅ Driefasig 230V: 1-fase omvormers (asymmetrisch laden vermijden) beschikbaar op tab 04."}
+              {(gridFase==="3f400")&&"✅ Driefasig 400V: 3-fase omvormers aanbevolen en geselecteerd op tab 04."}
+            </div>}
+            {!gridFase&&<div style={{fontSize:8,color:"var(--muted)",marginTop:6}}>
+              Kies de aansluitspanning → filtert automatisch de beschikbare omvormers.
+            </div>}
           </div>
-        </div>
 
-          {/* ── Opmerkingen ───────────────────────────────────────────── */}
-          <div className="customer-section">
-            <div className="sl" style={{marginBottom:8}}>📝 Opmerkingen</div>
-          <div className="inp-label" style={{fontSize:9,fontWeight:600}}>Opmerkingen technieker</div>
-          <textarea className="inp" rows={3}
-            style={{resize:"vertical",fontSize:9,lineHeight:1.5,marginBottom:8}}
-            placeholder="Notities van het plaatsbezoek, specifieke situatie, obstakels..."
-            value={technicianNotes} onChange={e=>setTechnicianNotes(e.target.value)}/>
-          <div className="inp-label" style={{fontSize:9,fontWeight:600}}>Interne opmerkingen Ecofinity</div>
-          <textarea className="inp" rows={2}
-            style={{resize:"vertical",fontSize:9,lineHeight:1.5}}
-            placeholder="Interne notities, opvolging, bijzonderheden..."
-            value={internalNotes} onChange={e=>setInternalNotes(e.target.value)}/>
-        </div>
+            {/* ── Bestaande situatie ─────────────────────────────────────── */}
+            <div className="customer-section">
+              <div className="sl" style={{marginBottom:8}}>🏠 Bestaande situatie</div>
+            <div style={{display:"flex",gap:10,marginBottom:10}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:9,fontWeight:600,marginBottom:4}}>Bestaande PV-installatie</div>
+                <div style={{display:"flex",gap:4}}>
+                  {["nee","ja","onbekend"].map(v=>(
+                    <button key={v} onClick={()=>setHasExistingPV(v)}
+                      style={{flex:1,padding:"5px 4px",borderRadius:5,cursor:"pointer",fontSize:9,
+                        background:hasExistingPV===v?"var(--alpha)":"var(--bg3)",
+                        border:`1.5px solid ${hasExistingPV===v?"var(--alpha)":"var(--border)"}`,
+                        color:hasExistingPV===v?"#fff":"var(--muted)",fontWeight:hasExistingPV===v?700:400}}>
+                      {v==="nee"?"❌ Nee":v==="ja"?"✅ Ja":"❓ Onbekend"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:9,fontWeight:600,marginBottom:4}}>Digitale meter</div>
+                <div style={{display:"flex",gap:4}}>
+                  {["nee","ja","onbekend"].map(v=>(
+                    <button key={v} onClick={()=>setHasDigitalMeter(v)}
+                      style={{flex:1,padding:"5px 4px",borderRadius:5,cursor:"pointer",fontSize:9,
+                        background:hasDigitalMeter===v?"var(--alpha)":"var(--bg3)",
+                        border:`1.5px solid ${hasDigitalMeter===v?"var(--alpha)":"var(--border)"}`,
+                        color:hasDigitalMeter===v?"#fff":"var(--muted)",fontWeight:hasDigitalMeter===v?700:400}}>
+                      {v==="nee"?"❌ Nee":v==="ja"?"✅ Ja":"❓ Onbekend"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
 
-          {/* ── Bevestigingsknop: toon alleen als TL-klant geselecteerd is maar kaart nog niet geladen ─── */}
-          {tlContact&&!tlConfirmed&&<div className="customer-section" style={{
-            background:"var(--amber-light)",border:"2px solid var(--amber)",borderRadius:10,padding:14}}>
-            <div className="sl" style={{marginBottom:8}}>4️⃣ Bevestig en laad de kaart</div>
-            {!tlPendingGeo&&<div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>
-              ⚠️ Geen adres geselecteerd — kies een adres in stap 1.
-            </div>}
-            {tlPendingGeo&&!tlSelectedDealId&&<div style={{fontSize:9,color:"var(--amber)",marginBottom:6,fontWeight:600}}>
-              ⚠️ Koppel eerst een deal aan in stap 1.
-            </div>}
-            <button style={{
-              width:"100%",padding:"14px 0",fontSize:14,fontWeight:800,
-              background:(!tlPendingGeo||!tlSelectedDealId)?"var(--bg3)":"var(--amber)",
-              color:(!tlPendingGeo||!tlSelectedDealId)?"var(--muted)":"#fff",
-              border:"none",borderRadius:8,cursor:(!tlPendingGeo||!tlSelectedDealId)?"not-allowed":"pointer",
-              fontFamily:"'Syne',sans-serif"}}
-              onClick={handleTlConfirm}
-              disabled={!tlPendingGeo||!tlSelectedDealId}>
-              {!tlPendingGeo?"📍 Adres niet gevonden"
-                :!tlSelectedDealId?"🤝 Koppel eerst een deal"
-                :"✅ Bevestig klant + laad kaart →"}
-            </button>
-            {tlPendingGeo&&<div style={{fontSize:8,color:"var(--amber)",marginTop:6,textAlign:"center"}}>
-              📍 {tlPendingGeo.display_name?.split(",").slice(0,3).join(", ")}
-            </div>}
-          </div>}
-          {/* Toon bevestiging als kaart al geladen is */}
-          {tlContact&&tlConfirmed&&<div style={{padding:"8px 12px",background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:8,fontSize:9,color:"var(--green)"}}>
-            ✅ Klant geladen: <strong>{customer.name}</strong> — {displayName?.split(",").slice(0,2).join(",")}
-          </div>}
+            {/* Extra verbruikers */}
+            <div style={{fontSize:9,fontWeight:600,marginBottom:4}}>Toekomstige extra verbruikers</div>
+            <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+              {[
+                {id:"warmtepomp",icon:"🌡️",label:"Warmtepomp"},
+                {id:"ev",icon:"🚗",label:"Elektrische wagen"},
+                {id:"laadpaal",icon:"⚡",label:"Laadpaal"},
+                {id:"airco",icon:"❄️",label:"Airco"},
+                {id:"boiler",icon:"🚿",label:"Elec. boiler"},
+              ].map(c=>{
+                const active=futureConsumers.includes(c.id);
+                return(
+                  <button key={c.id}
+                    onClick={()=>setFutureConsumers(prev=>active?prev.filter(x=>x!==c.id):[...prev,c.id])}
+                    style={{padding:"4px 8px",borderRadius:5,cursor:"pointer",fontSize:9,
+                      background:active?"var(--alpha)":"var(--bg3)",
+                      border:`1.5px solid ${active?"var(--alpha)":"var(--border)"}`,
+                      color:active?"#fff":"var(--muted)"}}>
+                    {c.icon} {c.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
+            {/* ── Gewenste focus ─────────────────────────────────────────── */}
+            <div className="customer-section">
+              <div className="sl" style={{marginBottom:8}}>🎯 Gewenste focus installatie</div>
+            <div style={{display:"flex",flexDirection:"column",gap:5}}>
+              {[
+                {id:"maxrendement",icon:"📈",label:"Maximaal rendement",sub:"Hoogste jaaropbrengst"},
+                {id:"maxzelfverbruik",icon:"🏠",label:"Maximaal eigenverbruik",sub:"Zo weinig mogelijk terugleveren"},
+                {id:"spreiding",icon:"⚖️",label:"Goede spreiding over de dag",sub:"Ochtend én namiddag productie"},
+                {id:"maxpanelen",icon:"🔢",label:"Maximaal aantal panelen",sub:"Alle geschikte dakvlakken benutten"},
+                {id:"budget",icon:"💶",label:"Budgetvriendelijk",sub:"Beste prijs-kwaliteit verhouding"},
+              ].map(f=>{
+                const active=focusGoal===f.id;
+                return(
+                  <div key={f.id} onClick={()=>setFocusGoal(prev=>prev===f.id?"":f.id)}
+                    style={{padding:"7px 10px",borderRadius:6,cursor:"pointer",
+                      background:active?"var(--alpha-bg)":"var(--bg2)",
+                      border:`1.5px solid ${active?"var(--alpha)":"var(--border)"}`,
+                      transition:"all .12s",display:"flex",alignItems:"center",gap:8}}>
+                    <div style={{fontSize:16,lineHeight:1}}>{f.icon}</div>
+                    <div>
+                      <div style={{fontSize:10,fontWeight:700,color:active?"var(--alpha)":"var(--text)"}}>{f.label}</div>
+                      <div style={{fontSize:8,color:"var(--muted)"}}>{f.sub}</div>
+                    </div>
+                    {active&&<div style={{marginLeft:"auto",color:"var(--alpha)",fontSize:12}}>✓</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+            {/* ── Opmerkingen ───────────────────────────────────────────── */}
+            <div className="customer-section">
+              <div className="sl" style={{marginBottom:8}}>📝 Opmerkingen</div>
+            <div className="inp-label" style={{fontSize:9,fontWeight:600}}>Opmerkingen technieker</div>
+            <textarea className="inp" rows={3}
+              style={{resize:"vertical",fontSize:9,lineHeight:1.5,marginBottom:8}}
+              placeholder="Notities van het plaatsbezoek, specifieke situatie, obstakels..."
+              value={technicianNotes} onChange={e=>setTechnicianNotes(e.target.value)}/>
+            <div className="inp-label" style={{fontSize:9,fontWeight:600}}>Interne opmerkingen Ecofinity</div>
+            <textarea className="inp" rows={2}
+              style={{resize:"vertical",fontSize:9,lineHeight:1.5}}
+              placeholder="Interne notities, opvolging, bijzonderheden..."
+              value={internalNotes} onChange={e=>setInternalNotes(e.target.value)}/>
+          </div>
+
+            {/* ── Bevestigingsknop: toon alleen als TL-klant geselecteerd is maar kaart nog niet geladen ─── */}
+            {tlContact&&!tlConfirmed&&<div className="customer-section" style={{
+              background:"var(--amber-light)",border:"2px solid var(--amber)",borderRadius:10,padding:14}}>
+              <div className="sl" style={{marginBottom:8}}>4️⃣ Bevestig en laad de kaart</div>
+              {!tlPendingGeo&&<div style={{fontSize:9,color:"var(--muted)",marginBottom:6}}>
+                ⚠️ Geen adres geselecteerd — kies een adres in stap 1.
+              </div>}
+              {tlPendingGeo&&!tlSelectedDealId&&<div style={{fontSize:9,color:"var(--amber)",marginBottom:6,fontWeight:600}}>
+                ⚠️ Koppel eerst een deal aan in stap 1.
+              </div>}
+              <button style={{
+                width:"100%",padding:"14px 0",fontSize:14,fontWeight:800,
+                background:(!tlPendingGeo||!tlSelectedDealId)?"var(--bg3)":"var(--amber)",
+                color:(!tlPendingGeo||!tlSelectedDealId)?"var(--muted)":"#fff",
+                border:"none",borderRadius:8,cursor:(!tlPendingGeo||!tlSelectedDealId)?"not-allowed":"pointer",
+                fontFamily:"'Syne',sans-serif"}}
+                onClick={handleTlConfirm}
+                disabled={!tlPendingGeo||!tlSelectedDealId}>
+                {!tlPendingGeo?"📍 Adres niet gevonden"
+                  :!tlSelectedDealId?"🤝 Koppel eerst een deal"
+                  :"✅ Bevestig klant + laad kaart →"}
+              </button>
+              {tlPendingGeo&&<div style={{fontSize:8,color:"var(--amber)",marginTop:6,textAlign:"center"}}>
+                📍 {tlPendingGeo.display_name?.split(",").slice(0,3).join(", ")}
+              </div>}
+            </div>}
+            {/* Toon bevestiging als kaart al geladen is */}
+            {tlContact&&tlConfirmed&&<div style={{padding:"8px 12px",background:"var(--green-bg)",border:"1px solid var(--green-border)",borderRadius:8,fontSize:9,color:"var(--green)"}}>
+              ✅ Klant geladen: <strong>{customer.name}</strong> — {displayName?.split(",").slice(0,2).join(",")}
+            </div>}
+
+        </div>}
         {activeTab==="instellingen"&&<div className="section">
           <div className="sl" style={{marginBottom:12}}>⚙️ App-instellingen</div>
 
