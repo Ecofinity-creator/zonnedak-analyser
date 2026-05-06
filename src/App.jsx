@@ -2533,8 +2533,16 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
       <div style={{marginTop:12}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
           <div className="sl" style={{fontSize:9}}>📋 Werkbonnen / Bezoeken</div>
-          {tlWorkOrdersLoading&&<div style={{fontSize:8,color:"var(--alpha)"}}>⏳ laden...</div>}
-          {!tlWorkOrdersLoading&&tlWorkOrders.length===0&&<div style={{fontSize:8,color:"var(--muted)"}}>Geen gevonden</div>}
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            {tlWorkOrdersLoading&&<div style={{fontSize:8,color:"var(--alpha)"}}>⏳ laden...</div>}
+            {!tlWorkOrdersLoading&&tlContact?.id&&<button className="btn sec sm"
+              style={{fontSize:8,padding:"2px 8px"}}
+              onClick={()=>fetchWorkOrders(tlContact.id,tlContact.type||"contact")}>
+              🔄 Herladen
+            </button>}
+            {!tlWorkOrdersLoading&&tlWorkOrders.length===0&&
+              <div style={{fontSize:8,color:"var(--muted)"}}>Geen gevonden</div>}
+          </div>
         </div>
 
         {tlWorkOrders.length>0&&<div style={{maxHeight:220,overflowY:"auto",display:"flex",flexDirection:"column",gap:5}}>
@@ -2549,7 +2557,7 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
                 onClick={()=>onApplyWorkOrder(wo)}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6}}>
                   <div style={{fontSize:10,fontWeight:600,color:isSel?"var(--alpha)":"var(--text)",flex:1,minWidth:0}}>
-                    {wo.source==="appointment"?"📅":wo.source==="file"?"📄":"⏱"} {wo.title}
+                    {wo.source==="appointment"?"📅":wo.source==="file"?"📄":wo.source==="workorder"?"🔧":wo.source==="deal"?"💼":"⏱"} {wo.title}
                   </div>
                   <div style={{fontSize:8,color:"var(--muted)",whiteSpace:"nowrap",flexShrink:0}}>
                     {wo.date?(new Date(wo.date)).toLocaleDateString("nl-BE",{day:"2-digit",month:"2-digit",year:"numeric"}):"—"}
@@ -3117,76 +3125,128 @@ export default function App(){
     setTlWorkOrders([]);
     setTlSelectedWorkOrder(null);
     setTlWorkOrderData(null);
+    const all=[];
+    const seen=new Set();
+    const addItem=(item)=>{
+      const key=item.source+":"+item.id;
+      if(!seen.has(key)){seen.add(key);all.push(item);}
+    };
+
+    // ── Strategie 1: workOrders.list (TL Focus eigen werkbon-endpoint) ──────
     try{
-      // Strategie 1: appointments.list (bezoeken = werkbonnen)
-      const apptResp=await TL.apiCall("appointments.list",{
-        filter:{attendee_participant_ids:[{id:contactId,type:contactType}]},
-        sort:[{field:"starts_at",order:"desc"}],
+      const woResp=await TL.apiCall("workOrders.list",{
+        filter:{related_to:{type:contactType||"contact",id:contactId}},
+        sort:[{field:"created_at",order:"desc"}],
         page:{size:25,number:1}
       });
-      const appts=(apptResp?.data||[]).map(a=>({
+      (woResp?.data||[]).forEach(w=>addItem({
+        id:w.id,source:"workorder",
+        title:w.title||w.description||w.reference||"Werkbon "+w.number,
+        date:w.created_at?.date||w.created_at||w.planned_at?.date||"",
+        status:w.status||"",
+        description:[w.title,w.description,w.remark].filter(Boolean).join(" — "),
+        raw:w,
+      }));
+    }catch(e){console.warn("workOrders.list:",e?.message||e);}
+
+    // ── Strategie 2: appointments.list (bezoeken/plaatsbezoeken) ───────────
+    try{
+      // Probeer beide filter-varianten want TL versies verschillen
+      let apptData=[];
+      try{
+        const r1=await TL.apiCall("appointments.list",{
+          filter:{attendee_participant_ids:[{type:contactType||"contact",id:contactId}]},
+          sort:[{field:"starts_at",order:"desc"}],page:{size:25,number:1}
+        });
+        apptData=r1?.data||[];
+      }catch{
+        const r2=await TL.apiCall("appointments.list",{
+          filter:{contact_id:contactId},
+          sort:[{field:"starts_at",order:"desc"}],page:{size:25,number:1}
+        });
+        apptData=r2?.data||[];
+      }
+      apptData.forEach(a=>addItem({
         id:a.id,source:"appointment",
-        title:a.title||a.description||"Bezoek",
+        title:a.title||a.description||"Bezoek/Afspraak",
         date:a.starts_at?.date||a.starts_at||"",
         status:a.status||"",
-        description:a.description||a.title||"",
+        description:a.description||a.title||a.location||"",
         raw:a,
       }));
+    }catch(e){console.warn("appointments.list:",e?.message||e);}
 
-      // Strategie 2: timeTracking.list (tijdregistraties met notities)
-      let tracks=[];
-      try{
-        const ttResp=await TL.apiCall("timeTracking.list",{
-          filter:{subject:{id:contactId,type:contactType}},
-          sort:[{field:"started_at",order:"desc"}],
-          page:{size:25,number:1}
-        });
-        tracks=(ttResp?.data||[])
-          .filter(t=>t.description&&t.description.length>10)
-          .map(t=>({
-            id:t.id,source:"timetracking",
-            title:t.description?.substring(0,60)||"Tijdregistratie",
-            date:t.started_at?.date||t.started_at||"",
-            status:"",
-            description:t.description||"",
-            raw:t,
-          }));
-      }catch{}
-
-      // Strategie 3: deals met files (PDF werkbonnen)
-      let dealFiles=[];
-      const deals=tlContact?.deals||[];
-      for(const deal of deals.slice(0,3)){
+    // ── Strategie 3: deals.list → haal info + files op ─────────────────────
+    try{
+      // Haal alle deals op voor deze klant (niet alleen de gekoppelde)
+      const dealsResp=await TL.apiCall("deals.list",{
+        filter:{customer_id:contactId},
+        sort:[{field:"created_at",order:"desc"}],
+        page:{size:10,number:1}
+      });
+      const dealsList=[...(dealsResp?.data||[]),...(tlContact?.deals||[])];
+      const dealIds=new Set();
+      for(const deal of dealsList.filter(d=>d.id&&!dealIds.has(d.id)&&dealIds.add(d.id)).slice(0,5)){
         try{
           const dResp=await TL.apiCall("deals.info",{id:deal.id,include:"files"});
-          const files=(dResp?.data?.files||[]).filter(f=>/pdf|werkbon/i.test(f.name||""));
-          files.forEach(f=>dealFiles.push({
+          const d=dResp?.data||dResp;
+          // Files (PDF werkbonnen)
+          (d?.files||[]).filter(f=>f.name).forEach(f=>addItem({
             id:f.id,source:"file",
-            title:f.name||"PDF bestand",
+            title:f.name,
             date:f.added_at?.date||"",
-            status:"pdf",
-            description:`PDF bestand van deal ${deal.title||deal.id}`,
-            fileUrl:f.url||null,
-            raw:f,
+            status:"📄 bestand",
+            description:`Deal: ${d.title||d.reference||deal.id}`,
+            fileUrl:f.url||null,raw:f,
           }));
+          // Deal zelf als werkbon (als er een beschrijving is)
+          if(d?.description||d?.summary){
+            addItem({
+              id:"deal-"+d.id,source:"deal",
+              title:d.title||d.reference||"Deal "+d.id,
+              date:d.created_at?.date||"",
+              status:d.status||"",
+              description:d.description||d.summary||"",
+              raw:d,
+            });
+          }
         }catch{}
       }
+    }catch(e){console.warn("deals.list:",e?.message||e);}
 
-      const all=[...appts,...tracks,...dealFiles]
-        .sort((a,b)=>(b.date||"").localeCompare(a.date||""));
-      setTlWorkOrders(all);
-    }catch(e){
-      console.warn("Werkbonnen ophalen mislukt:",e);
-    }
-    setTlWorkOrdersLoading(false);
+    // ── Strategie 4: timeTracking.list (tijdregistraties) ──────────────────
+    try{
+      const ttResp=await TL.apiCall("timeTracking.list",{
+        filter:{subject:{id:contactId,type:contactType||"contact"}},
+        sort:[{field:"started_at",order:"desc"}],
+        page:{size:25,number:1}
+      });
+      (ttResp?.data||[])
+        .filter(t=>t.description&&t.description.length>10)
+        .forEach(t=>addItem({
+          id:t.id,source:"timetracking",
+          title:"⏱ "+t.description.substring(0,60),
+          date:t.started_at?.date||t.started_at||"",
+          status:"",
+          description:t.description||"",
+          raw:t,
+        }));
+    }catch(e){console.warn("timeTracking.list:",e?.message||e);}
+
+    all.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+    setTlWorkOrders(all);
   },[tlAuth,tlContact]);
 
   // ── Gebruik werkbon als bron: extraheer en vul velden in ─────────────────
   const applyWorkOrder=useCallback(async(wo)=>{
     setTlSelectedWorkOrder(wo);
-    // Combineer alle tekstvelden
-    let raw=[wo.title,wo.description,wo.raw?.note,wo.raw?.text,wo.raw?.internal_remark]
-      .filter(Boolean).join("\n");
+    // Combineer alle tekstvelden van de werkbon (alle mogelijke velden)
+    let raw=[
+      wo.title, wo.description,
+      wo.raw?.description, wo.raw?.note, wo.raw?.remark,
+      wo.raw?.internal_remark, wo.raw?.text, wo.raw?.summary,
+      wo.raw?.work_description, wo.raw?.customer_remark,
+    ].filter(Boolean).join("\n");
     
     // Haal appointment details op voor meer info
     if(wo.source==="appointment"&&wo.id){
