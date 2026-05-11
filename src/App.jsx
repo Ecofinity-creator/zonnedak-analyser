@@ -3241,10 +3241,13 @@ export default function App(){
     // Combineer alle tekstvelden van de werkbon (alle mogelijke velden)
     let raw=[
       wo.title, wo.description,
-      wo.raw?.description, wo.raw?.note, wo.raw?.remark,
+      wo.raw?.description, wo.raw?.note, wo.raw?.remark, wo.raw?.remarks,
       wo.raw?.internal_remark, wo.raw?.text, wo.raw?.summary,
       wo.raw?.work_description, wo.raw?.customer_remark,
+      wo.raw?.work_performed, wo.raw?.materials_used,
+      wo.raw?.technician_note, wo.raw?.comments,
     ].filter(Boolean).join("\n");
+    console.log("[ZonneDak] Werkbon raw tekst:", raw.substring(0,500));
     
     // Haal appointment details op voor meer info
     if(wo.source==="appointment"&&wo.id){
