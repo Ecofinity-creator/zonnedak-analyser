@@ -3159,48 +3159,31 @@ export default function App(){
       }catch(e){log.push(`❌ ${label}: ${e?.message||String(e)}`);return [];}
     };
 
-    // 1. workOrders.list — meerdere filter varianten
-    for(const [lbl,filter] of [
-      ["workOrders(related_to)",{related_to:{type:contactType||"contact",id:contactId}}],
-      ["workOrders(customer)",{customer:{type:contactType||"contact",id:contactId}}],
-      ["workOrders(contact_id)",{contact_id:contactId}],
-    ]){
-      const data=await tryCall(lbl,"workOrders.list",{filter,sort:[{field:"created_at",order:"desc"}],page:{size:25,number:1}});
-      data.forEach(w=>addItem({id:w.id,source:"workorder",
-        title:w.title||w.description||w.reference||"Werkbon",
-        date:w.created_at?.date||w.planned_at?.date||w.created_at||"",
-        status:w.status||w.phase||"",
-        description:[w.title,w.description,w.remark,w.work_description].filter(Boolean).join(" — "),raw:w}));
-      if(data.length>0) break;
+    // 1. workOrders.list — filter op klant, daarna client-side verificatie
+    {
+      const data=await tryCall("workOrders(related_to)","workOrders.list",{
+        filter:{related_to:{type:contactType||"contact",id:contactId}},
+        sort:[{field:"created_at",order:"desc"}],page:{size:50,number:1}
+      });
+      // Log eerste werkbon zodat we de structuur zien
+      if(data.length>0) console.log("[ZonneDak] Werkbon voorbeeld:",JSON.stringify(data[0]).substring(0,500));
+      // Filter client-side op contactId in alle mogelijke velden
+      const matchesContact=(w)=>{
+        const str=JSON.stringify(w);
+        return str.includes(contactId);
+      };
+      const verified=data.filter(matchesContact);
+      const toAdd=verified.length>0?verified:data.slice(0,5); // max 5 als filter faalt
+      toAdd.forEach(w=>addItem({id:w.id,source:"workorder",
+        title:w.title||w.description||"Werkbon #"+(w.number||w.id?.slice(0,8)),
+        date:w.date||w.created_at?.date||w.planned_at?.date||w.created_at||"",
+        status:w.status||w.phase?.name||"",
+        description:[w.title,w.description,w.remark,w.work_description,w.remarks]
+          .filter(Boolean).join(" — ").substring(0,200),raw:w}));
+      log.push(`  → ${toAdd.length}/${data.length} werkbonnen na klant-filter`);
     }
 
-    // 2. appointments.list — meerdere filter varianten
-    for(const [lbl,filter] of [
-      ["appts(attendee_ids)",{attendee_participant_ids:[{type:contactType||"contact",id:contactId}]}],
-      ["appts(participant_ids)",{participant_ids:[{type:contactType||"contact",id:contactId}]}],
-      ["appts(contact_id)",{contact_id:contactId}],
-    ]){
-      const data=await tryCall(lbl,"appointments.list",{filter,sort:[{field:"starts_at",order:"desc"}],page:{size:25,number:1}});
-      data.forEach(a=>addItem({id:a.id,source:"appointment",
-        title:a.title||a.description||"Bezoek",
-        date:a.starts_at?.date||a.starts_at||"",status:a.status||"",
-        description:a.description||a.title||a.location||"",raw:a}));
-      if(data.length>0) break;
-    }
-
-    // 3. projects.list
-    for(const [lbl,filter] of [
-      ["projects(customer)",{customer:{type:contactType||"contact",id:contactId}}],
-      ["projects(contact_id)",{contact_id:contactId}],
-    ]){
-      const data=await tryCall(lbl,"projects.list",{filter,sort:[{field:"created_at",order:"desc"}],page:{size:15,number:1}});
-      data.forEach(p=>addItem({id:p.id,source:"project",
-        title:p.title||p.description||"Project",
-        date:p.starts_on||p.created_at?.date||"",status:p.status||"",
-        description:[p.title,p.description].filter(Boolean).join(" — "),raw:p}));
-      if(data.length>0) break;
-    }
-
+    // 2. deals.list + deals.info + files
     // 4. deals.list + deals.info + files
     const dealsFromList=await tryCall("deals.list","deals.list",{
       filter:{customer_id:contactId},sort:[{field:"created_at",order:"desc"}],page:{size:10,number:1}});
