@@ -3111,6 +3111,15 @@ export default function App(){
       result.hasExistingPV="nee"; result.confidence.hasExistingPV="high";
     }
 
+    // Aansluitspanning detectie
+    if(/3[\s-]*fas[ie].*400|driefas.*400|400.*driefas/i.test(rawText)){
+      result.gridFase="3f400"; result.confidence.gridFase="high";
+    } else if(/3[\s-]*fas[ie].*230|driefas.*230|230.*driefas/i.test(rawText)){
+      result.gridFase="3f230"; result.confidence.gridFase="high";
+    } else if(/monofas[ie]|1[\s-]*fas[ie]/i.test(rawText)){
+      result.gridFase="mono"; result.confidence.gridFase="high";
+    }
+
     // Extra verbruikers
     const futureConsumers=[];
     if(/warmtepomp/i.test(txt)) futureConsumers.push("warmtepomp");
@@ -3167,13 +3176,14 @@ export default function App(){
       });
       // Log eerste werkbon zodat we de structuur zien
       if(data.length>0) console.log("[ZonneDak] Werkbon voorbeeld:",JSON.stringify(data[0]).substring(0,500));
-      // Filter client-side op contactId in alle mogelijke velden
-      const matchesContact=(w)=>{
-        const str=JSON.stringify(w);
-        return str.includes(contactId);
-      };
+      // Filter op customer.id (de veldnaam die TL gebruikt in workOrders)
+      const matchesContact=(w)=>
+        w.customer?.id===contactId ||
+        w.related_to?.id===contactId ||
+        (Array.isArray(w.related_to)&&w.related_to.some(r=>r.id===contactId)) ||
+        JSON.stringify(w).includes(contactId);
       const verified=data.filter(matchesContact);
-      const toAdd=verified.length>0?verified:data.slice(0,5); // max 5 als filter faalt
+      const toAdd=verified.length>0?verified:data.slice(0,3);
       toAdd.forEach(w=>addItem({id:w.id,source:"workorder",
         title:w.title||w.description||"Werkbon #"+(w.number||w.id?.slice(0,8)),
         date:w.date||w.created_at?.date||w.planned_at?.date||w.created_at||"",
@@ -3201,14 +3211,6 @@ export default function App(){
         date:d.created_at?.date||"",status:d.status||"",
         description:d.description||d.summary||"",raw:d});
     }
-
-    // 5. timeTracking.list
-    const tracks=await tryCall("timeTracking.list","timeTracking.list",{
-      filter:{subject:{id:contactId,type:contactType||"contact"}},
-      sort:[{field:"started_at",order:"desc"}],page:{size:25,number:1}});
-    tracks.filter(t=>t.description?.length>10).forEach(t=>addItem({
-      id:t.id,source:"timetracking",title:"⏱ "+t.description.substring(0,60),
-      date:t.started_at?.date||t.started_at||"",status:"",description:t.description||"",raw:t}));
 
     all.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
     console.log("[ZonneDak] Werkbon fetch log:",log);
@@ -3270,6 +3272,7 @@ export default function App(){
       else if(/werkend/i.test(sit)) setUsageProfile("werkend_koppel");
       else if(/thuis\s*werk/i.test(sit)) setUsageProfile("thuiswerker");
     }
+    if(parsed.gridFase) setGridFase(parsed.gridFase);
     if(parsed.hasExistingPV) setHasExistingPV(parsed.hasExistingPV);
     if(parsed.hasDigitalMeter) setHasDigitalMeter(parsed.hasDigitalMeter);
     if(parsed.futureConsumers?.length>0) setFutureConsumers(parsed.futureConsumers);
