@@ -3133,30 +3133,56 @@ export default function App(){
   // ── Haal werkbonnen op voor geselecteerde klant ─────────────────────────────
   // Helper: directe TL API call (TL.apiCall bestaat niet in teamleaderClient.js)
   const tlFetch=useCallback(async(endpoint,body={})=>{
-    // Haal token op: probeer tlAuth, dan localStorage
-    let token=tlAuth?.access_token||tlAuth?.token;
-    if(!token){
-      // Teamleader OAuth slaat token op in localStorage
-      for(const key of ["tl_access_token","teamleader_access_token","access_token",
-          "tl_token","zonnedak_tl_token"]){
-        const v=localStorage.getItem(key);
-        if(v){token=v;break;}
+    // Haal token op via alle mogelijke bronnen
+    let token=null;
+    // 1. Probeer alle velden van tlAuth
+    if(tlAuth&&typeof tlAuth==="object"){
+      for(const k of Object.keys(tlAuth)){
+        const v=tlAuth[k];
+        if(typeof v==="string"&&v.length>20&&k.toLowerCase().includes("token")){token=v;break;}
+        if(typeof v==="string"&&v.length>40&&!k.includes("user")&&!k.includes("name")&&!k.includes("email")){token=v;}
       }
     }
+    // 2. Probeer alle localStorage keys
     if(!token){
-      // Probeer via TL module internals
       try{
-        const s=await TL.checkAuthStatus();
-        token=s?.access_token||s?.token;
+        for(let i=0;i<localStorage.length;i++){
+          const k=localStorage.key(i);
+          if(!k) continue;
+          const v=localStorage.getItem(k)||"";
+          if(v.length>40&&(k.toLowerCase().includes("token")||k.toLowerCase().includes("access"))){
+            // Probeer of het een JSON object is met token
+            try{const j=JSON.parse(v);token=j.access_token||j.token||null;}catch{token=v;}
+            if(token) break;
+          }
+        }
       }catch{}
     }
-    if(!token) throw new Error("Geen TL token beschikbaar");
+    // 3. Probeer sessionStorage
+    if(!token){
+      try{
+        for(let i=0;i<sessionStorage.length;i++){
+          const k=sessionStorage.key(i);
+          if(!k) continue;
+          const v=sessionStorage.getItem(k)||"";
+          if(v.length>40&&(k.toLowerCase().includes("token")||k.toLowerCase().includes("access"))){
+            try{const j=JSON.parse(v);token=j.access_token||j.token||null;}catch{token=v;}
+            if(token) break;
+          }
+        }
+      }catch{}
+    }
+    // 4. Probeer TL module intern (refresht auth)
+    if(!token){
+      try{const s=await TL.checkAuthStatus();token=s?.access_token||s?.token||null;}catch{}
+    }
+    if(!token) throw new Error("Geen TL token — log opnieuw in via Teamleader");
     const r=await fetch(`https://api.teamleader.eu/${endpoint}`,{
       method:"POST",
       headers:{"Content-Type":"application/json","Authorization":`Bearer ${token}`},
       body:JSON.stringify(body)
     });
-    if(!r.ok){const err=await r.text().catch(()=>"");throw new Error(`TL ${r.status}: ${err.slice(0,100)}`);}
+    if(!r.ok){const t=await r.text().catch(()=>"");throw new Error(`TL ${r.status}: ${t.slice(0,120)}`);}
     const d=await r.json();
     return d.data!==undefined?d.data:d;
   },[tlAuth]);
@@ -3169,6 +3195,13 @@ export default function App(){
     const addItem=(item)=>{const k=item.source+":"+item.id;if(!seen.has(k)){seen.add(k);all.push(item);}};
     log[0]=`⏳ Zoeken voor contactId=${contactId} type=${contactType||"contact"}`;
     setTlWorkOrderDebug([...log]);
+    // Debug: toon wat er beschikbaar is voor token-extractie
+    console.log("[ZonneDak] tlAuth keys:", Object.keys(tlAuth||{}));
+    try{
+      const lsKeys=[];
+      for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k)lsKeys.push(k);}
+      console.log("[ZonneDak] localStorage keys:", lsKeys);
+    }catch{}
     const tryCall=async(label,endpoint,params)=>{
       try{
         // Gebruik tlFetch (directe fetch) want TL.apiCall bestaat niet in teamleaderClient
