@@ -2547,15 +2547,11 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
           </div>
         </div>
 
-        {!tlWorkOrdersLoading&&tlWorkOrderDebug.length>0&&<div style={{
+        {!tlWorkOrdersLoading&&tlWorkOrderDebug.length>0&&tlWorkOrders.length===0&&<div style={{
           marginTop:6,padding:"6px 8px",background:"var(--bg2)",borderRadius:5,
           fontSize:7.5,color:"var(--muted)",fontFamily:"'IBM Plex Mono',monospace",
-          maxHeight:120,overflowY:"auto"}}>
-          <div style={{fontWeight:700,marginBottom:3,color:"var(--text)"}}>🔍 Zoeklog:</div>
+          maxHeight:100,overflowY:"auto"}}>
           {tlWorkOrderDebug.map((l,i)=><div key={i}>{l}</div>)}
-          <div style={{marginTop:4,color:"var(--amber)",fontSize:7}}>
-            ⚠️ Als alles ❌ of ⬜ geeft: de werkbon is mogelijk aangemaakt als een ander type (nota, bijlage...). Controleer het type in Teamleader.
-          </div>
         </div>}
         {tlWorkOrders.length>0&&<div style={{marginTop:6,display:"flex",flexDirection:"column",gap:5}}>
           {tlWorkOrders.map(wo=>{
@@ -3111,6 +3107,15 @@ export default function App(){
       result.hasExistingPV="nee"; result.confidence.hasExistingPV="high";
     }
 
+    // Aansluitspanning detectie
+    if(/3[\s-]*fas[ie].*400|driefas.*400|400.*driefas/i.test(rawText)){
+      result.gridFase="3f400"; result.confidence.gridFase="high";
+    } else if(/3[\s-]*fas[ie].*230|driefas.*230|230.*driefas/i.test(rawText)){
+      result.gridFase="3f230"; result.confidence.gridFase="high";
+    } else if(/monofas[ie]|1[\s-]*fas[ie]/i.test(rawText)){
+      result.gridFase="mono"; result.confidence.gridFase="high";
+    }
+
     // Extra verbruikers
     const futureConsumers=[];
     if(/warmtepomp/i.test(txt)) futureConsumers.push("warmtepomp");
@@ -3165,16 +3170,16 @@ export default function App(){
         filter:{related_to:{type:contactType||"contact",id:contactId}},
         sort:[{field:"created_at",order:"desc"}],page:{size:50,number:1}
       });
-      // Sommige TL versies negeren de filter → verifieer client-side
-      const verify=(w)=>{
-        const rel=w.related_to||{};const cust=w.customer||{};
-        if(rel.id===contactId||cust.id===contactId) return true;
-        if(Array.isArray(rel)&&rel.some(r=>r.id===contactId)) return true;
-        return false;
-      };
-      // Als alles verified: gebruik verified; anders toon alles (filter werkte niet)
-      const verified=data.filter(verify);
-      const toAdd=verified.length>0?verified:data;
+      // Log eerste werkbon zodat we de structuur zien
+
+      // Filter op customer.id (de veldnaam die TL gebruikt in workOrders)
+      const matchesContact=(w)=>
+        w.customer?.id===contactId ||
+        w.related_to?.id===contactId ||
+        (Array.isArray(w.related_to)&&w.related_to.some(r=>r.id===contactId)) ||
+        JSON.stringify(w).includes(contactId);
+      const verified=data.filter(matchesContact);
+      const toAdd=verified.length>0?verified:data.slice(0,3);
       toAdd.forEach(w=>addItem({id:w.id,source:"workorder",
         title:w.title||w.description||"Werkbon #"+(w.number||w.id?.slice(0,8)),
         date:w.date||w.created_at?.date||w.planned_at?.date||w.created_at||"",
@@ -3203,14 +3208,6 @@ export default function App(){
         description:d.description||d.summary||"",raw:d});
     }
 
-    // 5. timeTracking.list
-    const tracks=await tryCall("timeTracking.list","timeTracking.list",{
-      filter:{subject:{id:contactId,type:contactType||"contact"}},
-      sort:[{field:"started_at",order:"desc"}],page:{size:25,number:1}});
-    tracks.filter(t=>t.description?.length>10).forEach(t=>addItem({
-      id:t.id,source:"timetracking",title:"⏱ "+t.description.substring(0,60),
-      date:t.started_at?.date||t.started_at||"",status:"",description:t.description||"",raw:t}));
-
     all.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
     console.log("[ZonneDak] Werkbon fetch log:",log);
     console.log("[ZonneDak] Werkbonnen gevonden:",all.length,all);
@@ -3231,7 +3228,7 @@ export default function App(){
       wo.raw?.work_performed, wo.raw?.materials_used,
       wo.raw?.technician_note, wo.raw?.comments,
     ].filter(Boolean).join("\n");
-    console.log("[ZonneDak] Werkbon raw tekst:", raw.substring(0,500));
+
     
     // Haal appointment details op voor meer info
     if(wo.source==="appointment"&&wo.id){
@@ -3271,6 +3268,7 @@ export default function App(){
       else if(/werkend/i.test(sit)) setUsageProfile("werkend_koppel");
       else if(/thuis\s*werk/i.test(sit)) setUsageProfile("thuiswerker");
     }
+    if(parsed.gridFase) setGridFase(parsed.gridFase);
     if(parsed.hasExistingPV) setHasExistingPV(parsed.hasExistingPV);
     if(parsed.hasDigitalMeter) setHasDigitalMeter(parsed.hasDigitalMeter);
     if(parsed.futureConsumers?.length>0) setFutureConsumers(parsed.futureConsumers);
