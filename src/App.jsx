@@ -2545,7 +2545,17 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
           </div>
         </div>
 
-        {tlWorkOrders.length>0&&<div style={{maxHeight:220,overflowY:"auto",display:"flex",flexDirection:"column",gap:5}}>
+        {tlWorkOrders.length===0&&!tlWorkOrdersLoading&&tlWorkOrderDebug.length>0&&<div style={{
+          marginTop:6,padding:"6px 8px",background:"var(--bg2)",borderRadius:5,
+          fontSize:7.5,color:"var(--muted)",fontFamily:"'IBM Plex Mono',monospace",
+          maxHeight:120,overflowY:"auto"}}>
+          <div style={{fontWeight:700,marginBottom:3,color:"var(--text)"}}>🔍 Zoeklog:</div>
+          {tlWorkOrderDebug.map((l,i)=><div key={i}>{l}</div>)}
+          <div style={{marginTop:4,color:"var(--amber)",fontSize:7}}>
+            ⚠️ Als alles ❌ of ⬜ geeft: de werkbon is mogelijk aangemaakt als een ander type (nota, bijlage...). Controleer het type in Teamleader.
+          </div>
+        </div>}
+        {tlWorkOrders.length>0&&<div style={{marginTop:6,display:"flex",flexDirection:"column",gap:5}}>
           {tlWorkOrders.map(wo=>{
             const isSel=tlSelectedWorkOrder?.id===wo.id&&tlSelectedWorkOrder?.source===wo.source;
             return(
@@ -2771,6 +2781,7 @@ export default function App(){
   const[tlWorkOrdersLoading,setTlWorkOrdersLoading]=useState(false);
   const[tlSelectedWorkOrder,setTlSelectedWorkOrder]=useState(null); // gekozen werkbon
   const[tlWorkOrderData,setTlWorkOrderData]=useState(null); // geëxtraheerde data
+  const[tlWorkOrderDebug,setTlWorkOrderDebug]=useState([]); // debug log van fetch pogingen
   const[tlPendingGeo,setTlPendingGeo]=useState(null);
   const[tlConfirmed,setTlConfirmed]=useState(false);
   // TL offerte-templates per dakbedekking
@@ -3122,119 +3133,90 @@ export default function App(){
   const fetchWorkOrders=useCallback(async(contactId,contactType)=>{
     if(!tlAuth?.logged_in||!contactId) return;
     setTlWorkOrdersLoading(true);
-    setTlWorkOrders([]);
-    setTlSelectedWorkOrder(null);
-    setTlWorkOrderData(null);
-    const all=[];
-    const seen=new Set();
-    const addItem=(item)=>{
-      const key=item.source+":"+item.id;
-      if(!seen.has(key)){seen.add(key);all.push(item);}
+    setTlWorkOrders([]);setTlSelectedWorkOrder(null);setTlWorkOrderData(null);
+    const all=[];const seen=new Set();const log=[];
+    const addItem=(item)=>{const k=item.source+":"+item.id;if(!seen.has(k)){seen.add(k);all.push(item);}};
+    const tryCall=async(label,endpoint,params)=>{
+      try{
+        const resp=await TL.apiCall(endpoint,params);
+        const d=resp?.data||[];
+        log.push(`${d.length>0?"✅":"⬜"} ${label}: ${d.length} resultaten`);
+        return d;
+      }catch(e){log.push(`❌ ${label}: ${e?.message||String(e)}`);return [];}
     };
 
-    // ── Strategie 1: workOrders.list (TL Focus eigen werkbon-endpoint) ──────
-    try{
-      const woResp=await TL.apiCall("workOrders.list",{
-        filter:{related_to:{type:contactType||"contact",id:contactId}},
-        sort:[{field:"created_at",order:"desc"}],
-        page:{size:25,number:1}
-      });
-      (woResp?.data||[]).forEach(w=>addItem({
-        id:w.id,source:"workorder",
-        title:w.title||w.description||w.reference||"Werkbon "+w.number,
-        date:w.created_at?.date||w.created_at||w.planned_at?.date||"",
-        status:w.status||"",
-        description:[w.title,w.description,w.remark].filter(Boolean).join(" — "),
-        raw:w,
-      }));
-    }catch(e){console.warn("workOrders.list:",e?.message||e);}
+    // 1. workOrders.list — meerdere filter varianten
+    for(const [lbl,filter] of [
+      ["workOrders(related_to)",{related_to:{type:contactType||"contact",id:contactId}}],
+      ["workOrders(customer)",{customer:{type:contactType||"contact",id:contactId}}],
+      ["workOrders(contact_id)",{contact_id:contactId}],
+    ]){
+      const data=await tryCall(lbl,"workOrders.list",{filter,sort:[{field:"created_at",order:"desc"}],page:{size:25,number:1}});
+      data.forEach(w=>addItem({id:w.id,source:"workorder",
+        title:w.title||w.description||w.reference||"Werkbon",
+        date:w.created_at?.date||w.planned_at?.date||w.created_at||"",
+        status:w.status||w.phase||"",
+        description:[w.title,w.description,w.remark,w.work_description].filter(Boolean).join(" — "),raw:w}));
+      if(data.length>0) break;
+    }
 
-    // ── Strategie 2: appointments.list (bezoeken/plaatsbezoeken) ───────────
-    try{
-      // Probeer beide filter-varianten want TL versies verschillen
-      let apptData=[];
-      try{
-        const r1=await TL.apiCall("appointments.list",{
-          filter:{attendee_participant_ids:[{type:contactType||"contact",id:contactId}]},
-          sort:[{field:"starts_at",order:"desc"}],page:{size:25,number:1}
-        });
-        apptData=r1?.data||[];
-      }catch{
-        const r2=await TL.apiCall("appointments.list",{
-          filter:{contact_id:contactId},
-          sort:[{field:"starts_at",order:"desc"}],page:{size:25,number:1}
-        });
-        apptData=r2?.data||[];
-      }
-      apptData.forEach(a=>addItem({
-        id:a.id,source:"appointment",
-        title:a.title||a.description||"Bezoek/Afspraak",
-        date:a.starts_at?.date||a.starts_at||"",
-        status:a.status||"",
-        description:a.description||a.title||a.location||"",
-        raw:a,
-      }));
-    }catch(e){console.warn("appointments.list:",e?.message||e);}
+    // 2. appointments.list — meerdere filter varianten
+    for(const [lbl,filter] of [
+      ["appts(attendee_ids)",{attendee_participant_ids:[{type:contactType||"contact",id:contactId}]}],
+      ["appts(participant_ids)",{participant_ids:[{type:contactType||"contact",id:contactId}]}],
+      ["appts(contact_id)",{contact_id:contactId}],
+    ]){
+      const data=await tryCall(lbl,"appointments.list",{filter,sort:[{field:"starts_at",order:"desc"}],page:{size:25,number:1}});
+      data.forEach(a=>addItem({id:a.id,source:"appointment",
+        title:a.title||a.description||"Bezoek",
+        date:a.starts_at?.date||a.starts_at||"",status:a.status||"",
+        description:a.description||a.title||a.location||"",raw:a}));
+      if(data.length>0) break;
+    }
 
-    // ── Strategie 3: deals.list → haal info + files op ─────────────────────
-    try{
-      // Haal alle deals op voor deze klant (niet alleen de gekoppelde)
-      const dealsResp=await TL.apiCall("deals.list",{
-        filter:{customer_id:contactId},
-        sort:[{field:"created_at",order:"desc"}],
-        page:{size:10,number:1}
-      });
-      const dealsList=[...(dealsResp?.data||[]),...(tlContact?.deals||[])];
-      const dealIds=new Set();
-      for(const deal of dealsList.filter(d=>d.id&&!dealIds.has(d.id)&&dealIds.add(d.id)).slice(0,5)){
-        try{
-          const dResp=await TL.apiCall("deals.info",{id:deal.id,include:"files"});
-          const d=dResp?.data||dResp;
-          // Files (PDF werkbonnen)
-          (d?.files||[]).filter(f=>f.name).forEach(f=>addItem({
-            id:f.id,source:"file",
-            title:f.name,
-            date:f.added_at?.date||"",
-            status:"📄 bestand",
-            description:`Deal: ${d.title||d.reference||deal.id}`,
-            fileUrl:f.url||null,raw:f,
-          }));
-          // Deal zelf als werkbon (als er een beschrijving is)
-          if(d?.description||d?.summary){
-            addItem({
-              id:"deal-"+d.id,source:"deal",
-              title:d.title||d.reference||"Deal "+d.id,
-              date:d.created_at?.date||"",
-              status:d.status||"",
-              description:d.description||d.summary||"",
-              raw:d,
-            });
-          }
-        }catch{}
-      }
-    }catch(e){console.warn("deals.list:",e?.message||e);}
+    // 3. projects.list
+    for(const [lbl,filter] of [
+      ["projects(customer)",{customer:{type:contactType||"contact",id:contactId}}],
+      ["projects(contact_id)",{contact_id:contactId}],
+    ]){
+      const data=await tryCall(lbl,"projects.list",{filter,sort:[{field:"created_at",order:"desc"}],page:{size:15,number:1}});
+      data.forEach(p=>addItem({id:p.id,source:"project",
+        title:p.title||p.description||"Project",
+        date:p.starts_on||p.created_at?.date||"",status:p.status||"",
+        description:[p.title,p.description].filter(Boolean).join(" — "),raw:p}));
+      if(data.length>0) break;
+    }
 
-    // ── Strategie 4: timeTracking.list (tijdregistraties) ──────────────────
-    try{
-      const ttResp=await TL.apiCall("timeTracking.list",{
-        filter:{subject:{id:contactId,type:contactType||"contact"}},
-        sort:[{field:"started_at",order:"desc"}],
-        page:{size:25,number:1}
-      });
-      (ttResp?.data||[])
-        .filter(t=>t.description&&t.description.length>10)
-        .forEach(t=>addItem({
-          id:t.id,source:"timetracking",
-          title:"⏱ "+t.description.substring(0,60),
-          date:t.started_at?.date||t.started_at||"",
-          status:"",
-          description:t.description||"",
-          raw:t,
-        }));
-    }catch(e){console.warn("timeTracking.list:",e?.message||e);}
+    // 4. deals.list + deals.info + files
+    const dealsFromList=await tryCall("deals.list","deals.list",{
+      filter:{customer_id:contactId},sort:[{field:"created_at",order:"desc"}],page:{size:10,number:1}});
+    const allDeals=[...dealsFromList,...(tlContact?.deals||[])];
+    const dealIds=new Set();
+    for(const deal of allDeals.filter(d=>d.id&&!dealIds.has(d.id)&&dealIds.add(d.id)).slice(0,5)){
+      const dArr=await tryCall("deals.info("+deal.id+")","deals.info",{id:deal.id,include:"files"});
+      const d=dArr?.[0]||dArr;
+      if(!d)continue;
+      (d?.files||[]).filter(f=>f.name).forEach(f=>addItem({
+        id:f.id,source:"file",title:f.name,date:f.added_at?.date||"",status:"📄",
+        description:"Deal: "+(d.title||deal.id),fileUrl:f.url||null,raw:f}));
+      if(d?.description||d?.summary)addItem({
+        id:"deal-"+d.id,source:"deal",title:d.title||d.reference||"Deal",
+        date:d.created_at?.date||"",status:d.status||"",
+        description:d.description||d.summary||"",raw:d});
+    }
+
+    // 5. timeTracking.list
+    const tracks=await tryCall("timeTracking.list","timeTracking.list",{
+      filter:{subject:{id:contactId,type:contactType||"contact"}},
+      sort:[{field:"started_at",order:"desc"}],page:{size:25,number:1}});
+    tracks.filter(t=>t.description?.length>10).forEach(t=>addItem({
+      id:t.id,source:"timetracking",title:"⏱ "+t.description.substring(0,60),
+      date:t.started_at?.date||t.started_at||"",status:"",description:t.description||"",raw:t}));
 
     all.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
     setTlWorkOrders(all);
+    setTlWorkOrderDebug(log);
+    setTlWorkOrdersLoading(false);
   },[tlAuth,tlContact]);
 
   // ── Gebruik werkbon als bron: extraheer en vul velden in ─────────────────
