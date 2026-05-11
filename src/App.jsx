@@ -2545,7 +2545,7 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
           </div>
         </div>
 
-        {tlWorkOrders.length===0&&!tlWorkOrdersLoading&&tlWorkOrderDebug.length>0&&<div style={{
+        {!tlWorkOrdersLoading&&tlWorkOrderDebug.length>0&&<div style={{
           marginTop:6,padding:"6px 8px",background:"var(--bg2)",borderRadius:5,
           fontSize:7.5,color:"var(--muted)",fontFamily:"'IBM Plex Mono',monospace",
           maxHeight:120,overflowY:"auto"}}>
@@ -3133,9 +3133,11 @@ export default function App(){
   const fetchWorkOrders=useCallback(async(contactId,contactType)=>{
     if(!tlAuth?.logged_in||!contactId) return;
     setTlWorkOrdersLoading(true);
-    setTlWorkOrders([]);setTlSelectedWorkOrder(null);setTlWorkOrderData(null);
+    setTlWorkOrders([]);setTlSelectedWorkOrder(null);setTlWorkOrderData(null);setTlWorkOrderDebug(["⏳ Zoeken..."]);
     const all=[];const seen=new Set();const log=[];
     const addItem=(item)=>{const k=item.source+":"+item.id;if(!seen.has(k)){seen.add(k);all.push(item);}};
+    log[0]=`⏳ Zoeken voor contactId=${contactId} type=${contactType||"contact"}`;
+    setTlWorkOrderDebug([...log]);
     const tryCall=async(label,endpoint,params)=>{
       try{
         const resp=await TL.apiCall(endpoint,params);
@@ -3214,6 +3216,8 @@ export default function App(){
       date:t.started_at?.date||t.started_at||"",status:"",description:t.description||"",raw:t}));
 
     all.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+    console.log("[ZonneDak] Werkbon fetch log:",log);
+    console.log("[ZonneDak] Werkbonnen gevonden:",all.length,all);
     setTlWorkOrders(all);
     setTlWorkOrderDebug(log);
     setTlWorkOrdersLoading(false);
