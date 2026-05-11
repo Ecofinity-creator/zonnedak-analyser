@@ -3145,11 +3145,15 @@ export default function App(){
         token=_tlCapture.capturedToken;
       }catch{}
     }
-    // Fallback: probeer TL.getDealOptions (maakt zeker een auth API call)
+    // Fallback: probeer diverse TL calls om token te capteren
     if(!token){
       try{await TL.getDealOptions();token=_tlCapture.capturedToken;}catch{}
     }
-    if(!token) throw new Error("Token niet gevonden — doe een TL-zoekopdracht eerst om te authenticeren");
+    if(!token&&tlContact?.id){
+      try{await TL.getContactDetails(tlContact.type||"contact",tlContact.id);token=_tlCapture.capturedToken;}catch{}
+    }
+    if(!token) throw new Error("Token niet gevonden — open Network tab en kijk welke URL teamleaderClient gebruikt");
+    console.log("[ZonneDak] Token gevonden:",token.substring(0,10)+"...");
     console.log("[ZonneDak] Token gevonden, eerste 10 chars:",token.substring(0,10)+"...");
     const r=await fetch(`https://api.teamleader.eu/${endpoint}`,{
       method:"POST",
@@ -3172,6 +3176,8 @@ export default function App(){
     // Debug: toon wat er beschikbaar is voor token-extractie
     console.log("[ZonneDak] tlAuth keys:", Object.keys(tlAuth||{}));
     console.log("[ZonneDak] Captured token:", _tlCapture.capturedToken?"✅ ja ("+_tlCapture.capturedToken.substring(0,10)+"...)":"❌ nog niet");
+    // Toon alle actieve fetch requests om te begrijpen welke URL TL gebruikt
+    console.log("[ZonneDak] Als token ❌: check Network tab → filter op 'teamleader' of 'vercel'");
     const tryCall=async(label,endpoint,params)=>{
       try{
         // Gebruik tlFetch (directe fetch) want TL.apiCall bestaat niet in teamleaderClient
