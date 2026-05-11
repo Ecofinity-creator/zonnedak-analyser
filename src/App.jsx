@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback, Component } from "react";
+
+// Token interceptie: zie tlTokenCapture.js (geladen vóór teamleaderClient.js)
 import {
   wgs84ToLambert72 as _wgs84ToLambert72,
   lambert72ToWgs84 as _lambert72ToWgs84,
@@ -15,6 +17,7 @@ import {
   createAutoSaver,
 } from "./projectStorage.js";
 import { computeStringDesign } from "./stringDesign.js";
+import * as _tlCapture from "./tlTokenCapture.js"; // MOET vóór TL staan!
 import * as TL from "./teamleaderClient.js";
 // EcoFinity logo — vul hier de base64 string in via ecofinityLogo.js of inline
 // Als het bestand niet bestaat: tijdelijk null (geen logo in header)
@@ -3133,50 +3136,21 @@ export default function App(){
   // ── Haal werkbonnen op voor geselecteerde klant ─────────────────────────────
   // Helper: directe TL API call (TL.apiCall bestaat niet in teamleaderClient.js)
   const tlFetch=useCallback(async(endpoint,body={})=>{
-    // Haal token op via alle mogelijke bronnen
-    let token=null;
-    // 1. Probeer alle velden van tlAuth
-    if(tlAuth&&typeof tlAuth==="object"){
-      for(const k of Object.keys(tlAuth)){
-        const v=tlAuth[k];
-        if(typeof v==="string"&&v.length>20&&k.toLowerCase().includes("token")){token=v;break;}
-        if(typeof v==="string"&&v.length>40&&!k.includes("user")&&!k.includes("name")&&!k.includes("email")){token=v;}
-      }
-    }
-    // 2. Probeer alle localStorage keys
+    // Haal token op: gebruik de geïntercepteerde token uit teamleaderClient fetch calls
+    let token=_tlCapture.capturedToken;
+    // Als nog niet gevangen: trigger een TL call om token te capteren
     if(!token){
       try{
-        for(let i=0;i<localStorage.length;i++){
-          const k=localStorage.key(i);
-          if(!k) continue;
-          const v=localStorage.getItem(k)||"";
-          if(v.length>40&&(k.toLowerCase().includes("token")||k.toLowerCase().includes("access"))){
-            // Probeer of het een JSON object is met token
-            try{const j=JSON.parse(v);token=j.access_token||j.token||null;}catch{token=v;}
-            if(token) break;
-          }
-        }
+        await TL.checkAuthStatus(); // triggert een fetch → interceptor vangt token
+        token=_tlCapture.capturedToken;
       }catch{}
     }
-    // 3. Probeer sessionStorage
+    // Fallback: probeer TL.getDealOptions (maakt zeker een auth API call)
     if(!token){
-      try{
-        for(let i=0;i<sessionStorage.length;i++){
-          const k=sessionStorage.key(i);
-          if(!k) continue;
-          const v=sessionStorage.getItem(k)||"";
-          if(v.length>40&&(k.toLowerCase().includes("token")||k.toLowerCase().includes("access"))){
-            try{const j=JSON.parse(v);token=j.access_token||j.token||null;}catch{token=v;}
-            if(token) break;
-          }
-        }
-      }catch{}
+      try{await TL.getDealOptions();token=_tlCapture.capturedToken;}catch{}
     }
-    // 4. Probeer TL module intern (refresht auth)
-    if(!token){
-      try{const s=await TL.checkAuthStatus();token=s?.access_token||s?.token||null;}catch{}
-    }
-    if(!token) throw new Error("Geen TL token — log opnieuw in via Teamleader");
+    if(!token) throw new Error("Token niet gevonden — doe een TL-zoekopdracht eerst om te authenticeren");
+    console.log("[ZonneDak] Token gevonden, eerste 10 chars:",token.substring(0,10)+"...");
     const r=await fetch(`https://api.teamleader.eu/${endpoint}`,{
       method:"POST",
       headers:{"Content-Type":"application/json","Authorization":`Bearer ${token}`},
@@ -3197,11 +3171,7 @@ export default function App(){
     setTlWorkOrderDebug([...log]);
     // Debug: toon wat er beschikbaar is voor token-extractie
     console.log("[ZonneDak] tlAuth keys:", Object.keys(tlAuth||{}));
-    try{
-      const lsKeys=[];
-      for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k)lsKeys.push(k);}
-      console.log("[ZonneDak] localStorage keys:", lsKeys);
-    }catch{}
+    console.log("[ZonneDak] Captured token:", _tlCapture.capturedToken?"✅ ja ("+_tlCapture.capturedToken.substring(0,10)+"...)":"❌ nog niet");
     const tryCall=async(label,endpoint,params)=>{
       try{
         // Gebruik tlFetch (directe fetch) want TL.apiCall bestaat niet in teamleaderClient
