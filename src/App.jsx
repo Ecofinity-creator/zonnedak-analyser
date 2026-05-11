@@ -3131,6 +3131,36 @@ export default function App(){
   },[]);
 
   // ── Haal werkbonnen op voor geselecteerde klant ─────────────────────────────
+  // Helper: directe TL API call (TL.apiCall bestaat niet in teamleaderClient.js)
+  const tlFetch=useCallback(async(endpoint,body={})=>{
+    // Haal token op: probeer tlAuth, dan localStorage
+    let token=tlAuth?.access_token||tlAuth?.token;
+    if(!token){
+      // Teamleader OAuth slaat token op in localStorage
+      for(const key of ["tl_access_token","teamleader_access_token","access_token",
+          "tl_token","zonnedak_tl_token"]){
+        const v=localStorage.getItem(key);
+        if(v){token=v;break;}
+      }
+    }
+    if(!token){
+      // Probeer via TL module internals
+      try{
+        const s=await TL.checkAuthStatus();
+        token=s?.access_token||s?.token;
+      }catch{}
+    }
+    if(!token) throw new Error("Geen TL token beschikbaar");
+    const r=await fetch(`https://api.teamleader.eu/${endpoint}`,{
+      method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":`Bearer ${token}`},
+      body:JSON.stringify(body)
+    });
+    if(!r.ok){const err=await r.text().catch(()=>"");throw new Error(`TL ${r.status}: ${err.slice(0,100)}`);}
+    const d=await r.json();
+    return d.data!==undefined?d.data:d;
+  },[tlAuth]);
+
   const fetchWorkOrders=useCallback(async(contactId,contactType)=>{
     if(!tlAuth?.logged_in||!contactId) return;
     setTlWorkOrdersLoading(true);
@@ -3141,8 +3171,9 @@ export default function App(){
     setTlWorkOrderDebug([...log]);
     const tryCall=async(label,endpoint,params)=>{
       try{
-        const resp=await TL.apiCall(endpoint,params);
-        const d=resp?.data||[];
+        // Gebruik tlFetch (directe fetch) want TL.apiCall bestaat niet in teamleaderClient
+        const data=await tlFetch(endpoint,params);
+        const d=Array.isArray(data)?data:(data?.data||[]);
         log.push(`${d.length>0?"✅":"⬜"} ${label}: ${d.length} resultaten`);
         return d;
       }catch(e){log.push(`❌ ${label}: ${e?.message||String(e)}`);return [];}
@@ -3222,7 +3253,7 @@ export default function App(){
     setTlWorkOrders(all);
     setTlWorkOrderDebug(log);
     setTlWorkOrdersLoading(false);
-  },[tlAuth,tlContact]);
+  },[tlAuth,tlContact,tlFetch]);
 
   // ── Gebruik werkbon als bron: extraheer en vul velden in ─────────────────
   const applyWorkOrder=useCallback(async(wo)=>{
