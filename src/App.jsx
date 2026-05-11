@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback, Component } from "react";
 
-// Token interceptie: zie tlTokenCapture.js (geladen vóór teamleaderClient.js)
 import {
   wgs84ToLambert72 as _wgs84ToLambert72,
   lambert72ToWgs84 as _lambert72ToWgs84,
@@ -17,7 +16,6 @@ import {
   createAutoSaver,
 } from "./projectStorage.js";
 import { computeStringDesign } from "./stringDesign.js";
-import * as _tlCapture from "./tlTokenCapture.js"; // MOET vóór TL staan!
 import * as TL from "./teamleaderClient.js";
 // EcoFinity logo — vul hier de base64 string in via ecofinityLogo.js of inline
 // Als het bestand niet bestaat: tijdelijk null (geen logo in header)
@@ -3134,50 +3132,6 @@ export default function App(){
   },[]);
 
   // ── Haal werkbonnen op voor geselecteerde klant ─────────────────────────────
-  // Helper: directe TL API call (TL.apiCall bestaat niet in teamleaderClient.js)
-  const tlFetch=useCallback(async(endpoint,body={})=>{
-    // Haal token op: gebruik de geïntercepteerde token uit teamleaderClient fetch calls
-    let token=_tlCapture.capturedToken;
-    // Als nog niet gevangen: trigger een TL call om token te capteren
-    if(!token){
-      try{
-        await TL.checkAuthStatus(); // triggert een fetch → interceptor vangt token
-        token=_tlCapture.capturedToken;
-      }catch{}
-    }
-    // Fallback: probeer diverse TL calls om token te capteren
-    if(!token){
-      try{await TL.getDealOptions();token=_tlCapture.capturedToken;}catch{}
-    }
-    if(!token&&tlContact?.id){
-      try{await TL.getContactDetails(tlContact.type||"contact",tlContact.id);token=_tlCapture.capturedToken;}catch{}
-    }
-    // Laatste poging: check sessionStorage
-    if(!token){
-      try{
-        const n=sessionStorage.length;
-        for(let i=0;i<n;i++){
-          const k=sessionStorage.key(i);const v=sessionStorage.getItem(k)||"";
-          if(v.length>40){
-            try{const j=JSON.parse(v);token=j.access_token||j.token||null;}
-            catch{if(v.length>100&&!v.includes(" "))token=v;}
-            if(token)break;
-          }
-        }
-      }catch{}
-    }
-    if(!token) throw new Error("Token niet gevonden. Zorg dat tlTokenCapture.js in src/ staat (naast teamleaderClient.js)");
-    console.log("[ZonneDak] Token gevonden:",token.substring(0,10)+"...");
-    console.log("[ZonneDak] Token gevonden, eerste 10 chars:",token.substring(0,10)+"...");
-    const r=await fetch(`https://api.teamleader.eu/${endpoint}`,{
-      method:"POST",
-      headers:{"Content-Type":"application/json","Authorization":`Bearer ${token}`},
-      body:JSON.stringify(body)
-    });
-    if(!r.ok){const t=await r.text().catch(()=>"");throw new Error(`TL ${r.status}: ${t.slice(0,120)}`);}
-    const d=await r.json();
-    return d.data!==undefined?d.data:d;
-  },[tlAuth]);
 
   const fetchWorkOrders=useCallback(async(contactId,contactType)=>{
     if(!tlAuth?.logged_in||!contactId) return;
@@ -3189,7 +3143,7 @@ export default function App(){
     setTlWorkOrderDebug([...log]);
     // Debug: toon wat er beschikbaar is voor token-extractie
     console.log("[ZonneDak] tlAuth keys:", Object.keys(tlAuth||{}));
-    console.log("[ZonneDak] Captured token:", _tlCapture.capturedToken?"✅ ja ("+_tlCapture.capturedToken.substring(0,10)+"...)":"❌ nog niet");
+    console.log("[ZonneDak] Captured token:", null?"✅ ja ("+null.substring(0,10)+"...)":"❌ nog niet");
     // Toon alle actieve fetch requests om te begrijpen welke URL TL gebruikt
     // Check sessionStorage for token
     const ssKeys=[];
@@ -3198,8 +3152,7 @@ export default function App(){
     console.log("[ZonneDak] Als token ❌: zorg dat tlTokenCapture.js in src/ staat, of controleer Network tab");
     const tryCall=async(label,endpoint,params)=>{
       try{
-        // Gebruik tlFetch (directe fetch) want TL.apiCall bestaat niet in teamleaderClient
-        const data=await tlFetch(endpoint,params);
+        const data=await TL.apiCall(endpoint,params);
         const d=Array.isArray(data)?data:(data?.data||[]);
         log.push(`${d.length>0?"✅":"⬜"} ${label}: ${d.length} resultaten`);
         return d;
@@ -3280,7 +3233,7 @@ export default function App(){
     setTlWorkOrders(all);
     setTlWorkOrderDebug(log);
     setTlWorkOrdersLoading(false);
-  },[tlAuth,tlContact,tlFetch]);
+  },[tlAuth,tlContact]);
 
   // ── Gebruik werkbon als bron: extraheer en vul velden in ─────────────────
   const applyWorkOrder=useCallback(async(wo)=>{
