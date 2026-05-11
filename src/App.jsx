@@ -2401,7 +2401,7 @@ function NewBattForm({onAdd}){
 
 function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearching,
   tlContact,tlLoadingDetails,tlSelectedAddressIdx,tlSelectedDealId,setTlSelectedDealId,
-  tlWorkOrders,tlWorkOrdersLoading,tlSelectedWorkOrder,tlWorkOrderData,onApplyWorkOrder,
+  tlWorkOrders,tlWorkOrdersLoading,tlSelectedWorkOrder,tlWorkOrderData,tlWorkOrderDebug,onApplyWorkOrder,
   onLogin,onLogout,onSelectContact,onSelectAddress,
   showNewDealForm,newDealTitle,setNewDealTitle,newDealValue,setNewDealValue,
   dealOptions,newDealPipelineId,setNewDealPipelineId,creatingDeal,
@@ -5051,7 +5051,7 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
             tlSelectedDealId={tlSelectedDealId} setTlSelectedDealId={setTlSelectedDealId}
             tlWorkOrders={tlWorkOrders} tlWorkOrdersLoading={tlWorkOrdersLoading}
             tlSelectedWorkOrder={tlSelectedWorkOrder} tlWorkOrderData={tlWorkOrderData}
-            onApplyWorkOrder={applyWorkOrder}
+            tlWorkOrderDebug={tlWorkOrderDebug} onApplyWorkOrder={applyWorkOrder}
             onLogin={handleTlLogin} onLogout={handleTlLogout}
             onSelectContact={handleSelectTlContact} onSelectAddress={handleSelectAddress}
             showNewDealForm={showNewDealForm}
