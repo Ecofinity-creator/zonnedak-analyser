@@ -2401,7 +2401,8 @@ function NewBattForm({onAdd}){
 
 function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearching,
   tlContact,tlLoadingDetails,tlSelectedAddressIdx,tlSelectedDealId,setTlSelectedDealId,
-  tlWorkOrders,tlWorkOrdersLoading,tlSelectedWorkOrder,tlWorkOrderData,tlWorkOrderDebug,onApplyWorkOrder,
+  tlWorkOrders,tlWorkOrdersLoading,tlSelectedWorkOrder,tlWorkOrderData,tlWorkOrderDebug,
+  onApplyWorkOrder,onFetchWorkOrders,
   onLogin,onLogout,onSelectContact,onSelectAddress,
   showNewDealForm,newDealTitle,setNewDealTitle,newDealValue,setNewDealValue,
   dealOptions,newDealPipelineId,setNewDealPipelineId,creatingDeal,
@@ -2537,7 +2538,7 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
             {tlWorkOrdersLoading&&<div style={{fontSize:8,color:"var(--alpha)"}}>⏳ laden...</div>}
             {!tlWorkOrdersLoading&&tlContact?.id&&<button className="btn sec sm"
               style={{fontSize:8,padding:"2px 8px"}}
-              onClick={()=>fetchWorkOrders(tlContact.id,tlContact.type||"contact")}>
+              onClick={()=>onFetchWorkOrders&&onFetchWorkOrders(tlContact.id,tlContact.type||"contact")}>
               🔄 Herladen
             </button>}
             {!tlWorkOrdersLoading&&tlWorkOrders.length===0&&
@@ -5056,6 +5057,7 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
             tlWorkOrders={tlWorkOrders} tlWorkOrdersLoading={tlWorkOrdersLoading}
             tlSelectedWorkOrder={tlSelectedWorkOrder} tlWorkOrderData={tlWorkOrderData}
             tlWorkOrderDebug={tlWorkOrderDebug} onApplyWorkOrder={applyWorkOrder}
+            onFetchWorkOrders={fetchWorkOrders}
             onLogin={handleTlLogin} onLogout={handleTlLogout}
             onSelectContact={handleSelectTlContact} onSelectAddress={handleSelectAddress}
             showNewDealForm={showNewDealForm}
