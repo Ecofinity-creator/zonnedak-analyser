@@ -1,22 +1,5 @@
 import { useState, useEffect, useRef, useCallback, Component } from "react";
 
-// ── Intercept TL fetch calls om Bearer token te capteren ─────────────────────
-// teamleaderClient.js beheert de token intern — we vangen hem op via fetch interception
-let _tlCapturedToken=null;
-(()=>{
-  const orig=window.fetch.bind(window);
-  window.fetch=async function(url,...args){
-    // Vang token op van TL API calls
-    if(typeof url==="string"&&url.includes("api.teamleader.eu")){
-      const headers=args[0]?.headers||{};
-      const auth=headers["Authorization"]||headers["authorization"]||"";
-      if(auth.startsWith("Bearer ")&&auth.length>20){
-        _tlCapturedToken=auth.slice(7);
-      }
-    }
-    return orig(url,...args);
-  };
-})();
 import {
   wgs84ToLambert72 as _wgs84ToLambert72,
   lambert72ToWgs84 as _lambert72ToWgs84,
@@ -3149,32 +3132,6 @@ export default function App(){
   },[]);
 
   // ── Haal werkbonnen op voor geselecteerde klant ─────────────────────────────
-  // Helper: directe TL API call (TL.apiCall bestaat niet in teamleaderClient.js)
-  const tlFetch=useCallback(async(endpoint,body={})=>{
-    // Haal token op: gebruik de geïntercepteerde token uit teamleaderClient fetch calls
-    let token=_tlCapturedToken;
-    // Als nog niet gevangen: trigger een TL call om token te capteren
-    if(!token){
-      try{
-        await TL.checkAuthStatus(); // triggert een fetch → interceptor vangt token
-        token=_tlCapturedToken;
-      }catch{}
-    }
-    // Fallback: probeer TL.getDealOptions (maakt zeker een auth API call)
-    if(!token){
-      try{await TL.getDealOptions();token=_tlCapturedToken;}catch{}
-    }
-    if(!token) throw new Error("Token niet gevonden — doe een TL-zoekopdracht eerst om te authenticeren");
-    console.log("[ZonneDak] Token gevonden, eerste 10 chars:",token.substring(0,10)+"...");
-    const r=await fetch(`https://api.teamleader.eu/${endpoint}`,{
-      method:"POST",
-      headers:{"Content-Type":"application/json","Authorization":`Bearer ${token}`},
-      body:JSON.stringify(body)
-    });
-    if(!r.ok){const t=await r.text().catch(()=>"");throw new Error(`TL ${r.status}: ${t.slice(0,120)}`);}
-    const d=await r.json();
-    return d.data!==undefined?d.data:d;
-  },[tlAuth]);
 
   const fetchWorkOrders=useCallback(async(contactId,contactType)=>{
     if(!tlAuth?.logged_in||!contactId) return;
@@ -3186,59 +3143,48 @@ export default function App(){
     setTlWorkOrderDebug([...log]);
     // Debug: toon wat er beschikbaar is voor token-extractie
     console.log("[ZonneDak] tlAuth keys:", Object.keys(tlAuth||{}));
-    console.log("[ZonneDak] Captured token:", _tlCapturedToken?"✅ ja ("+_tlCapturedToken.substring(0,10)+"...)":"❌ nog niet");
+    console.log("[ZonneDak] Captured token:", null?"✅ ja ("+null.substring(0,10)+"...)":"❌ nog niet");
+    // Toon alle actieve fetch requests om te begrijpen welke URL TL gebruikt
+    // Check sessionStorage for token
+    const ssKeys=[];
+    try{for(let i=0;i<sessionStorage.length;i++){const k=sessionStorage.key(i);if(k)ssKeys.push(k+" ("+sessionStorage.getItem(k)?.length+"ch)");}}catch{}
+    console.log("[ZonneDak] sessionStorage keys:",ssKeys);
+    console.log("[ZonneDak] Als token ❌: zorg dat tlTokenCapture.js in src/ staat, of controleer Network tab");
     const tryCall=async(label,endpoint,params)=>{
       try{
-        // Gebruik tlFetch (directe fetch) want TL.apiCall bestaat niet in teamleaderClient
-        const data=await tlFetch(endpoint,params);
+        const data=await TL.apiCall(endpoint,params);
         const d=Array.isArray(data)?data:(data?.data||[]);
         log.push(`${d.length>0?"✅":"⬜"} ${label}: ${d.length} resultaten`);
         return d;
       }catch(e){log.push(`❌ ${label}: ${e?.message||String(e)}`);return [];}
     };
 
-    // 1. workOrders.list — meerdere filter varianten
-    for(const [lbl,filter] of [
-      ["workOrders(related_to)",{related_to:{type:contactType||"contact",id:contactId}}],
-      ["workOrders(customer)",{customer:{type:contactType||"contact",id:contactId}}],
-      ["workOrders(contact_id)",{contact_id:contactId}],
-    ]){
-      const data=await tryCall(lbl,"workOrders.list",{filter,sort:[{field:"created_at",order:"desc"}],page:{size:25,number:1}});
-      data.forEach(w=>addItem({id:w.id,source:"workorder",
-        title:w.title||w.description||w.reference||"Werkbon",
-        date:w.created_at?.date||w.planned_at?.date||w.created_at||"",
-        status:w.status||w.phase||"",
-        description:[w.title,w.description,w.remark,w.work_description].filter(Boolean).join(" — "),raw:w}));
-      if(data.length>0) break;
+    // 1. workOrders.list — filter op klant, daarna client-side verificatie
+    {
+      const data=await tryCall("workOrders(related_to)","workOrders.list",{
+        filter:{related_to:{type:contactType||"contact",id:contactId}},
+        sort:[{field:"created_at",order:"desc"}],page:{size:50,number:1}
+      });
+      // Sommige TL versies negeren de filter → verifieer client-side
+      const verify=(w)=>{
+        const rel=w.related_to||{};const cust=w.customer||{};
+        if(rel.id===contactId||cust.id===contactId) return true;
+        if(Array.isArray(rel)&&rel.some(r=>r.id===contactId)) return true;
+        return false;
+      };
+      // Als alles verified: gebruik verified; anders toon alles (filter werkte niet)
+      const verified=data.filter(verify);
+      const toAdd=verified.length>0?verified:data;
+      toAdd.forEach(w=>addItem({id:w.id,source:"workorder",
+        title:w.title||w.description||"Werkbon #"+(w.number||w.id?.slice(0,8)),
+        date:w.date||w.created_at?.date||w.planned_at?.date||w.created_at||"",
+        status:w.status||w.phase?.name||"",
+        description:[w.title,w.description,w.remark,w.work_description,w.remarks]
+          .filter(Boolean).join(" — ").substring(0,200),raw:w}));
+      log.push(`  → ${toAdd.length}/${data.length} werkbonnen na klant-filter`);
     }
 
-    // 2. appointments.list — meerdere filter varianten
-    for(const [lbl,filter] of [
-      ["appts(attendee_ids)",{attendee_participant_ids:[{type:contactType||"contact",id:contactId}]}],
-      ["appts(participant_ids)",{participant_ids:[{type:contactType||"contact",id:contactId}]}],
-      ["appts(contact_id)",{contact_id:contactId}],
-    ]){
-      const data=await tryCall(lbl,"appointments.list",{filter,sort:[{field:"starts_at",order:"desc"}],page:{size:25,number:1}});
-      data.forEach(a=>addItem({id:a.id,source:"appointment",
-        title:a.title||a.description||"Bezoek",
-        date:a.starts_at?.date||a.starts_at||"",status:a.status||"",
-        description:a.description||a.title||a.location||"",raw:a}));
-      if(data.length>0) break;
-    }
-
-    // 3. projects.list
-    for(const [lbl,filter] of [
-      ["projects(customer)",{customer:{type:contactType||"contact",id:contactId}}],
-      ["projects(contact_id)",{contact_id:contactId}],
-    ]){
-      const data=await tryCall(lbl,"projects.list",{filter,sort:[{field:"created_at",order:"desc"}],page:{size:15,number:1}});
-      data.forEach(p=>addItem({id:p.id,source:"project",
-        title:p.title||p.description||"Project",
-        date:p.starts_on||p.created_at?.date||"",status:p.status||"",
-        description:[p.title,p.description].filter(Boolean).join(" — "),raw:p}));
-      if(data.length>0) break;
-    }
-
+    // 2. deals.list + deals.info + files
     // 4. deals.list + deals.info + files
     const dealsFromList=await tryCall("deals.list","deals.list",{
       filter:{customer_id:contactId},sort:[{field:"created_at",order:"desc"}],page:{size:10,number:1}});
@@ -3271,7 +3217,7 @@ export default function App(){
     setTlWorkOrders(all);
     setTlWorkOrderDebug(log);
     setTlWorkOrdersLoading(false);
-  },[tlAuth,tlContact,tlFetch]);
+  },[tlAuth,tlContact]);
 
   // ── Gebruik werkbon als bron: extraheer en vul velden in ─────────────────
   const applyWorkOrder=useCallback(async(wo)=>{
@@ -3279,10 +3225,13 @@ export default function App(){
     // Combineer alle tekstvelden van de werkbon (alle mogelijke velden)
     let raw=[
       wo.title, wo.description,
-      wo.raw?.description, wo.raw?.note, wo.raw?.remark,
+      wo.raw?.description, wo.raw?.note, wo.raw?.remark, wo.raw?.remarks,
       wo.raw?.internal_remark, wo.raw?.text, wo.raw?.summary,
       wo.raw?.work_description, wo.raw?.customer_remark,
+      wo.raw?.work_performed, wo.raw?.materials_used,
+      wo.raw?.technician_note, wo.raw?.comments,
     ].filter(Boolean).join("\n");
+    console.log("[ZonneDak] Werkbon raw tekst:", raw.substring(0,500));
     
     // Haal appointment details op voor meer info
     if(wo.source==="appointment"&&wo.id){
