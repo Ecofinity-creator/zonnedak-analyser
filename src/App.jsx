@@ -2547,15 +2547,11 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
           </div>
         </div>
 
-        {!tlWorkOrdersLoading&&tlWorkOrderDebug.length>0&&<div style={{
+        {!tlWorkOrdersLoading&&tlWorkOrderDebug.length>0&&tlWorkOrders.length===0&&<div style={{
           marginTop:6,padding:"6px 8px",background:"var(--bg2)",borderRadius:5,
           fontSize:7.5,color:"var(--muted)",fontFamily:"'IBM Plex Mono',monospace",
-          maxHeight:120,overflowY:"auto"}}>
-          <div style={{fontWeight:700,marginBottom:3,color:"var(--text)"}}>🔍 Zoeklog:</div>
+          maxHeight:100,overflowY:"auto"}}>
           {tlWorkOrderDebug.map((l,i)=><div key={i}>{l}</div>)}
-          <div style={{marginTop:4,color:"var(--amber)",fontSize:7}}>
-            ⚠️ Als alles ❌ of ⬜ geeft: de werkbon is mogelijk aangemaakt als een ander type (nota, bijlage...). Controleer het type in Teamleader.
-          </div>
         </div>}
         {tlWorkOrders.length>0&&<div style={{marginTop:6,display:"flex",flexDirection:"column",gap:5}}>
           {tlWorkOrders.map(wo=>{
@@ -2601,6 +2597,7 @@ function TeamleaderPanel({tlAuth,tlAuthMsg,tlQuery,setTlQuery,tlResults,tlSearch
           {[
             {label:"Jaarverbruik",key:"annualConsumptionKwh",fmt:v=>`${v} kWh/j`},
             {label:"Bouwjaar",key:"buildingYear",fmt:v=>`${v}`},
+            {label:"Aansluiting",key:"gridFase",fmt:v=>v==="3f400"?"Driefasig 400V":v==="3f230"?"Driefasig 230V":"Monofasig"},
             {label:"Gezinssituatie",key:"familySituation",fmt:v=>v},
             {label:"Digitale meter",key:"hasDigitalMeter",fmt:v=>v},
             {label:"Bestaande PV",key:"hasExistingPV",fmt:v=>v},
@@ -3074,7 +3071,7 @@ export default function App(){
     }
 
     // Bouwjaar
-    const byMatch=rawText.match(/(?:bouwjaar|bj|gebouwd|woning van|opgeleverd)[^\d]{0,15}(\d{4})/i)
+    const byMatch=rawText.match(/(?:bouwjaar|bj|gebouwd|woning(?:s+is)?s+van|opgeleverd)[^\d]{0,15}(\d{4})/i)
       ||rawText.match(/(19[2-9]\d|20[0-2]\d)/);
     if(byMatch){
       const yr=parseInt(byMatch[1]);
@@ -3088,7 +3085,7 @@ export default function App(){
       ||rawText.match(/koppel|alleenstaand|gepensioneer\w+/i);
     if(gezinMatch){
       result.familySituation=gezinMatch[0].trim().substring(0,80);
-      result.confidence.familySituation="medium";
+      result.confidence.familySituation=/gepensioneer|alleenstaand|koppel/i.test(gezinMatch[0])?"high":"medium";
     }
     const persMatch=rawText.match(/(\d+)\s*persone?n?/i);
     if(persMatch){
@@ -3105,9 +3102,9 @@ export default function App(){
     }
 
     // Bestaande PV
-    if(/(?:bestaande|reeds|al|huidige)\s*(?:zonnepanelen?|pv|installatie)/i.test(txt)){
-      result.hasExistingPV="ja"; result.confidence.hasExistingPV="medium";
-    } else if(/geen\s*(?:zonnepanelen?|pv)/i.test(txt)){
+    if(/(?:heeft al|reeds|bestaande|huidige)\s*(?:zonnepanelen?|pv|installatie)/i.test(rawText)){
+      result.hasExistingPV="ja"; result.confidence.hasExistingPV="high";
+    } else if(/geen\s*(?:zonnepanelen?|pv)/i.test(rawText)){
       result.hasExistingPV="nee"; result.confidence.hasExistingPV="high";
     }
 
@@ -3175,7 +3172,7 @@ export default function App(){
         sort:[{field:"created_at",order:"desc"}],page:{size:50,number:1}
       });
       // Log eerste werkbon zodat we de structuur zien
-      if(data.length>0) console.log("[ZonneDak] Werkbon voorbeeld:",JSON.stringify(data[0]).substring(0,500));
+
       // Filter op customer.id (de veldnaam die TL gebruikt in workOrders)
       const matchesContact=(w)=>
         w.customer?.id===contactId ||
@@ -3232,7 +3229,7 @@ export default function App(){
       wo.raw?.work_performed, wo.raw?.materials_used,
       wo.raw?.technician_note, wo.raw?.comments,
     ].filter(Boolean).join("\n");
-    console.log("[ZonneDak] Werkbon raw tekst:", raw.substring(0,500));
+
     
     // Haal appointment details op voor meer info
     if(wo.source==="appointment"&&wo.id){
