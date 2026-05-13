@@ -2739,77 +2739,9 @@ export default function App(){
   // (gebruiker kan oriëntatie handmatig overschrijven → LiDAR waarde is dan verouderd)
   const panelFaceOrientRef=useRef({}); // {faceKey: {orientation, slope}}
 
-  const selPanel=panels.find(p=>p.id===selPanelId)||panels[0];
-
-  const[selInvId,setSelInvId]=useState(2); // standaard: SMILE-G3-S5
-  const selInv=inverters.find(i=>i.id===selInvId)||null;
-
-  const effectiveArea=detectedArea||80;
-  const autoPanels=selPanel?Math.floor((effectiveArea*.75)/selPanel.area):0;
-
-
-  const panelCount=customCount!==null?customCount:autoPanels;
-
-  const[battEnabled,setBattEnabled]=useState(true); // standaard aan
-  const[selBattId,setSelBattId]=useState(2); // standaard: BAT-G3-9.3S
-  const selBatt=batteries.find(b=>b.id===selBattId)||batteries[0];
-
-  const[aiText,setAiText]=useState("");const[aiLoading,setAiLoading]=useState(false);
-
-
-  // Extra klantgegevens
-  const[hasExistingPV,setHasExistingPV]=useState("onbekend"); // ja|nee|onbekend
-  const[hasDigitalMeter,setHasDigitalMeter]=useState("onbekend"); // ja|nee|onbekend
-  const[futureConsumers,setFutureConsumers]=useState([]); // ["warmtepomp","ev","airco","boiler"]
-  const[focusGoal,setFocusGoal]=useState(""); // maxrendement|maxzelfverbruik|spreiding|maxpanelen|budget
-  const[technicianNotes,setTechnicianNotes]=useState(""); // opmerkingen technieker
-  const[internalNotes,setInternalNotes]=useState(""); // interne opmerkingen Ecofinity
-  // Werkbon (work order) state
-  const[tlWorkOrders,setTlWorkOrders]=useState([]); // lijst werkbonnen
-  const[tlSelectedWorkOrder,setTlSelectedWorkOrder]=useState(null); // gekozen werkbon
-  const[tlWorkOrderData,setTlWorkOrderData]=useState(null); // geëxtraheerde data
-  const[tlWorkOrderDebug,setTlWorkOrderDebug]=useState([]); // debug log van fetch pogingen
-  // TL offerte-templates per dakbedekking
-  const[tlTemplates,setTlTemplates]=useState(()=>{
-    try{return JSON.parse(localStorage.getItem("zonnedak_tl_templates")||"{}");}catch{return {};}
-  });
-  const saveTlTemplates=(tmpl)=>{
-    setTlTemplates(tmpl);
-    try{localStorage.setItem("zonnedak_tl_templates",JSON.stringify(tmpl));}catch{}
-  };
-  // State voor de mapping-editor
-  const[tlMappingLines,setTlMappingLines]=useState([]); // geladen lijnposten uit template
-  const[tlMappingValues,setTlMappingValues]=useState({}); // {lineKey: appValueKey}
-
-
-  const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
-  const[gridFase,setGridFase]=useState(""); // aansluitspanning: mono|3f400|3f230
-  const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
 
   const autoSaverRef=useRef(null);
   const[isLoadingProject,setIsLoadingProject]=useState(false);
-
-  useEffect(()=>{
-    const cb=TL.consumeAuthCallback();
-    if(cb==='success'){setTlAuthMsg("Login succesvol!");setTimeout(()=>setTlAuthMsg(""),3000);}
-    else if(cb==='denied'){setTlAuthMsg("Login geweigerd.");}
-    else if(cb==='error'){setTlAuthMsg("Login fout — probeer opnieuw.");}
-    TL.checkAuthStatus().then(s=>setTlAuth(s.logged_in?s:false));
-  },[]);
-
-  const debouncedSearchRef=useRef(null);
-  if(!debouncedSearchRef.current){ debouncedSearchRef.current=TL.debounce(TL.searchContacts,400); }
-
-  useEffect(()=>{
-    if(!tlAuth?.logged_in||!tlQuery||tlQuery.trim().length<2){setTlResults([]);setTlSearching(false);return;}
-    setTlSearching(true);
-    debouncedSearchRef.current(tlQuery).then(res=>{
-      if(res===null) return;
-      setTlSearching(false);
-      if(res?.notLoggedIn){setTlAuth(false);setTlResults([]);return;}
-      setTlResults(res?.results||[]);
-    });
-  },[tlQuery,tlAuth?.logged_in]);
 
   const[activeTab,setActiveTab]=useState("klant");
   const[activeLayer,setActiveLayer]=useState("luchtfoto");
@@ -2873,6 +2805,74 @@ export default function App(){
   // Multi-building state
   const[buildings,setBuildings]=useState([]); // alle GRB-gebouwen op het perceel
   const[selBuildingId,setSelBuildingId]=useState(null); // actief gebouw in sidebar
+  useEffect(()=>{
+    const cb=TL.consumeAuthCallback();
+    if(cb==='success'){setTlAuthMsg("Login succesvol!");setTimeout(()=>setTlAuthMsg(""),3000);}
+    else if(cb==='denied'){setTlAuthMsg("Login geweigerd.");}
+    else if(cb==='error'){setTlAuthMsg("Login fout — probeer opnieuw.");}
+    TL.checkAuthStatus().then(s=>setTlAuth(s.logged_in?s:false));
+  },[]);
+
+  const debouncedSearchRef=useRef(null);
+  if(!debouncedSearchRef.current){ debouncedSearchRef.current=TL.debounce(TL.searchContacts,400); }
+
+  useEffect(()=>{
+    if(!tlAuth?.logged_in||!tlQuery||tlQuery.trim().length<2){setTlResults([]);setTlSearching(false);return;}
+    setTlSearching(true);
+    debouncedSearchRef.current(tlQuery).then(res=>{
+      if(res===null) return;
+      setTlSearching(false);
+      if(res?.notLoggedIn){setTlAuth(false);setTlResults([]);return;}
+      setTlResults(res?.results||[]);
+    });
+  },[tlQuery,tlAuth?.logged_in]);
+
+  const selPanel=panels.find(p=>p.id===selPanelId)||panels[0];
+
+  const[selInvId,setSelInvId]=useState(2); // standaard: SMILE-G3-S5
+  const selInv=inverters.find(i=>i.id===selInvId)||null;
+
+  const effectiveArea=detectedArea||80;
+  const autoPanels=selPanel?Math.floor((effectiveArea*.75)/selPanel.area):0;
+
+
+  const panelCount=customCount!==null?customCount:autoPanels;
+
+  const[battEnabled,setBattEnabled]=useState(true); // standaard aan
+  const[selBattId,setSelBattId]=useState(2); // standaard: BAT-G3-9.3S
+  const selBatt=batteries.find(b=>b.id===selBattId)||batteries[0];
+
+  const[aiText,setAiText]=useState("");const[aiLoading,setAiLoading]=useState(false);
+
+
+  // Extra klantgegevens
+  const[hasExistingPV,setHasExistingPV]=useState("onbekend"); // ja|nee|onbekend
+  const[hasDigitalMeter,setHasDigitalMeter]=useState("onbekend"); // ja|nee|onbekend
+  const[futureConsumers,setFutureConsumers]=useState([]); // ["warmtepomp","ev","airco","boiler"]
+  const[focusGoal,setFocusGoal]=useState(""); // maxrendement|maxzelfverbruik|spreiding|maxpanelen|budget
+  const[technicianNotes,setTechnicianNotes]=useState(""); // opmerkingen technieker
+  const[internalNotes,setInternalNotes]=useState(""); // interne opmerkingen Ecofinity
+  // Werkbon (work order) state
+  const[tlWorkOrders,setTlWorkOrders]=useState([]); // lijst werkbonnen
+  const[tlSelectedWorkOrder,setTlSelectedWorkOrder]=useState(null); // gekozen werkbon
+  const[tlWorkOrderData,setTlWorkOrderData]=useState(null); // geëxtraheerde data
+  const[tlWorkOrderDebug,setTlWorkOrderDebug]=useState([]); // debug log van fetch pogingen
+  // TL offerte-templates per dakbedekking
+  const[tlTemplates,setTlTemplates]=useState(()=>{
+    try{return JSON.parse(localStorage.getItem("zonnedak_tl_templates")||"{}");}catch{return {};}
+  });
+  const saveTlTemplates=(tmpl)=>{
+    setTlTemplates(tmpl);
+    try{localStorage.setItem("zonnedak_tl_templates",JSON.stringify(tmpl));}catch{}
+  };
+  // State voor de mapping-editor
+  const[tlMappingLines,setTlMappingLines]=useState([]); // geladen lijnposten uit template
+  const[tlMappingValues,setTlMappingValues]=useState({}); // {lineKey: appValueKey}
+
+
+  const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
+  const[gridFase,setGridFase]=useState(""); // aansluitspanning: mono|3f400|3f230
+  const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
   const fetchWorkOrders=useCallback(async(contactId,contactType)=>{
     if(!tlAuth?.logged_in||!contactId) return;
     setTlWorkOrdersLoading(true);
@@ -2890,10 +2890,18 @@ export default function App(){
     try{for(let i=0;i<sessionStorage.length;i++){const k=sessionStorage.key(i);if(k)ssKeys.push(k+" ("+sessionStorage.getItem(k)?.length+"ch)");}}catch{}
     console.log("[ZonneDak] sessionStorage keys:",ssKeys);
     console.log("[ZonneDak] Als token ❌: zorg dat tlTokenCapture.js in src/ staat, of controleer Network tab");
+    // Direct proxy call (TL.apiCall bestaat niet in teamleaderClient)
+    const _tlProxyBase="https://zonnedak-ai-proxy-west.vercel.app/api";
+    const _tlUserId=TL.getUserId();
     const tryCall=async(label,endpoint,params)=>{
       try{
-        const data=await TL.apiCall(endpoint,params);
-        const d=Array.isArray(data)?data:(data?.data||[]);
+        const resp=await fetch(`${_tlProxyBase}/tl-call`,{
+          method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({user_id:_tlUserId,endpoint,body:params})
+        });
+        if(!resp.ok){const e=await resp.json().catch(()=>({}));throw new Error(e.error||`HTTP ${resp.status}`);}
+        const data=await resp.json();
+        const d=Array.isArray(data?.data)?data.data:Array.isArray(data)?data:[];
         log.push(`${d.length>0?"✅":"⬜"} ${label}: ${d.length} resultaten`);
         return d;
       }catch(e){log.push(`❌ ${label}: ${e?.message||String(e)}`);return [];}
@@ -2968,7 +2976,7 @@ export default function App(){
       const geo=await TL.geocodeAddress(primaryAddress);
       if(geo) setTlPendingGeo({lat:String(geo.lat),lon:String(geo.lng),display_name:geo.displayName});
     }
-  },[]);
+  },[fetchWorkOrders]);
 
   const handleSelectAddress=useCallback(async(idx)=>{
     setTlSelectedAddressIdx(idx);
@@ -4481,6 +4489,74 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
   };
 
   const stringDesign=(selPanel?.voc&&selInv?.maxDcVoltage)?buildMpptStringDesign():null;
+  // ── Teken panelen op huidig dakvlak (ook aanroepbaar vanuit auto-plaatsing) ─
+  const drawCurrentFace=useCallback((switchTab=true)=>{
+    if(!coords||!buildingCoords||!selPanel) return;
+    if(!leafRef.current||!window.L) return;
+    setPanelMoveMode(false);
+    const L=window.L,map=leafRef.current;
+    const faceKey=`${selBuildingId||"main"}_${selFaceIdx}`;
+    const existingLayer=panelLayersByFaceRef.current[faceKey];
+    if(existingLayer){try{map.removeLayer(existingLayer);}catch{}}
+    delete panelLayersByFaceRef.current[faceKey];
+    delete panelDataByFaceRef.current[faceKey];
+    const faceDataRef={current:null};
+    let _sf=detectedFaces?.[selFaceIdx];
+    if(_sf&&!_sf.polygon&&buildingCoords){
+      const wp=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);
+      setDetectedFaces(wp);_sf=wp?.[selFaceIdx]||_sf;
+    }
+    const _ridge=ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0;
+    const _fp=_sf?.polygon||(buildingCoords?makeFacePoly(buildingCoords,orientation,_ridge):buildingCoords)||buildingCoords;
+    const newLayer=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,faceDataRef,false);
+    panelLayersByFaceRef.current[faceKey]=newLayer;
+    panelDataByFaceRef.current[faceKey]=faceDataRef.current;
+    panelLayerRef.current=newLayer;
+    panelDataRef.current=faceDataRef.current;
+    panelFaceOrientRef.current[faceKey]={orientation,slope:_sf?.slope||slope};
+    setPanelCountsByFace(prev=>({...prev,[faceKey]:faceDataRef.current?.length||0}));
+    setPanelsDrawn(true);
+    if(switchTab) setActiveTab("configuratie");
+    setTimeout(()=>{if(leafRef.current) leafRef.current.invalidateSize();},100);
+  },[coords,buildingCoords,selPanel,selBuildingId,selFaceIdx,detectedFaces,
+     panelCount,panelRotOffset,panelOrient,orientation,slope]);
+
+  // ── Auto-bereken aanbevolen panelen na werkbon import ────────────────────
+  // Veilig hier: alle benodigde states (annualConsumption, selPanelId, orientation, slope)
+  // zijn gedeclareerd VÓÓR deze useEffect → geen Rollup TDZ
+  useEffect(()=>{
+    if(!annualConsumption||!selPanelId) return;
+    const panel=panels.find(p=>p.id===selPanelId)||panels[0];
+    if(!panel?.watt) return;
+    const irr=getSolarIrr(orientation||"Z",slope||35);
+    if(!irr) return;
+    const recommended=Math.round(annualConsumption/irr*1000/panel.watt);
+    setCustomCount(Math.max(4,Math.min(recommended,autoPanels>0?autoPanels:recommended+10)));
+  },[annualConsumption,selPanelId,orientation,slope]); // eslint-disable-line
+
+  // ── Auto-selecteer het beste dakvlak na LiDAR ─────────────────────────
+  useEffect(()=>{
+    if(!detectedFaces?.length||detectedFaces.length<2) return;
+    const scored=detectedFaces.map((f,i)=>({
+      i,score:getSolarIrr(f.orientation||"Z",f.slope||35)*(f.pct||1)
+    }));
+    const best=scored.reduce((a,b)=>b.score>a.score?b:a);
+    if(best.i===selFaceIdx) return;
+    setSelFaceIdx(best.i);
+    const bf=detectedFaces[best.i];
+    if(bf?.orientation) setOrientation(bf.orientation);
+    if(bf?.slope) setSlope(bf.slope);
+  },[detectedFaces]); // eslint-disable-line
+
+  // ── Auto-teken panelen zodra dakvlak + verbruik bekend zijn ────────────
+  useEffect(()=>{
+    if(!mapReady||!coords||!buildingCoords||!selPanel) return;
+    if(!annualConsumption||!panelCount) return;
+    // Kleine vertraging zodat de kaart klaar is
+    const t=setTimeout(()=>drawCurrentFace(false),800);
+    return()=>clearTimeout(t);
+  },[mapReady,coords,buildingCoords,annualConsumption,panelCount,selFaceIdx]); // eslint-disable-line
+
   const isLoading=grbStatus==="loading"||dhmStatus==="loading";
 
   const TABS=[
@@ -4834,36 +4910,7 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
 
         <div className="divider"/>
 
-        <button className="btn sec full" style={{marginBottom:5}} onClick={()=>{
-          if(!coords||!buildingCoords||!selPanel) return;
-          setPanelMoveMode(false);
-          if(leafRef.current&&window.L){
-            const L=window.L,map=leafRef.current;
-            // Multi-vlak: verwijder alleen de laag van het HUIDIGE vlak
-            const faceKey=`${selBuildingId||"main"}_${selFaceIdx}`;
-            const existingLayer=panelLayersByFaceRef.current[faceKey];
-            if(existingLayer){try{map.removeLayer(existingLayer);}catch{}}
-            delete panelLayersByFaceRef.current[faceKey];
-            delete panelDataByFaceRef.current[faceKey];
-            // Maak face-specifieke ref aan
-            const faceDataRef={current:null};
-            let _sf=detectedFaces?.[selFaceIdx];
-            if(_sf&&!_sf.polygon&&buildingCoords){const wp=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);setDetectedFaces(wp);_sf=wp?.[selFaceIdx]||_sf;}
-            const _ridge=ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0;
-            const _fp=_sf?.polygon||(buildingCoords?makeFacePoly(buildingCoords,orientation,_ridge):buildingCoords)||buildingCoords;
-            const newLayer=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,faceDataRef,false);
-            panelLayersByFaceRef.current[faceKey]=newLayer;
-            panelDataByFaceRef.current[faceKey]=faceDataRef.current;
-            panelLayerRef.current=newLayer;
-            panelDataRef.current=faceDataRef.current;
-            // Sla de HUIDIGE oriëntatie + helling op (gebruiker kan die handmatig aangepast hebben)
-            panelFaceOrientRef.current[faceKey]={orientation,slope:_sf?.slope||slope};
-            // State update triggert re-render → badge wordt zichtbaar
-            setPanelCountsByFace(prev=>({...prev,[faceKey]:faceDataRef.current?.length||0}));
-            setPanelsDrawn(true);
-          }
-          setActiveTab("configuratie");
-          setTimeout(()=>{if(leafRef.current) leafRef.current.invalidateSize();},100);
+        <button className="btn sec full" style={{marginBottom:5}} onClick={()=>drawCurrentFace(true)}
         }} disabled={!coords||!buildingCoords||isLoading}>
           🏠 Toon {panelCount} panelen op dak
         </button>
