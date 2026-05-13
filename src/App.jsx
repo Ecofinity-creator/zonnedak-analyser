@@ -2716,27 +2716,10 @@ export class ErrorBoundary extends Component {
 }
 
 export default function App(){
-  const[activeTab,setActiveTab]=useState("klant");
-  const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
-  const[coords,setCoords]=useState(null);const[displayName,setDisplayName]=useState("");
-  const[slope,setSlope]=useState(35);const[orientation,setOrientation]=useState("Z");
-  const[activeLayer,setActiveLayer]=useState("luchtfoto");
-  const[mapReady,setMapReady]=useState(false);
-
-  const[grbStatus,setGrbStatus]=useState("idle");
-  const[buildingCoords,setBuildingCoords]=useState(null);
-  const[detectedArea,setDetectedArea]=useState(null);
-  // Multi-building state
-  const[buildings,setBuildings]=useState([]); // alle GRB-gebouwen op het perceel
-  const[selBuildingId,setSelBuildingId]=useState(null); // actief gebouw in sidebar
   const buildingLayersRef=useRef({}); // map: id → Leaflet layerGroup
 
   const[dhmStatus,setDhmStatus]=useState("idle");const[dhmError,setDhmError]=useState("");
   const[detectedFaces,setDetectedFaces]=useState(null);const[selFaceIdx,setSelFaceIdx]=useState(0);
-  const[editMode,setEditMode]=useState(false);
-  const[panelMoveMode,setPanelMoveMode]=useState(false);
-  const[panelRotOffset,setPanelRotOffset]=useState(0);
-  const[panelOrient,setPanelOrient]=useState("portrait");
   const panelDataRef=useRef(null);
   const ridgeAngleDegRef=useRef(0);
   const detectedFacesRef=useRef(null);
@@ -2756,53 +2739,24 @@ export default function App(){
   // (gebruiker kan oriëntatie handmatig overschrijven → LiDAR waarde is dan verouderd)
   const panelFaceOrientRef=useRef({}); // {faceKey: {orientation, slope}}
 
-  const[panels,setPanels]=useState(DEFAULT_PANELS);
-  const[selPanelId,setSelPanelId]=useState(1);
   const selPanel=panels.find(p=>p.id===selPanelId)||panels[0];
 
-  const[inverters,setInverters]=useState(DEFAULT_INVERTERS);
   const[selInvId,setSelInvId]=useState(2); // standaard: SMILE-G3-S5
   const selInv=inverters.find(i=>i.id===selInvId)||null;
-  const[invFilter,setInvFilter]=useState("alle");
 
   const effectiveArea=detectedArea||80;
   const autoPanels=selPanel?Math.floor((effectiveArea*.75)/selPanel.area):0;
-  const[customCount,setCustomCount]=useState(10);
 
-  // Auto-bereken aanbevolen panelen op basis van verbruik (na werkbon import)
-  useEffect(()=>{
-    if(!annualConsumption||!selPanel?.watt) return;
-    // Bepaal specifieke opbrengst op basis van gekozen richting (kWh/kWp/jaar)
-    const irr=getSolarIrr(orientation||"Z", slope||35);
-    const targetKwp=annualConsumption/irr;
-    const recommended=Math.round(targetKwp*1000/selPanel.watt);
-    const clamped=Math.max(4,Math.min(recommended,autoPanels>0?autoPanels:recommended+10));
-    setCustomCount(clamped);
-  },[annualConsumption,selPanel?.watt,orientation,slope]);
+
   const panelCount=customCount!==null?customCount:autoPanels;
 
-  const[batteries,setBatteries]=useState(DEFAULT_BATTERIES);
   const[battEnabled,setBattEnabled]=useState(true); // standaard aan
   const[selBattId,setSelBattId]=useState(2); // standaard: BAT-G3-9.3S
   const selBatt=batteries.find(b=>b.id===selBattId)||batteries[0];
-  const[battFilter,setBattFilter]=useState("alle");
 
-  const[results,setResults]=useState(null);
   const[aiText,setAiText]=useState("");const[aiLoading,setAiLoading]=useState(false);
-  const[panelsDrawn,setPanelsDrawn]=useState(false);
 
-  const[customer,setCustomer]=useState({name:"",address:"",email:""});
-  const[tlToken,setTlToken]=useState("");
 
-  const[tlAuth,setTlAuth]=useState(null);
-  const[tlAuthMsg,setTlAuthMsg]=useState("");
-  const[tlQuery,setTlQuery]=useState("");
-  const[tlResults,setTlResults]=useState([]);
-  const[tlSearching,setTlSearching]=useState(false);
-  const[tlContact,setTlContact]=useState(null);
-  const[tlLoadingDetails,setTlLoadingDetails]=useState(false);
-  const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
-  const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
   // Extra klantgegevens
   const[hasExistingPV,setHasExistingPV]=useState("onbekend"); // ja|nee|onbekend
   const[hasDigitalMeter,setHasDigitalMeter]=useState("onbekend"); // ja|nee|onbekend
@@ -2812,12 +2766,9 @@ export default function App(){
   const[internalNotes,setInternalNotes]=useState(""); // interne opmerkingen Ecofinity
   // Werkbon (work order) state
   const[tlWorkOrders,setTlWorkOrders]=useState([]); // lijst werkbonnen
-  const[tlWorkOrdersLoading,setTlWorkOrdersLoading]=useState(false);
   const[tlSelectedWorkOrder,setTlSelectedWorkOrder]=useState(null); // gekozen werkbon
   const[tlWorkOrderData,setTlWorkOrderData]=useState(null); // geëxtraheerde data
   const[tlWorkOrderDebug,setTlWorkOrderDebug]=useState([]); // debug log van fetch pogingen
-  const[tlPendingGeo,setTlPendingGeo]=useState(null);
-  const[tlConfirmed,setTlConfirmed]=useState(false);
   // TL offerte-templates per dakbedekking
   const[tlTemplates,setTlTemplates]=useState(()=>{
     try{return JSON.parse(localStorage.getItem("zonnedak_tl_templates")||"{}");}catch{return {};}
@@ -2826,21 +2777,17 @@ export default function App(){
     setTlTemplates(tmpl);
     try{localStorage.setItem("zonnedak_tl_templates",JSON.stringify(tmpl));}catch{}
   };
-  const[tlQuotationList,setTlQuotationList]=useState([]);
-  const[tlQuotationLoading,setTlQuotationLoading]=useState(false);
-  const[tlCreateQuotStatus,setTlCreateQuotStatus]=useState(null);
-  const[tlCreateQuotUrl,setTlCreateQuotUrl]=useState(null);
   // State voor de mapping-editor
-  const[tlMappingOpen,setTlMappingOpen]=useState(false);
   const[tlMappingLines,setTlMappingLines]=useState([]); // geladen lijnposten uit template
   const[tlMappingValues,setTlMappingValues]=useState({}); // {lineKey: appValueKey}
-  const[tlMappingLoading,setTlMappingLoading]=useState(false);
-  const[showNewDealForm,setShowNewDealForm]=useState(false);
-  const[newDealTitle,setNewDealTitle]=useState("");
-  const[newDealValue,setNewDealValue]=useState("");
-  const[dealOptions,setDealOptions]=useState(null);
-  const[newDealPipelineId,setNewDealPipelineId]=useState(null);
-  const[creatingDeal,setCreatingDeal]=useState(false);
+
+
+  const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
+  const[gridFase,setGridFase]=useState(""); // aansluitspanning: mono|3f400|3f230
+  const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
+
+  const autoSaverRef=useRef(null);
+  const[isLoadingProject,setIsLoadingProject]=useState(false);
 
   useEffect(()=>{
     const cb=TL.consumeAuthCallback();
@@ -2864,6 +2811,154 @@ export default function App(){
     });
   },[tlQuery,tlAuth?.logged_in]);
 
+  const[activeTab,setActiveTab]=useState("klant");
+  const[activeLayer,setActiveLayer]=useState("luchtfoto");
+  const[mapReady,setMapReady]=useState(false);
+  const[grbStatus,setGrbStatus]=useState("idle");
+  const[buildingCoords,setBuildingCoords]=useState(null);
+  const[detectedArea,setDetectedArea]=useState(null);
+  const[editMode,setEditMode]=useState(false);
+  const[panelMoveMode,setPanelMoveMode]=useState(false);
+  const[panelRotOffset,setPanelRotOffset]=useState(0);
+  const[panelOrient,setPanelOrient]=useState("portrait");
+  const[panels,setPanels]=useState(DEFAULT_PANELS);
+  const[selPanelId,setSelPanelId]=useState(1);
+  const[inverters,setInverters]=useState(DEFAULT_INVERTERS);
+  const[invFilter,setInvFilter]=useState("alle");
+  const[customCount,setCustomCount]=useState(10);
+  const[batteries,setBatteries]=useState(DEFAULT_BATTERIES);
+  const[battFilter,setBattFilter]=useState("alle");
+  const[results,setResults]=useState(null);
+  const[panelsDrawn,setPanelsDrawn]=useState(false);
+  const[customer,setCustomer]=useState({name:"",address:"",email:""});
+  const[tlToken,setTlToken]=useState("");
+  const[tlAuth,setTlAuth]=useState(null);
+  const[tlAuthMsg,setTlAuthMsg]=useState("");
+  const[tlQuery,setTlQuery]=useState("");
+  const[tlResults,setTlResults]=useState([]);
+  const[tlSearching,setTlSearching]=useState(false);
+  const[tlContact,setTlContact]=useState(null);
+  const[tlLoadingDetails,setTlLoadingDetails]=useState(false);
+  const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
+  const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
+  const[tlWorkOrdersLoading,setTlWorkOrdersLoading]=useState(false);
+  const[tlPendingGeo,setTlPendingGeo]=useState(null);
+  const[tlConfirmed,setTlConfirmed]=useState(false);
+  const[tlQuotationList,setTlQuotationList]=useState([]);
+  const[tlQuotationLoading,setTlQuotationLoading]=useState(false);
+  const[tlCreateQuotStatus,setTlCreateQuotStatus]=useState(null);
+  const[tlCreateQuotUrl,setTlCreateQuotUrl]=useState(null);
+  const[tlMappingOpen,setTlMappingOpen]=useState(false);
+  const[tlMappingLoading,setTlMappingLoading]=useState(false);
+  const[showNewDealForm,setShowNewDealForm]=useState(false);
+  const[newDealTitle,setNewDealTitle]=useState("");
+  const[newDealValue,setNewDealValue]=useState("");
+  const[dealOptions,setDealOptions]=useState(null);
+  const[newDealPipelineId,setNewDealPipelineId]=useState(null);
+  const[creatingDeal,setCreatingDeal]=useState(false);
+  const[pdfLoading,setPdfLoading]=useState(false);
+  const[mapSnapshot,setMapSnapshot]=useState(null);
+  const[snapshotLoading,setSnapshotLoading]=useState(false);
+  const[editableAiText,setEditableAiText]=useState("");
+  const[manualPanelPrice,setManualPanelPrice]=useState("");
+  const[manualBatteryPrice,setManualBatteryPrice]=useState("");
+  const[annualConsumption,setAnnualConsumption]=useState(3500);
+  const[lastSavedAt,setLastSavedAt]=useState(null);
+  const[projectList,setProjectList]=useState([]);
+  const[showProjectMenu,setShowProjectMenu]=useState(false);
+  const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
+  const[coords,setCoords]=useState(null);const[displayName,setDisplayName]=useState("");
+  const[slope,setSlope]=useState(35);const[orientation,setOrientation]=useState("Z");
+
+  // Multi-building state
+  const[buildings,setBuildings]=useState([]); // alle GRB-gebouwen op het perceel
+  const[selBuildingId,setSelBuildingId]=useState(null); // actief gebouw in sidebar
+  const fetchWorkOrders=useCallback(async(contactId,contactType)=>{
+    if(!tlAuth?.logged_in||!contactId) return;
+    setTlWorkOrdersLoading(true);
+    setTlWorkOrders([]);setTlSelectedWorkOrder(null);setTlWorkOrderData(null);setTlWorkOrderDebug(["⏳ Zoeken..."]);
+    const all=[];const seen=new Set();const log=[];
+    const addItem=(item)=>{const k=item.source+":"+item.id;if(!seen.has(k)){seen.add(k);all.push(item);}};
+    log[0]=`⏳ Zoeken voor contactId=${contactId} type=${contactType||"contact"}`;
+    setTlWorkOrderDebug([...log]);
+    // Debug: toon wat er beschikbaar is voor token-extractie
+    console.log("[ZonneDak] tlAuth keys:", Object.keys(tlAuth||{}));
+    console.log("[ZonneDak] Captured token:", null?"✅ ja ("+null.substring(0,10)+"...)":"❌ nog niet");
+    // Toon alle actieve fetch requests om te begrijpen welke URL TL gebruikt
+    // Check sessionStorage for token
+    const ssKeys=[];
+    try{for(let i=0;i<sessionStorage.length;i++){const k=sessionStorage.key(i);if(k)ssKeys.push(k+" ("+sessionStorage.getItem(k)?.length+"ch)");}}catch{}
+    console.log("[ZonneDak] sessionStorage keys:",ssKeys);
+    console.log("[ZonneDak] Als token ❌: zorg dat tlTokenCapture.js in src/ staat, of controleer Network tab");
+    // Direct proxy call (TL.apiCall bestaat niet in teamleaderClient)
+    const _tlProxyBase="https://zonnedak-ai-proxy-west.vercel.app/api";
+    const _tlUserId=TL.getUserId();
+    const tryCall=async(label,endpoint,params)=>{
+      try{
+        const resp=await fetch(`${_tlProxyBase}/tl-call`,{
+          method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({user_id:_tlUserId,endpoint,body:params})
+        });
+        if(!resp.ok){const e=await resp.json().catch(()=>({}));throw new Error(e.error||`HTTP ${resp.status}`);}
+        const data=await resp.json();
+        const d=Array.isArray(data?.data)?data.data:Array.isArray(data)?data:[];
+        log.push(`${d.length>0?"✅":"⬜"} ${label}: ${d.length} resultaten`);
+        return d;
+      }catch(e){log.push(`❌ ${label}: ${e?.message||String(e)}`);return [];}
+    };
+
+    // 1. workOrders.list — filter op klant, daarna client-side verificatie
+    {
+      const data=await tryCall("workOrders(related_to)","workOrders.list",{
+        filter:{related_to:{type:contactType||"contact",id:contactId}},
+        sort:[{field:"created_at",order:"desc"}],page:{size:50,number:1}
+      });
+      // Log eerste werkbon zodat we de structuur zien
+
+      // Filter op customer.id (de veldnaam die TL gebruikt in workOrders)
+      const matchesContact=(w)=>
+        w.customer?.id===contactId ||
+        w.related_to?.id===contactId ||
+        (Array.isArray(w.related_to)&&w.related_to.some(r=>r.id===contactId)) ||
+        JSON.stringify(w).includes(contactId);
+      const verified=data.filter(matchesContact);
+      const toAdd=verified.length>0?verified:data.slice(0,3);
+      toAdd.forEach(w=>addItem({id:w.id,source:"workorder",
+        title:w.title||w.description||"Werkbon #"+(w.number||w.id?.slice(0,8)),
+        date:w.date||w.created_at?.date||w.planned_at?.date||w.created_at||"",
+        status:w.status||w.phase?.name||"",
+        description:[w.title,w.description,w.remark,w.work_description,w.remarks]
+          .filter(Boolean).join(" — ").substring(0,200),raw:w}));
+      log.push(`  → ${toAdd.length}/${data.length} werkbonnen na klant-filter`);
+    }
+
+    // 2. deals.list + deals.info + files
+    // 4. deals.list + deals.info + files
+    const dealsFromList=await tryCall("deals.list","deals.list",{
+      filter:{customer_id:contactId},sort:[{field:"created_at",order:"desc"}],page:{size:10,number:1}});
+    const allDeals=[...dealsFromList,...(tlContact?.deals||[])];
+    const dealIds=new Set();
+    for(const deal of allDeals.filter(d=>d.id&&!dealIds.has(d.id)&&dealIds.add(d.id)).slice(0,5)){
+      const dArr=await tryCall("deals.info("+deal.id+")","deals.info",{id:deal.id,include:"files"});
+      const d=dArr?.[0]||dArr;
+      if(!d)continue;
+      (d?.files||[]).filter(f=>f.name).forEach(f=>addItem({
+        id:f.id,source:"file",title:f.name,date:f.added_at?.date||"",status:"📄",
+        description:"Deal: "+(d.title||deal.id),fileUrl:f.url||null,raw:f}));
+      if(d?.description||d?.summary)addItem({
+        id:"deal-"+d.id,source:"deal",title:d.title||d.reference||"Deal",
+        date:d.created_at?.date||"",status:d.status||"",
+        description:d.description||d.summary||"",raw:d});
+    }
+
+    all.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+    console.log("[ZonneDak] Werkbon fetch log:",log);
+    console.log("[ZonneDak] Werkbonnen gevonden:",all.length,all);
+    setTlWorkOrders(all);
+    setTlWorkOrderDebug(log);
+    setTlWorkOrdersLoading(false);
+  },[tlAuth,tlContact]);
+
   const handleSelectTlContact=useCallback(async(item)=>{
     setTlLoadingDetails(true);setTlResults([]);setTlQuery(item.name);
     const details=await TL.getContactDetails(item.type,item.id);
@@ -2881,7 +2976,7 @@ export default function App(){
       const geo=await TL.geocodeAddress(primaryAddress);
       if(geo) setTlPendingGeo({lat:String(geo.lat),lon:String(geo.lng),display_name:geo.displayName});
     }
-  },[fetchWorkOrders]);
+  },[]);
 
   const handleSelectAddress=useCallback(async(idx)=>{
     setTlSelectedAddressIdx(idx);
@@ -3068,22 +3163,6 @@ export default function App(){
     setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");
   },[tlContact,newDealTitle,newDealPipelineId,newDealValue,dealOptions]);
 
-  const[pdfLoading,setPdfLoading]=useState(false);
-  const[mapSnapshot,setMapSnapshot]=useState(null);
-  const[snapshotLoading,setSnapshotLoading]=useState(false);
-  const[editableAiText,setEditableAiText]=useState("");
-  const[manualPanelPrice,setManualPanelPrice]=useState("");
-  const[manualBatteryPrice,setManualBatteryPrice]=useState("");
-  const[annualConsumption,setAnnualConsumption]=useState(3500);
-  const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
-  const[gridFase,setGridFase]=useState(""); // aansluitspanning: mono|3f400|3f230
-  const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
-
-  const autoSaverRef=useRef(null);
-  const[lastSavedAt,setLastSavedAt]=useState(null);
-  const[projectList,setProjectList]=useState([]);
-  const[showProjectMenu,setShowProjectMenu]=useState(false);
-  const[isLoadingProject,setIsLoadingProject]=useState(false);
   // ── Werkbon parsing: extraheer klantdata uit tekst ─────────────────────────
   const parseWerkbonText=useCallback((rawText)=>{
     if(!rawText) return {};
@@ -3174,83 +3253,6 @@ export default function App(){
 
   // ── Haal werkbonnen op voor geselecteerde klant ─────────────────────────────
 
-  const fetchWorkOrders=useCallback(async(contactId,contactType)=>{
-    if(!tlAuth?.logged_in||!contactId) return;
-    setTlWorkOrdersLoading(true);
-    setTlWorkOrders([]);setTlSelectedWorkOrder(null);setTlWorkOrderData(null);setTlWorkOrderDebug(["⏳ Zoeken..."]);
-    const all=[];const seen=new Set();const log=[];
-    const addItem=(item)=>{const k=item.source+":"+item.id;if(!seen.has(k)){seen.add(k);all.push(item);}};
-    log[0]=`⏳ Zoeken voor contactId=${contactId} type=${contactType||"contact"}`;
-    setTlWorkOrderDebug([...log]);
-    // Debug: toon wat er beschikbaar is voor token-extractie
-    console.log("[ZonneDak] tlAuth keys:", Object.keys(tlAuth||{}));
-    console.log("[ZonneDak] Captured token:", null?"✅ ja ("+null.substring(0,10)+"...)":"❌ nog niet");
-    // Toon alle actieve fetch requests om te begrijpen welke URL TL gebruikt
-    // Check sessionStorage for token
-    const ssKeys=[];
-    try{for(let i=0;i<sessionStorage.length;i++){const k=sessionStorage.key(i);if(k)ssKeys.push(k+" ("+sessionStorage.getItem(k)?.length+"ch)");}}catch{}
-    console.log("[ZonneDak] sessionStorage keys:",ssKeys);
-    console.log("[ZonneDak] Als token ❌: zorg dat tlTokenCapture.js in src/ staat, of controleer Network tab");
-    const tryCall=async(label,endpoint,params)=>{
-      try{
-        const data=await TL.apiCall(endpoint,params);
-        const d=Array.isArray(data)?data:(data?.data||[]);
-        log.push(`${d.length>0?"✅":"⬜"} ${label}: ${d.length} resultaten`);
-        return d;
-      }catch(e){log.push(`❌ ${label}: ${e?.message||String(e)}`);return [];}
-    };
-
-    // 1. workOrders.list — filter op klant, daarna client-side verificatie
-    {
-      const data=await tryCall("workOrders(related_to)","workOrders.list",{
-        filter:{related_to:{type:contactType||"contact",id:contactId}},
-        sort:[{field:"created_at",order:"desc"}],page:{size:50,number:1}
-      });
-      // Log eerste werkbon zodat we de structuur zien
-
-      // Filter op customer.id (de veldnaam die TL gebruikt in workOrders)
-      const matchesContact=(w)=>
-        w.customer?.id===contactId ||
-        w.related_to?.id===contactId ||
-        (Array.isArray(w.related_to)&&w.related_to.some(r=>r.id===contactId)) ||
-        JSON.stringify(w).includes(contactId);
-      const verified=data.filter(matchesContact);
-      const toAdd=verified.length>0?verified:data.slice(0,3);
-      toAdd.forEach(w=>addItem({id:w.id,source:"workorder",
-        title:w.title||w.description||"Werkbon #"+(w.number||w.id?.slice(0,8)),
-        date:w.date||w.created_at?.date||w.planned_at?.date||w.created_at||"",
-        status:w.status||w.phase?.name||"",
-        description:[w.title,w.description,w.remark,w.work_description,w.remarks]
-          .filter(Boolean).join(" — ").substring(0,200),raw:w}));
-      log.push(`  → ${toAdd.length}/${data.length} werkbonnen na klant-filter`);
-    }
-
-    // 2. deals.list + deals.info + files
-    // 4. deals.list + deals.info + files
-    const dealsFromList=await tryCall("deals.list","deals.list",{
-      filter:{customer_id:contactId},sort:[{field:"created_at",order:"desc"}],page:{size:10,number:1}});
-    const allDeals=[...dealsFromList,...(tlContact?.deals||[])];
-    const dealIds=new Set();
-    for(const deal of allDeals.filter(d=>d.id&&!dealIds.has(d.id)&&dealIds.add(d.id)).slice(0,5)){
-      const dArr=await tryCall("deals.info("+deal.id+")","deals.info",{id:deal.id,include:"files"});
-      const d=dArr?.[0]||dArr;
-      if(!d)continue;
-      (d?.files||[]).filter(f=>f.name).forEach(f=>addItem({
-        id:f.id,source:"file",title:f.name,date:f.added_at?.date||"",status:"📄",
-        description:"Deal: "+(d.title||deal.id),fileUrl:f.url||null,raw:f}));
-      if(d?.description||d?.summary)addItem({
-        id:"deal-"+d.id,source:"deal",title:d.title||d.reference||"Deal",
-        date:d.created_at?.date||"",status:d.status||"",
-        description:d.description||d.summary||"",raw:d});
-    }
-
-    all.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
-    console.log("[ZonneDak] Werkbon fetch log:",log);
-    console.log("[ZonneDak] Werkbonnen gevonden:",all.length,all);
-    setTlWorkOrders(all);
-    setTlWorkOrderDebug(log);
-    setTlWorkOrdersLoading(false);
-  },[tlAuth,tlContact]);
 
   // ── Gebruik werkbon als bron: extraheer en vul velden in ─────────────────
   const applyWorkOrder=useCallback(async(wo)=>{
@@ -3798,20 +3800,9 @@ export default function App(){
   },[mapReady,buildings,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,selBuildingId]);
   useEffect(()=>{if(activeTab==="configuratie"&&leafRef.current&&mapReady){setTimeout(()=>leafRef.current?.invalidateSize?.(),50);}},[activeTab,mapReady]);
 
-  // Auto-selecteer het beste dakvlak (hoogste irradiantie × oppervlak) na LiDAR laden
-  useEffect(()=>{
-    if(!detectedFaces?.length||detectedFaces.length<2) return;
-    const scored=detectedFaces.map((f,i)=>({
-      i, score:getSolarIrr(f.orientation||"Z",f.slope||35)*(f.pct||1)
-    }));
-    const best=scored.reduce((a,b)=>b.score>a.score?b:a);
-    if(best.i!==selFaceIdx){
-      setSelFaceIdx(best.i);
-      const bf=detectedFaces[best.i];
-      if(bf.orientation) setOrientation(bf.orientation);
-      if(bf.slope) setSlope(bf.slope);
-    }
-  },[detectedFaces]); // eslint-disable-line
+
+
+
 
   // Panel useEffect verwijderd — panels per vlak worden getekend via "Toon panelen" knop
   // en blijven staan bij vlak/gebouw-wissel. Zie panelLayersByFaceRef.
@@ -4827,19 +4818,7 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
             ))}
           </div>
           <div className="pce">
-            <div className="pce-top">
-              <span className="pce-title">
-                {annualConsumption&&selPanel?.watt?
-                  `Voorstel obv ${annualConsumption} kWh/j`:
-                  "Klant keuze"}
-              </span>
-              <span className="pce-reset" onClick={()=>{
-                if(annualConsumption&&selPanel?.watt){
-                  const irr=getSolarIrr(orientation||"Z",slope||35);
-                  setCustomCount(Math.max(4,Math.round(annualConsumption/irr*1000/selPanel.watt)));
-                }else{setCustomCount(10);}
-              }}>{`↩ Reset (max: ${autoPanels})`}</span>
-            </div>
+            <div className="pce-top"><span className="pce-title">Klant keuze</span><span className="pce-reset" onClick={()=>setCustomCount(10)}>{`↩ Reset (max: ${autoPanels})`}</span></div>
             <div className="pce-controls">
               <button className="pce-btn" onClick={()=>setCustomCount(Math.max(1,(customCount??autoPanels)-1))}>−</button>
               <div style={{textAlign:"center"}}>
