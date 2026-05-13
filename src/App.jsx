@@ -1696,6 +1696,30 @@ async function generatePDF(results,customer,displayName,slope,orientation,mapSna
   sf(11,"normal");sc(OR);doc.text(displayName.split(",").slice(0,3).join(","),M+25,y);
   y += 10;
 
+  // ── Projectgegevens & Uitgangspunten ─────────────────────────────────────
+  y=secTitle("Projectgegevens & Uitgangspunten",y);
+  const projRows=[
+    results.consumption?["Jaarverbruik",results.consumption.toLocaleString("nl-BE")+" kWh/jaar"]:null,
+    results.hasExistingPV&&results.hasExistingPV!=="onbekend"?["Bestaande PV",results.hasExistingPV]:null,
+    results.hasDigitalMeter&&results.hasDigitalMeter!=="onbekend"?["Digitale meter",results.hasDigitalMeter]:null,
+    results.focusGoal?["Gewenste focus",{maxrendement:"Maximaal rendement",maxzelfverbruik:"Maximaal eigenverbruik",spreiding:"Goede spreiding",maxpanelen:"Maximaal panelen",budget:"Budgetvriendelijk"}[results.focusGoal]||results.focusGoal]:null,
+    results.futureConsumers?.length>0?["Extra verbruikers",results.futureConsumers.join(", ")]:null,
+    results.technicianNotes?["Techniekernota",results.technicianNotes.substring(0,80)+(results.technicianNotes.length>80?"…":"")]:null,
+  ].filter(Boolean);
+  const pCols=Math.ceil(projRows.length/2);
+  const pW=(W-2*M)/2-2;
+  [[projRows.slice(0,pCols),M],[projRows.slice(pCols),M+pW+4]].forEach(([rows,cx])=>{
+    let ry=y;
+    rows.forEach(([k,v],ri)=>{
+      if(ri%2===0){doc.setFillColor(...BG);doc.rect(cx,ry-3,pW,7,"F");}
+      sf(8,"normal");sc(MUT);doc.text(k+":",cx+2,ry+1);
+      sf(9,"bold");sc(TXT);doc.text(String(v),cx+pW-2,ry+1,{align:"right",maxWidth:pW-45});
+      ry+=7;
+    });
+  });
+  y+=Math.max(pCols,projRows.length-pCols)*7+6;
+  hLine(y);y+=6;
+
   y=secTitle("Systeemoverzicht",y);
   const kWp=((results.panelCount*results.panel.watt)/1000).toFixed(2);
   // Multi-vlak: toon alle oriëntaties, niet enkel de dominante
@@ -2744,6 +2768,17 @@ export default function App(){
   const effectiveArea=detectedArea||80;
   const autoPanels=selPanel?Math.floor((effectiveArea*.75)/selPanel.area):0;
   const[customCount,setCustomCount]=useState(10);
+
+  // Auto-bereken aanbevolen panelen op basis van verbruik (na werkbon import)
+  useEffect(()=>{
+    if(!annualConsumption||!selPanel?.watt) return;
+    // Bepaal specifieke opbrengst op basis van gekozen richting (kWh/kWp/jaar)
+    const irr=getSolarIrr(orientation||"Z", slope||35);
+    const targetKwp=annualConsumption/irr;
+    const recommended=Math.round(targetKwp*1000/selPanel.watt);
+    const clamped=Math.max(4,Math.min(recommended,autoPanels>0?autoPanels:recommended+10));
+    setCustomCount(clamped);
+  },[annualConsumption,selPanel?.watt,orientation,slope]);
   const panelCount=customCount!==null?customCount:autoPanels;
 
   const[batteries,setBatteries]=useState(DEFAULT_BATTERIES);
@@ -2846,7 +2881,7 @@ export default function App(){
       const geo=await TL.geocodeAddress(primaryAddress);
       if(geo) setTlPendingGeo({lat:String(geo.lat),lon:String(geo.lng),display_name:geo.displayName});
     }
-  },[]);
+  },[fetchWorkOrders]);
 
   const handleSelectAddress=useCallback(async(idx)=>{
     setTlSelectedAddressIdx(idx);
@@ -3762,6 +3797,21 @@ export default function App(){
     return()=>clearTimeout(t);
   },[mapReady,buildings,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,selBuildingId]);
   useEffect(()=>{if(activeTab==="configuratie"&&leafRef.current&&mapReady){setTimeout(()=>leafRef.current?.invalidateSize?.(),50);}},[activeTab,mapReady]);
+
+  // Auto-selecteer het beste dakvlak (hoogste irradiantie × oppervlak) na LiDAR laden
+  useEffect(()=>{
+    if(!detectedFaces?.length||detectedFaces.length<2) return;
+    const scored=detectedFaces.map((f,i)=>({
+      i, score:getSolarIrr(f.orientation||"Z",f.slope||35)*(f.pct||1)
+    }));
+    const best=scored.reduce((a,b)=>b.score>a.score?b:a);
+    if(best.i!==selFaceIdx){
+      setSelFaceIdx(best.i);
+      const bf=detectedFaces[best.i];
+      if(bf.orientation) setOrientation(bf.orientation);
+      if(bf.slope) setSlope(bf.slope);
+    }
+  },[detectedFaces]); // eslint-disable-line
 
   // Panel useEffect verwijderd — panels per vlak worden getekend via "Toon panelen" knop
   // en blijven staan bij vlak/gebouw-wissel. Zie panelLayersByFaceRef.
@@ -4777,7 +4827,19 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
             ))}
           </div>
           <div className="pce">
-            <div className="pce-top"><span className="pce-title">Klant keuze</span><span className="pce-reset" onClick={()=>setCustomCount(10)}>{`↩ Reset (max: ${autoPanels})`}</span></div>
+            <div className="pce-top">
+              <span className="pce-title">
+                {annualConsumption&&selPanel?.watt?
+                  `Voorstel obv ${annualConsumption} kWh/j`:
+                  "Klant keuze"}
+              </span>
+              <span className="pce-reset" onClick={()=>{
+                if(annualConsumption&&selPanel?.watt){
+                  const irr=getSolarIrr(orientation||"Z",slope||35);
+                  setCustomCount(Math.max(4,Math.round(annualConsumption/irr*1000/selPanel.watt)));
+                }else{setCustomCount(10);}
+              }}>{`↩ Reset (max: ${autoPanels})`}</span>
+            </div>
             <div className="pce-controls">
               <button className="pce-btn" onClick={()=>setCustomCount(Math.max(1,(customCount??autoPanels)-1))}>−</button>
               <div style={{textAlign:"center"}}>
