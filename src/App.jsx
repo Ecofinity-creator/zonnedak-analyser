@@ -4489,6 +4489,33 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
   };
 
   const stringDesign=(selPanel?.voc&&selInv?.maxDcVoltage)?buildMpptStringDesign():null;
+  // ── Auto-bereken aanbevolen panelen na werkbon import ────────────────────
+  // Veilig hier: alle benodigde states (annualConsumption, selPanelId, orientation, slope)
+  // zijn gedeclareerd VÓÓR deze useEffect → geen Rollup TDZ
+  useEffect(()=>{
+    if(!annualConsumption||!selPanelId) return;
+    const panel=panels.find(p=>p.id===selPanelId)||panels[0];
+    if(!panel?.watt) return;
+    const irr=getSolarIrr(orientation||"Z",slope||35);
+    if(!irr) return;
+    const recommended=Math.round(annualConsumption/irr*1000/panel.watt);
+    setCustomCount(Math.max(4,Math.min(recommended,autoPanels>0?autoPanels:recommended+10)));
+  },[annualConsumption,selPanelId,orientation,slope]); // eslint-disable-line
+
+  // ── Auto-selecteer het beste dakvlak na LiDAR ─────────────────────────
+  useEffect(()=>{
+    if(!detectedFaces?.length||detectedFaces.length<2) return;
+    const scored=detectedFaces.map((f,i)=>({
+      i,score:getSolarIrr(f.orientation||"Z",f.slope||35)*(f.pct||1)
+    }));
+    const best=scored.reduce((a,b)=>b.score>a.score?b:a);
+    if(best.i===selFaceIdx) return;
+    setSelFaceIdx(best.i);
+    const bf=detectedFaces[best.i];
+    if(bf?.orientation) setOrientation(bf.orientation);
+    if(bf?.slope) setSlope(bf.slope);
+  },[detectedFaces]); // eslint-disable-line
+
   const isLoading=grbStatus==="loading"||dhmStatus==="loading";
 
   const TABS=[
