@@ -2743,28 +2743,6 @@ export default function App(){
   const autoSaverRef=useRef(null);
   const[isLoadingProject,setIsLoadingProject]=useState(false);
 
-  useEffect(()=>{
-    const cb=TL.consumeAuthCallback();
-    if(cb==='success'){setTlAuthMsg("Login succesvol!");setTimeout(()=>setTlAuthMsg(""),3000);}
-    else if(cb==='denied'){setTlAuthMsg("Login geweigerd.");}
-    else if(cb==='error'){setTlAuthMsg("Login fout — probeer opnieuw.");}
-    TL.checkAuthStatus().then(s=>setTlAuth(s.logged_in?s:false));
-  },[]);
-
-  const debouncedSearchRef=useRef(null);
-  if(!debouncedSearchRef.current){ debouncedSearchRef.current=TL.debounce(TL.searchContacts,400); }
-
-  useEffect(()=>{
-    if(!tlAuth?.logged_in||!tlQuery||tlQuery.trim().length<2){setTlResults([]);setTlSearching(false);return;}
-    setTlSearching(true);
-    debouncedSearchRef.current(tlQuery).then(res=>{
-      if(res===null) return;
-      setTlSearching(false);
-      if(res?.notLoggedIn){setTlAuth(false);setTlResults([]);return;}
-      setTlResults(res?.results||[]);
-    });
-  },[tlQuery,tlAuth?.logged_in]);
-
   const[activeTab,setActiveTab]=useState("klant");
   const[activeLayer,setActiveLayer]=useState("luchtfoto");
   const[mapReady,setMapReady]=useState(false);
@@ -2827,6 +2805,28 @@ export default function App(){
   // Multi-building state
   const[buildings,setBuildings]=useState([]); // alle GRB-gebouwen op het perceel
   const[selBuildingId,setSelBuildingId]=useState(null); // actief gebouw in sidebar
+  useEffect(()=>{
+    const cb=TL.consumeAuthCallback();
+    if(cb==='success'){setTlAuthMsg("Login succesvol!");setTimeout(()=>setTlAuthMsg(""),3000);}
+    else if(cb==='denied'){setTlAuthMsg("Login geweigerd.");}
+    else if(cb==='error'){setTlAuthMsg("Login fout — probeer opnieuw.");}
+    TL.checkAuthStatus().then(s=>setTlAuth(s.logged_in?s:false));
+  },[]);
+
+  const debouncedSearchRef=useRef(null);
+  if(!debouncedSearchRef.current){ debouncedSearchRef.current=TL.debounce(TL.searchContacts,400); }
+
+  useEffect(()=>{
+    if(!tlAuth?.logged_in||!tlQuery||tlQuery.trim().length<2){setTlResults([]);setTlSearching(false);return;}
+    setTlSearching(true);
+    debouncedSearchRef.current(tlQuery).then(res=>{
+      if(res===null) return;
+      setTlSearching(false);
+      if(res?.notLoggedIn){setTlAuth(false);setTlResults([]);return;}
+      setTlResults(res?.results||[]);
+    });
+  },[tlQuery,tlAuth?.logged_in]);
+
   const selPanel=panels.find(p=>p.id===selPanelId)||panels[0];
 
   const[selInvId,setSelInvId]=useState(2); // standaard: SMILE-G3-S5
