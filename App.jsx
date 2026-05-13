@@ -2716,68 +2716,6 @@ export class ErrorBoundary extends Component {
 }
 
 export default function App(){
-  const[activeTab,setActiveTab]=useState("klant");
-  const[activeLayer,setActiveLayer]=useState("luchtfoto");
-  const[mapReady,setMapReady]=useState(false);
-  const[grbStatus,setGrbStatus]=useState("idle");
-  const[buildingCoords,setBuildingCoords]=useState(null);
-  const[detectedArea,setDetectedArea]=useState(null);
-  const[editMode,setEditMode]=useState(false);
-  const[panelMoveMode,setPanelMoveMode]=useState(false);
-  const[panelRotOffset,setPanelRotOffset]=useState(0);
-  const[panelOrient,setPanelOrient]=useState("portrait");
-  const[panels,setPanels]=useState(DEFAULT_PANELS);
-  const[selPanelId,setSelPanelId]=useState(1);
-  const[inverters,setInverters]=useState(DEFAULT_INVERTERS);
-  const[invFilter,setInvFilter]=useState("alle");
-  const[customCount,setCustomCount]=useState(10);
-  const[batteries,setBatteries]=useState(DEFAULT_BATTERIES);
-  const[battFilter,setBattFilter]=useState("alle");
-  const[results,setResults]=useState(null);
-  const[panelsDrawn,setPanelsDrawn]=useState(false);
-  const[customer,setCustomer]=useState({name:"",address:"",email:""});
-  const[tlToken,setTlToken]=useState("");
-  const[tlAuth,setTlAuth]=useState(null);
-  const[tlAuthMsg,setTlAuthMsg]=useState("");
-  const[tlQuery,setTlQuery]=useState("");
-  const[tlResults,setTlResults]=useState([]);
-  const[tlSearching,setTlSearching]=useState(false);
-  const[tlContact,setTlContact]=useState(null);
-  const[tlLoadingDetails,setTlLoadingDetails]=useState(false);
-  const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
-  const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
-  const[tlWorkOrdersLoading,setTlWorkOrdersLoading]=useState(false);
-  const[tlPendingGeo,setTlPendingGeo]=useState(null);
-  const[tlConfirmed,setTlConfirmed]=useState(false);
-  const[tlQuotationList,setTlQuotationList]=useState([]);
-  const[tlQuotationLoading,setTlQuotationLoading]=useState(false);
-  const[tlCreateQuotStatus,setTlCreateQuotStatus]=useState(null);
-  const[tlCreateQuotUrl,setTlCreateQuotUrl]=useState(null);
-  const[tlMappingOpen,setTlMappingOpen]=useState(false);
-  const[tlMappingLoading,setTlMappingLoading]=useState(false);
-  const[showNewDealForm,setShowNewDealForm]=useState(false);
-  const[newDealTitle,setNewDealTitle]=useState("");
-  const[newDealValue,setNewDealValue]=useState("");
-  const[dealOptions,setDealOptions]=useState(null);
-  const[newDealPipelineId,setNewDealPipelineId]=useState(null);
-  const[creatingDeal,setCreatingDeal]=useState(false);
-  const[pdfLoading,setPdfLoading]=useState(false);
-  const[mapSnapshot,setMapSnapshot]=useState(null);
-  const[snapshotLoading,setSnapshotLoading]=useState(false);
-  const[editableAiText,setEditableAiText]=useState("");
-  const[manualPanelPrice,setManualPanelPrice]=useState("");
-  const[manualBatteryPrice,setManualBatteryPrice]=useState("");
-  const[annualConsumption,setAnnualConsumption]=useState(3500);
-  const[lastSavedAt,setLastSavedAt]=useState(null);
-  const[projectList,setProjectList]=useState([]);
-  const[showProjectMenu,setShowProjectMenu]=useState(false);
-  const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
-  const[coords,setCoords]=useState(null);const[displayName,setDisplayName]=useState("");
-  const[slope,setSlope]=useState(35);const[orientation,setOrientation]=useState("Z");
-
-  // Multi-building state
-  const[buildings,setBuildings]=useState([]); // alle GRB-gebouwen op het perceel
-  const[selBuildingId,setSelBuildingId]=useState(null); // actief gebouw in sidebar
   const buildingLayersRef=useRef({}); // map: id → Leaflet layerGroup
 
   const[dhmStatus,setDhmStatus]=useState("idle");const[dhmError,setDhmError]=useState("");
@@ -2873,6 +2811,68 @@ export default function App(){
     });
   },[tlQuery,tlAuth?.logged_in]);
 
+  const[activeTab,setActiveTab]=useState("klant");
+  const[activeLayer,setActiveLayer]=useState("luchtfoto");
+  const[mapReady,setMapReady]=useState(false);
+  const[grbStatus,setGrbStatus]=useState("idle");
+  const[buildingCoords,setBuildingCoords]=useState(null);
+  const[detectedArea,setDetectedArea]=useState(null);
+  const[editMode,setEditMode]=useState(false);
+  const[panelMoveMode,setPanelMoveMode]=useState(false);
+  const[panelRotOffset,setPanelRotOffset]=useState(0);
+  const[panelOrient,setPanelOrient]=useState("portrait");
+  const[panels,setPanels]=useState(DEFAULT_PANELS);
+  const[selPanelId,setSelPanelId]=useState(1);
+  const[inverters,setInverters]=useState(DEFAULT_INVERTERS);
+  const[invFilter,setInvFilter]=useState("alle");
+  const[customCount,setCustomCount]=useState(10);
+  const[batteries,setBatteries]=useState(DEFAULT_BATTERIES);
+  const[battFilter,setBattFilter]=useState("alle");
+  const[results,setResults]=useState(null);
+  const[panelsDrawn,setPanelsDrawn]=useState(false);
+  const[customer,setCustomer]=useState({name:"",address:"",email:""});
+  const[tlToken,setTlToken]=useState("");
+  const[tlAuth,setTlAuth]=useState(null);
+  const[tlAuthMsg,setTlAuthMsg]=useState("");
+  const[tlQuery,setTlQuery]=useState("");
+  const[tlResults,setTlResults]=useState([]);
+  const[tlSearching,setTlSearching]=useState(false);
+  const[tlContact,setTlContact]=useState(null);
+  const[tlLoadingDetails,setTlLoadingDetails]=useState(false);
+  const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
+  const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
+  const[tlWorkOrdersLoading,setTlWorkOrdersLoading]=useState(false);
+  const[tlPendingGeo,setTlPendingGeo]=useState(null);
+  const[tlConfirmed,setTlConfirmed]=useState(false);
+  const[tlQuotationList,setTlQuotationList]=useState([]);
+  const[tlQuotationLoading,setTlQuotationLoading]=useState(false);
+  const[tlCreateQuotStatus,setTlCreateQuotStatus]=useState(null);
+  const[tlCreateQuotUrl,setTlCreateQuotUrl]=useState(null);
+  const[tlMappingOpen,setTlMappingOpen]=useState(false);
+  const[tlMappingLoading,setTlMappingLoading]=useState(false);
+  const[showNewDealForm,setShowNewDealForm]=useState(false);
+  const[newDealTitle,setNewDealTitle]=useState("");
+  const[newDealValue,setNewDealValue]=useState("");
+  const[dealOptions,setDealOptions]=useState(null);
+  const[newDealPipelineId,setNewDealPipelineId]=useState(null);
+  const[creatingDeal,setCreatingDeal]=useState(false);
+  const[pdfLoading,setPdfLoading]=useState(false);
+  const[mapSnapshot,setMapSnapshot]=useState(null);
+  const[snapshotLoading,setSnapshotLoading]=useState(false);
+  const[editableAiText,setEditableAiText]=useState("");
+  const[manualPanelPrice,setManualPanelPrice]=useState("");
+  const[manualBatteryPrice,setManualBatteryPrice]=useState("");
+  const[annualConsumption,setAnnualConsumption]=useState(3500);
+  const[lastSavedAt,setLastSavedAt]=useState(null);
+  const[projectList,setProjectList]=useState([]);
+  const[showProjectMenu,setShowProjectMenu]=useState(false);
+  const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
+  const[coords,setCoords]=useState(null);const[displayName,setDisplayName]=useState("");
+  const[slope,setSlope]=useState(35);const[orientation,setOrientation]=useState("Z");
+
+  // Multi-building state
+  const[buildings,setBuildings]=useState([]); // alle GRB-gebouwen op het perceel
+  const[selBuildingId,setSelBuildingId]=useState(null); // actief gebouw in sidebar
   const fetchWorkOrders=useCallback(async(contactId,contactType)=>{
     if(!tlAuth?.logged_in||!contactId) return;
     setTlWorkOrdersLoading(true);
