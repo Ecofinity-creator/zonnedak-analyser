@@ -2833,7 +2833,23 @@ export default function App(){
   const[newDealPipelineId,setNewDealPipelineId]=useState(null);
   const[creatingDeal,setCreatingDeal]=useState(false);
 
-  useEffect(()=>{
+
+  const[pdfLoading,setPdfLoading]=useState(false);
+  const[mapSnapshot,setMapSnapshot]=useState(null);
+  const[snapshotLoading,setSnapshotLoading]=useState(false);
+  const[editableAiText,setEditableAiText]=useState("");
+  const[manualPanelPrice,setManualPanelPrice]=useState("");
+  const[manualBatteryPrice,setManualBatteryPrice]=useState("");
+  const[annualConsumption,setAnnualConsumption]=useState(3500);
+  const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
+  const[gridFase,setGridFase]=useState(""); // aansluitspanning: mono|3f400|3f230
+  const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
+
+  const autoSaverRef=useRef(null);
+  const[lastSavedAt,setLastSavedAt]=useState(null);
+  const[projectList,setProjectList]=useState([]);
+  const[showProjectMenu,setShowProjectMenu]=useState(false);
+  const[isLoadingProject,setIsLoadingProject]=useState(false);  useEffect(()=>{
     const cb=TL.consumeAuthCallback();
     if(cb==='success'){setTlAuthMsg("Login succesvol!");setTimeout(()=>setTlAuthMsg(""),3000);}
     else if(cb==='denied'){setTlAuthMsg("Login geweigerd.");}
@@ -3059,22 +3075,6 @@ export default function App(){
     setShowNewDealForm(false);setNewDealTitle("");setNewDealValue("");
   },[tlContact,newDealTitle,newDealPipelineId,newDealValue,dealOptions]);
 
-  const[pdfLoading,setPdfLoading]=useState(false);
-  const[mapSnapshot,setMapSnapshot]=useState(null);
-  const[snapshotLoading,setSnapshotLoading]=useState(false);
-  const[editableAiText,setEditableAiText]=useState("");
-  const[manualPanelPrice,setManualPanelPrice]=useState("");
-  const[manualBatteryPrice,setManualBatteryPrice]=useState("");
-  const[annualConsumption,setAnnualConsumption]=useState(3500);
-  const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
-  const[gridFase,setGridFase]=useState(""); // aansluitspanning: mono|3f400|3f230
-  const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
-
-  const autoSaverRef=useRef(null);
-  const[lastSavedAt,setLastSavedAt]=useState(null);
-  const[projectList,setProjectList]=useState([]);
-  const[showProjectMenu,setShowProjectMenu]=useState(false);
-  const[isLoadingProject,setIsLoadingProject]=useState(false);
   // ── Werkbon parsing: extraheer klantdata uit tekst ─────────────────────────
   const parseWerkbonText=useCallback((rawText)=>{
     if(!rawText) return {};
