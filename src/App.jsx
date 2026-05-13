@@ -4921,7 +4921,7 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
         <div className="divider"/>
 
         <button className="btn sec full" style={{marginBottom:5}} onClick={()=>drawCurrentFace(true)}
-        }} disabled={!coords||!buildingCoords||isLoading}>
+          disabled={!coords||!buildingCoords||isLoading}>
           🏠 Toon {panelCount} panelen op dak
         </button>
 
