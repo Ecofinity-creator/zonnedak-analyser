@@ -2965,7 +2965,6 @@ export default function App(){
     setTlLoadingDetails(false);
     if(details?.error){alert("Kon details niet ophalen: "+details.error);return;}
     setTlContact(details);
-    if(details?.id) fetchWorkOrders(details.id,details.type||"contact");
     setTlSelectedAddressIdx(0);setTlSelectedDealId(null);
     const primaryEmail=details.emails?.[0]?.email||"";
     const primaryAddress=details.addresses?.[0];
@@ -2976,7 +2975,7 @@ export default function App(){
       const geo=await TL.geocodeAddress(primaryAddress);
       if(geo) setTlPendingGeo({lat:String(geo.lat),lon:String(geo.lng),display_name:geo.displayName});
     }
-  },[]);
+  },[fetchWorkOrders]);
 
   const handleSelectAddress=useCallback(async(idx)=>{
     setTlSelectedAddressIdx(idx);
@@ -4489,6 +4488,49 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
   };
 
   const stringDesign=(selPanel?.voc&&selInv?.maxDcVoltage)?buildMpptStringDesign():null;
+  // ── Teken panelen op huidig dakvlak (ook aanroepbaar vanuit auto-plaatsing) ─
+  const drawCurrentFaceRef=useRef(null); // ref zodat auto-draw altijd laatste versie heeft
+  const drawCurrentFace=useCallback((switchTab=true)=>{
+    if(!coords||!buildingCoords||!selPanel) return;
+    if(!leafRef.current||!window.L) return;
+    setPanelMoveMode(false);
+    const L=window.L,map=leafRef.current;
+    const faceKey=`${selBuildingId||"main"}_${selFaceIdx}`;
+    const existingLayer=panelLayersByFaceRef.current[faceKey];
+    if(existingLayer){try{map.removeLayer(existingLayer);}catch{}}
+    delete panelLayersByFaceRef.current[faceKey];
+    delete panelDataByFaceRef.current[faceKey];
+    const faceDataRef={current:null};
+    let _sf=detectedFaces?.[selFaceIdx];
+    if(_sf&&!_sf.polygon&&buildingCoords){
+      const wp=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);
+      setDetectedFaces(wp);_sf=wp?.[selFaceIdx]||_sf;
+    }
+    const _ridge=ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0;
+    const _fp=_sf?.polygon||(buildingCoords?makeFacePoly(buildingCoords,orientation,_ridge):buildingCoords)||buildingCoords;
+    const newLayer=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,faceDataRef,false);
+    panelLayersByFaceRef.current[faceKey]=newLayer;
+    panelDataByFaceRef.current[faceKey]=faceDataRef.current;
+    panelLayerRef.current=newLayer;
+    panelDataRef.current=faceDataRef.current;
+    panelFaceOrientRef.current[faceKey]={orientation,slope:_sf?.slope||slope};
+    setPanelCountsByFace(prev=>({...prev,[faceKey]:faceDataRef.current?.length||0}));
+    setPanelsDrawn(true);
+    if(switchTab) setActiveTab("configuratie");
+    setTimeout(()=>{if(leafRef.current) leafRef.current.invalidateSize();},100);
+  },[coords,buildingCoords,selPanel,selBuildingId,selFaceIdx,detectedFaces,
+     panelCount,panelRotOffset,panelOrient,orientation,slope]);
+  // Sync ref met laatste versie callback
+  drawCurrentFaceRef.current=drawCurrentFace;
+
+  // ── Auto-laad werkbonnen zodra klant geselecteerd is ─────────────────────
+  // useEffect ipv callback-dep: altijd vers tlAuth beschikbaar
+  useEffect(()=>{
+    if(tlContact?.id&&tlAuth?.logged_in){
+      fetchWorkOrders(tlContact.id,tlContact.type||"contact");
+    }
+  },[tlContact?.id,tlAuth?.logged_in]); // eslint-disable-line
+
   // ── Auto-bereken aanbevolen panelen na werkbon import ────────────────────
   // Veilig hier: alle benodigde states (annualConsumption, selPanelId, orientation, slope)
   // zijn gedeclareerd VÓÓR deze useEffect → geen Rollup TDZ
@@ -4515,6 +4557,15 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
     if(bf?.orientation) setOrientation(bf.orientation);
     if(bf?.slope) setSlope(bf.slope);
   },[detectedFaces]); // eslint-disable-line
+
+  // ── Auto-teken panelen zodra dakvlak + verbruik bekend zijn ────────────
+  useEffect(()=>{
+    if(!mapReady||!coords||!buildingCoords||!selPanel) return;
+    if(!panelCount) return;
+    // Via ref: altijd de meest recente versie van drawCurrentFace
+    const t=setTimeout(()=>drawCurrentFaceRef.current?.(false),900);
+    return()=>clearTimeout(t);
+  },[mapReady,coords,buildingCoords,panelCount,selFaceIdx]); // eslint-disable-line
 
   const isLoading=grbStatus==="loading"||dhmStatus==="loading";
 
@@ -4869,36 +4920,7 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
 
         <div className="divider"/>
 
-        <button className="btn sec full" style={{marginBottom:5}} onClick={()=>{
-          if(!coords||!buildingCoords||!selPanel) return;
-          setPanelMoveMode(false);
-          if(leafRef.current&&window.L){
-            const L=window.L,map=leafRef.current;
-            // Multi-vlak: verwijder alleen de laag van het HUIDIGE vlak
-            const faceKey=`${selBuildingId||"main"}_${selFaceIdx}`;
-            const existingLayer=panelLayersByFaceRef.current[faceKey];
-            if(existingLayer){try{map.removeLayer(existingLayer);}catch{}}
-            delete panelLayersByFaceRef.current[faceKey];
-            delete panelDataByFaceRef.current[faceKey];
-            // Maak face-specifieke ref aan
-            const faceDataRef={current:null};
-            let _sf=detectedFaces?.[selFaceIdx];
-            if(_sf&&!_sf.polygon&&buildingCoords){const wp=generateFacePolygons(buildingCoords,detectedFaces,_sf.ridgeAngleDeg);setDetectedFaces(wp);_sf=wp?.[selFaceIdx]||_sf;}
-            const _ridge=ridgeAngleDegRef.current||_sf?.ridgeAngleDeg||0;
-            const _fp=_sf?.polygon||(buildingCoords?makeFacePoly(buildingCoords,orientation,_ridge):buildingCoords)||buildingCoords;
-            const newLayer=drawPanelLayer(map,L,_fp,panelCount,selPanel,panelRotOffset,panelOrient,faceDataRef,false);
-            panelLayersByFaceRef.current[faceKey]=newLayer;
-            panelDataByFaceRef.current[faceKey]=faceDataRef.current;
-            panelLayerRef.current=newLayer;
-            panelDataRef.current=faceDataRef.current;
-            // Sla de HUIDIGE oriëntatie + helling op (gebruiker kan die handmatig aangepast hebben)
-            panelFaceOrientRef.current[faceKey]={orientation,slope:_sf?.slope||slope};
-            // State update triggert re-render → badge wordt zichtbaar
-            setPanelCountsByFace(prev=>({...prev,[faceKey]:faceDataRef.current?.length||0}));
-            setPanelsDrawn(true);
-          }
-          setActiveTab("configuratie");
-          setTimeout(()=>{if(leafRef.current) leafRef.current.invalidateSize();},100);
+        <button className="btn sec full" style={{marginBottom:5}} onClick={()=>drawCurrentFace(true)}
         }} disabled={!coords||!buildingCoords||isLoading}>
           🏠 Toon {panelCount} panelen op dak
         </button>
