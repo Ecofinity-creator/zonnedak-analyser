@@ -1,8 +1,5 @@
-// ─── teamleaderClient.js ────────────────────────────────────────────────────
-// Browser-side Teamleader API client.
-// Alle calls gaan via de Vercel proxy (zonnedak-ai-proxy-west.vercel.app).
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ─── teamleaderClient.js ─────────────────────────────────────────────────────
+// ORIGINEEL — ongewijzigd. Werkbon-calls gaan via directe fetch in App.jsx.
 const PROXY_BASE = 'https://zonnedak-ai-proxy-west.vercel.app/api';
 const USER_ID_KEY = 'zonnedak_tl_user_id';
 
@@ -41,8 +38,7 @@ export function consumeAuthCallback() {
   const status = params.get('tl_auth');
   if (status) {
     params.delete('tl_auth'); params.delete('reason');
-    const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '') + window.location.hash;
-    window.history.replaceState({}, '', newUrl);
+    window.history.replaceState({}, '', window.location.pathname + (params.toString() ? '?' + params.toString() : '') + window.location.hash);
   }
   return status;
 }
@@ -52,8 +48,7 @@ export async function searchContacts(query) {
   if (!query || query.trim().length < 2) return { results: [] };
   try {
     const resp = await fetch(`${PROXY_BASE}/tl-contacts-search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: userId, query }),
     });
     if (resp.status === 401) return { results: [], notLoggedIn: true };
@@ -66,8 +61,7 @@ export async function getContactDetails(type, id) {
   const userId = getUserId();
   try {
     const resp = await fetch(`${PROXY_BASE}/tl-contact-details`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: userId, type, id }),
     });
     if (resp.status === 401) return { error: 'not_logged_in' };
@@ -88,17 +82,13 @@ export async function getDealOptions() {
 
 export async function createDeal(dealData) {
   const userId = getUserId();
-  const body = {
-    user_id: userId, title: dealData.title,
-    contactType: dealData.contactType, contactId: dealData.contactId,
-    phaseId: dealData.phaseId,
-  };
+  const body = { user_id: userId, title: dealData.title, contactType: dealData.contactType,
+    contactId: dealData.contactId, phaseId: dealData.phaseId };
   if (dealData.responsibleUserId) body.responsibleUserId = dealData.responsibleUserId;
   if (dealData.estimatedValueEur > 0) body.estimatedValue = { amount: dealData.estimatedValueEur, currency: 'EUR' };
   try {
     const resp = await fetch(`${PROXY_BASE}/tl-deal-create`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (resp.status === 401) return { error: 'not_logged_in' };
@@ -134,33 +124,4 @@ export async function geocodeAddress(address) {
     if (!Array.isArray(data) || data.length === 0) return null;
     return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), displayName: data[0].display_name || query };
   } catch { return null; }
-}
-
-// =============================================================================
-// GENERIEKE API CALL — roept /api/tl-call op de proxy aan
-// =============================================================================
-
-/**
- * Generieke TL API call via de Vercel proxy.
- * @param {string} endpoint - bijv. "workOrders.list", "appointments.list"
- * @param {object} body - request body voor de TL API
- */
-export async function apiCall(endpoint, body = {}) {
-  const userId = getUserId();
-  try {
-    const resp = await fetch(`${PROXY_BASE}/tl-call`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId, endpoint, body }),
-    });
-    if (resp.status === 401) return { error: 'not_logged_in' };
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err.error || `HTTP ${resp.status}`);
-    }
-    const data = await resp.json();
-    return data.data ?? data;
-  } catch (err) {
-    throw new Error(err.message || 'Network error');
-  }
 }

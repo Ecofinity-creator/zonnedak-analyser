@@ -2739,52 +2739,6 @@ export default function App(){
   // (gebruiker kan oriëntatie handmatig overschrijven → LiDAR waarde is dan verouderd)
   const panelFaceOrientRef=useRef({}); // {faceKey: {orientation, slope}}
 
-  const selPanel=panels.find(p=>p.id===selPanelId)||panels[0];
-
-  const[selInvId,setSelInvId]=useState(2); // standaard: SMILE-G3-S5
-  const selInv=inverters.find(i=>i.id===selInvId)||null;
-
-  const effectiveArea=detectedArea||80;
-  const autoPanels=selPanel?Math.floor((effectiveArea*.75)/selPanel.area):0;
-
-
-  const panelCount=customCount!==null?customCount:autoPanels;
-
-  const[battEnabled,setBattEnabled]=useState(true); // standaard aan
-  const[selBattId,setSelBattId]=useState(2); // standaard: BAT-G3-9.3S
-  const selBatt=batteries.find(b=>b.id===selBattId)||batteries[0];
-
-  const[aiText,setAiText]=useState("");const[aiLoading,setAiLoading]=useState(false);
-
-
-  // Extra klantgegevens
-  const[hasExistingPV,setHasExistingPV]=useState("onbekend"); // ja|nee|onbekend
-  const[hasDigitalMeter,setHasDigitalMeter]=useState("onbekend"); // ja|nee|onbekend
-  const[futureConsumers,setFutureConsumers]=useState([]); // ["warmtepomp","ev","airco","boiler"]
-  const[focusGoal,setFocusGoal]=useState(""); // maxrendement|maxzelfverbruik|spreiding|maxpanelen|budget
-  const[technicianNotes,setTechnicianNotes]=useState(""); // opmerkingen technieker
-  const[internalNotes,setInternalNotes]=useState(""); // interne opmerkingen Ecofinity
-  // Werkbon (work order) state
-  const[tlWorkOrders,setTlWorkOrders]=useState([]); // lijst werkbonnen
-  const[tlSelectedWorkOrder,setTlSelectedWorkOrder]=useState(null); // gekozen werkbon
-  const[tlWorkOrderData,setTlWorkOrderData]=useState(null); // geëxtraheerde data
-  const[tlWorkOrderDebug,setTlWorkOrderDebug]=useState([]); // debug log van fetch pogingen
-  // TL offerte-templates per dakbedekking
-  const[tlTemplates,setTlTemplates]=useState(()=>{
-    try{return JSON.parse(localStorage.getItem("zonnedak_tl_templates")||"{}");}catch{return {};}
-  });
-  const saveTlTemplates=(tmpl)=>{
-    setTlTemplates(tmpl);
-    try{localStorage.setItem("zonnedak_tl_templates",JSON.stringify(tmpl));}catch{}
-  };
-  // State voor de mapping-editor
-  const[tlMappingLines,setTlMappingLines]=useState([]); // geladen lijnposten uit template
-  const[tlMappingValues,setTlMappingValues]=useState({}); // {lineKey: appValueKey}
-
-
-  const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
-  const[gridFase,setGridFase]=useState(""); // aansluitspanning: mono|3f400|3f230
-  const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
 
   const autoSaverRef=useRef(null);
   const[isLoadingProject,setIsLoadingProject]=useState(false);
@@ -2873,6 +2827,52 @@ export default function App(){
   // Multi-building state
   const[buildings,setBuildings]=useState([]); // alle GRB-gebouwen op het perceel
   const[selBuildingId,setSelBuildingId]=useState(null); // actief gebouw in sidebar
+  const selPanel=panels.find(p=>p.id===selPanelId)||panels[0];
+
+  const[selInvId,setSelInvId]=useState(2); // standaard: SMILE-G3-S5
+  const selInv=inverters.find(i=>i.id===selInvId)||null;
+
+  const effectiveArea=detectedArea||80;
+  const autoPanels=selPanel?Math.floor((effectiveArea*.75)/selPanel.area):0;
+
+
+  const panelCount=customCount!==null?customCount:autoPanels;
+
+  const[battEnabled,setBattEnabled]=useState(true); // standaard aan
+  const[selBattId,setSelBattId]=useState(2); // standaard: BAT-G3-9.3S
+  const selBatt=batteries.find(b=>b.id===selBattId)||batteries[0];
+
+  const[aiText,setAiText]=useState("");const[aiLoading,setAiLoading]=useState(false);
+
+
+  // Extra klantgegevens
+  const[hasExistingPV,setHasExistingPV]=useState("onbekend"); // ja|nee|onbekend
+  const[hasDigitalMeter,setHasDigitalMeter]=useState("onbekend"); // ja|nee|onbekend
+  const[futureConsumers,setFutureConsumers]=useState([]); // ["warmtepomp","ev","airco","boiler"]
+  const[focusGoal,setFocusGoal]=useState(""); // maxrendement|maxzelfverbruik|spreiding|maxpanelen|budget
+  const[technicianNotes,setTechnicianNotes]=useState(""); // opmerkingen technieker
+  const[internalNotes,setInternalNotes]=useState(""); // interne opmerkingen Ecofinity
+  // Werkbon (work order) state
+  const[tlWorkOrders,setTlWorkOrders]=useState([]); // lijst werkbonnen
+  const[tlSelectedWorkOrder,setTlSelectedWorkOrder]=useState(null); // gekozen werkbon
+  const[tlWorkOrderData,setTlWorkOrderData]=useState(null); // geëxtraheerde data
+  const[tlWorkOrderDebug,setTlWorkOrderDebug]=useState([]); // debug log van fetch pogingen
+  // TL offerte-templates per dakbedekking
+  const[tlTemplates,setTlTemplates]=useState(()=>{
+    try{return JSON.parse(localStorage.getItem("zonnedak_tl_templates")||"{}");}catch{return {};}
+  });
+  const saveTlTemplates=(tmpl)=>{
+    setTlTemplates(tmpl);
+    try{localStorage.setItem("zonnedak_tl_templates",JSON.stringify(tmpl));}catch{}
+  };
+  // State voor de mapping-editor
+  const[tlMappingLines,setTlMappingLines]=useState([]); // geladen lijnposten uit template
+  const[tlMappingValues,setTlMappingValues]=useState({}); // {lineKey: appValueKey}
+
+
+  const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
+  const[gridFase,setGridFase]=useState(""); // aansluitspanning: mono|3f400|3f230
+  const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
   const fetchWorkOrders=useCallback(async(contactId,contactType)=>{
     if(!tlAuth?.logged_in||!contactId) return;
     setTlWorkOrdersLoading(true);
