@@ -2849,7 +2849,9 @@ export default function App(){
   const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
 
   const autoSaverRef=useRef(null);
-  const[isLoadingProject,setIsLoadingProject]=useState(false);  useEffect(()=>{
+  const[isLoadingProject,setIsLoadingProject]=useState(false);
+
+  useEffect(()=>{
     const cb=TL.consumeAuthCallback();
     if(cb==='success'){setTlAuthMsg("Login succesvol!");setTimeout(()=>setTlAuthMsg(""),3000);}
     else if(cb==='denied'){setTlAuthMsg("Login geweigerd.");}
@@ -3799,7 +3801,7 @@ export default function App(){
     const recommended=Math.round(targetKwp*1000/selPanel.watt);
     const clamped=Math.max(4,Math.min(recommended,autoPanels>0?autoPanels:recommended+10));
     setCustomCount(clamped);
-  },[annualConsumption,selPanel?.watt,orientation,slope]);
+  },[annualConsumption,selPanelId,orientation,slope]);
 
   // Auto-selecteer het beste dakvlak (hoogste irradiantie × oppervlak) na LiDAR laden
   useEffect(()=>{
