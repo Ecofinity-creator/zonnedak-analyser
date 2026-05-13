@@ -2717,15 +2717,64 @@ export class ErrorBoundary extends Component {
 
 export default function App(){
   const[activeTab,setActiveTab]=useState("klant");
-  const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
-  const[coords,setCoords]=useState(null);const[displayName,setDisplayName]=useState("");
-  const[slope,setSlope]=useState(35);const[orientation,setOrientation]=useState("Z");
   const[activeLayer,setActiveLayer]=useState("luchtfoto");
   const[mapReady,setMapReady]=useState(false);
-
   const[grbStatus,setGrbStatus]=useState("idle");
   const[buildingCoords,setBuildingCoords]=useState(null);
   const[detectedArea,setDetectedArea]=useState(null);
+  const[editMode,setEditMode]=useState(false);
+  const[panelMoveMode,setPanelMoveMode]=useState(false);
+  const[panelRotOffset,setPanelRotOffset]=useState(0);
+  const[panelOrient,setPanelOrient]=useState("portrait");
+  const[panels,setPanels]=useState(DEFAULT_PANELS);
+  const[selPanelId,setSelPanelId]=useState(1);
+  const[inverters,setInverters]=useState(DEFAULT_INVERTERS);
+  const[invFilter,setInvFilter]=useState("alle");
+  const[customCount,setCustomCount]=useState(10);
+  const[batteries,setBatteries]=useState(DEFAULT_BATTERIES);
+  const[battFilter,setBattFilter]=useState("alle");
+  const[results,setResults]=useState(null);
+  const[panelsDrawn,setPanelsDrawn]=useState(false);
+  const[customer,setCustomer]=useState({name:"",address:"",email:""});
+  const[tlToken,setTlToken]=useState("");
+  const[tlAuth,setTlAuth]=useState(null);
+  const[tlAuthMsg,setTlAuthMsg]=useState("");
+  const[tlQuery,setTlQuery]=useState("");
+  const[tlResults,setTlResults]=useState([]);
+  const[tlSearching,setTlSearching]=useState(false);
+  const[tlContact,setTlContact]=useState(null);
+  const[tlLoadingDetails,setTlLoadingDetails]=useState(false);
+  const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
+  const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
+  const[tlWorkOrdersLoading,setTlWorkOrdersLoading]=useState(false);
+  const[tlPendingGeo,setTlPendingGeo]=useState(null);
+  const[tlConfirmed,setTlConfirmed]=useState(false);
+  const[tlQuotationList,setTlQuotationList]=useState([]);
+  const[tlQuotationLoading,setTlQuotationLoading]=useState(false);
+  const[tlCreateQuotStatus,setTlCreateQuotStatus]=useState(null);
+  const[tlCreateQuotUrl,setTlCreateQuotUrl]=useState(null);
+  const[tlMappingOpen,setTlMappingOpen]=useState(false);
+  const[tlMappingLoading,setTlMappingLoading]=useState(false);
+  const[showNewDealForm,setShowNewDealForm]=useState(false);
+  const[newDealTitle,setNewDealTitle]=useState("");
+  const[newDealValue,setNewDealValue]=useState("");
+  const[dealOptions,setDealOptions]=useState(null);
+  const[newDealPipelineId,setNewDealPipelineId]=useState(null);
+  const[creatingDeal,setCreatingDeal]=useState(false);
+  const[pdfLoading,setPdfLoading]=useState(false);
+  const[mapSnapshot,setMapSnapshot]=useState(null);
+  const[snapshotLoading,setSnapshotLoading]=useState(false);
+  const[editableAiText,setEditableAiText]=useState("");
+  const[manualPanelPrice,setManualPanelPrice]=useState("");
+  const[manualBatteryPrice,setManualBatteryPrice]=useState("");
+  const[annualConsumption,setAnnualConsumption]=useState(3500);
+  const[lastSavedAt,setLastSavedAt]=useState(null);
+  const[projectList,setProjectList]=useState([]);
+  const[showProjectMenu,setShowProjectMenu]=useState(false);
+  const[query,setQuery]=useState("");const[suggs,setSuggs]=useState([]);const[showSuggs,setShowSuggs]=useState(false);
+  const[coords,setCoords]=useState(null);const[displayName,setDisplayName]=useState("");
+  const[slope,setSlope]=useState(35);const[orientation,setOrientation]=useState("Z");
+
   // Multi-building state
   const[buildings,setBuildings]=useState([]); // alle GRB-gebouwen op het perceel
   const[selBuildingId,setSelBuildingId]=useState(null); // actief gebouw in sidebar
@@ -2733,10 +2782,6 @@ export default function App(){
 
   const[dhmStatus,setDhmStatus]=useState("idle");const[dhmError,setDhmError]=useState("");
   const[detectedFaces,setDetectedFaces]=useState(null);const[selFaceIdx,setSelFaceIdx]=useState(0);
-  const[editMode,setEditMode]=useState(false);
-  const[panelMoveMode,setPanelMoveMode]=useState(false);
-  const[panelRotOffset,setPanelRotOffset]=useState(0);
-  const[panelOrient,setPanelOrient]=useState("portrait");
   const panelDataRef=useRef(null);
   const ridgeAngleDegRef=useRef(0);
   const detectedFacesRef=useRef(null);
@@ -2756,44 +2801,24 @@ export default function App(){
   // (gebruiker kan oriëntatie handmatig overschrijven → LiDAR waarde is dan verouderd)
   const panelFaceOrientRef=useRef({}); // {faceKey: {orientation, slope}}
 
-  const[panels,setPanels]=useState(DEFAULT_PANELS);
-  const[selPanelId,setSelPanelId]=useState(1);
   const selPanel=panels.find(p=>p.id===selPanelId)||panels[0];
 
-  const[inverters,setInverters]=useState(DEFAULT_INVERTERS);
   const[selInvId,setSelInvId]=useState(2); // standaard: SMILE-G3-S5
   const selInv=inverters.find(i=>i.id===selInvId)||null;
-  const[invFilter,setInvFilter]=useState("alle");
 
   const effectiveArea=detectedArea||80;
   const autoPanels=selPanel?Math.floor((effectiveArea*.75)/selPanel.area):0;
-  const[customCount,setCustomCount]=useState(10);
 
 
   const panelCount=customCount!==null?customCount:autoPanels;
 
-  const[batteries,setBatteries]=useState(DEFAULT_BATTERIES);
   const[battEnabled,setBattEnabled]=useState(true); // standaard aan
   const[selBattId,setSelBattId]=useState(2); // standaard: BAT-G3-9.3S
   const selBatt=batteries.find(b=>b.id===selBattId)||batteries[0];
-  const[battFilter,setBattFilter]=useState("alle");
 
-  const[results,setResults]=useState(null);
   const[aiText,setAiText]=useState("");const[aiLoading,setAiLoading]=useState(false);
-  const[panelsDrawn,setPanelsDrawn]=useState(false);
 
-  const[customer,setCustomer]=useState({name:"",address:"",email:""});
-  const[tlToken,setTlToken]=useState("");
 
-  const[tlAuth,setTlAuth]=useState(null);
-  const[tlAuthMsg,setTlAuthMsg]=useState("");
-  const[tlQuery,setTlQuery]=useState("");
-  const[tlResults,setTlResults]=useState([]);
-  const[tlSearching,setTlSearching]=useState(false);
-  const[tlContact,setTlContact]=useState(null);
-  const[tlLoadingDetails,setTlLoadingDetails]=useState(false);
-  const[tlSelectedAddressIdx,setTlSelectedAddressIdx]=useState(0);
-  const[tlSelectedDealId,setTlSelectedDealId]=useState(null);
   // Extra klantgegevens
   const[hasExistingPV,setHasExistingPV]=useState("onbekend"); // ja|nee|onbekend
   const[hasDigitalMeter,setHasDigitalMeter]=useState("onbekend"); // ja|nee|onbekend
@@ -2803,12 +2828,9 @@ export default function App(){
   const[internalNotes,setInternalNotes]=useState(""); // interne opmerkingen Ecofinity
   // Werkbon (work order) state
   const[tlWorkOrders,setTlWorkOrders]=useState([]); // lijst werkbonnen
-  const[tlWorkOrdersLoading,setTlWorkOrdersLoading]=useState(false);
   const[tlSelectedWorkOrder,setTlSelectedWorkOrder]=useState(null); // gekozen werkbon
   const[tlWorkOrderData,setTlWorkOrderData]=useState(null); // geëxtraheerde data
   const[tlWorkOrderDebug,setTlWorkOrderDebug]=useState([]); // debug log van fetch pogingen
-  const[tlPendingGeo,setTlPendingGeo]=useState(null);
-  const[tlConfirmed,setTlConfirmed]=useState(false);
   // TL offerte-templates per dakbedekking
   const[tlTemplates,setTlTemplates]=useState(()=>{
     try{return JSON.parse(localStorage.getItem("zonnedak_tl_templates")||"{}");}catch{return {};}
@@ -2817,38 +2839,16 @@ export default function App(){
     setTlTemplates(tmpl);
     try{localStorage.setItem("zonnedak_tl_templates",JSON.stringify(tmpl));}catch{}
   };
-  const[tlQuotationList,setTlQuotationList]=useState([]);
-  const[tlQuotationLoading,setTlQuotationLoading]=useState(false);
-  const[tlCreateQuotStatus,setTlCreateQuotStatus]=useState(null);
-  const[tlCreateQuotUrl,setTlCreateQuotUrl]=useState(null);
   // State voor de mapping-editor
-  const[tlMappingOpen,setTlMappingOpen]=useState(false);
   const[tlMappingLines,setTlMappingLines]=useState([]); // geladen lijnposten uit template
   const[tlMappingValues,setTlMappingValues]=useState({}); // {lineKey: appValueKey}
-  const[tlMappingLoading,setTlMappingLoading]=useState(false);
-  const[showNewDealForm,setShowNewDealForm]=useState(false);
-  const[newDealTitle,setNewDealTitle]=useState("");
-  const[newDealValue,setNewDealValue]=useState("");
-  const[dealOptions,setDealOptions]=useState(null);
-  const[newDealPipelineId,setNewDealPipelineId]=useState(null);
-  const[creatingDeal,setCreatingDeal]=useState(false);
 
 
-  const[pdfLoading,setPdfLoading]=useState(false);
-  const[mapSnapshot,setMapSnapshot]=useState(null);
-  const[snapshotLoading,setSnapshotLoading]=useState(false);
-  const[editableAiText,setEditableAiText]=useState("");
-  const[manualPanelPrice,setManualPanelPrice]=useState("");
-  const[manualBatteryPrice,setManualBatteryPrice]=useState("");
-  const[annualConsumption,setAnnualConsumption]=useState(3500);
   const[usageProfile,setUsageProfile]=useState("gezin"); // gebruikersprofiel
   const[gridFase,setGridFase]=useState(""); // aansluitspanning: mono|3f400|3f230
   const[buildingAge,setBuildingAge]=useState(""); // bouwjaar of "oud"/"nieuw"
 
   const autoSaverRef=useRef(null);
-  const[lastSavedAt,setLastSavedAt]=useState(null);
-  const[projectList,setProjectList]=useState([]);
-  const[showProjectMenu,setShowProjectMenu]=useState(false);
   const[isLoadingProject,setIsLoadingProject]=useState(false);  useEffect(()=>{
     const cb=TL.consumeAuthCallback();
     if(cb==='success'){setTlAuthMsg("Login succesvol!");setTimeout(()=>setTlAuthMsg(""),3000);}
