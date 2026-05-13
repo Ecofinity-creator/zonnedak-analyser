@@ -3792,31 +3792,9 @@ export default function App(){
   },[mapReady,buildings,buildingCoords,orientation,detectedFaces,selFaceIdx,editMode,selBuildingId]);
   useEffect(()=>{if(activeTab==="configuratie"&&leafRef.current&&mapReady){setTimeout(()=>leafRef.current?.invalidateSize?.(),50);}},[activeTab,mapReady]);
 
-  // Auto-bereken aanbevolen panelen op basis van verbruik (na werkbon import)
-  useEffect(()=>{
-    if(!annualConsumption||!selPanel?.watt) return;
-    // Bepaal specifieke opbrengst op basis van gekozen richting (kWh/kWp/jaar)
-    const irr=getSolarIrr(orientation||"Z", slope||35);
-    const targetKwp=annualConsumption/irr;
-    const recommended=Math.round(targetKwp*1000/selPanel.watt);
-    const clamped=Math.max(4,Math.min(recommended,autoPanels>0?autoPanels:recommended+10));
-    setCustomCount(clamped);
-  },[annualConsumption,selPanelId,orientation,slope]);
 
-  // Auto-selecteer het beste dakvlak (hoogste irradiantie × oppervlak) na LiDAR laden
-  useEffect(()=>{
-    if(!detectedFaces?.length||detectedFaces.length<2) return;
-    const scored=detectedFaces.map((f,i)=>({
-      i, score:getSolarIrr(f.orientation||"Z",f.slope||35)*(f.pct||1)
-    }));
-    const best=scored.reduce((a,b)=>b.score>a.score?b:a);
-    if(best.i!==selFaceIdx){
-      setSelFaceIdx(best.i);
-      const bf=detectedFaces[best.i];
-      if(bf.orientation) setOrientation(bf.orientation);
-      if(bf.slope) setSlope(bf.slope);
-    }
-  },[detectedFaces]); // eslint-disable-line
+
+
 
   // Panel useEffect verwijderd — panels per vlak worden getekend via "Toon panelen" knop
   // en blijven staan bij vlak/gebouw-wissel. Zie panelLayersByFaceRef.
@@ -4832,19 +4810,7 @@ Concreet en feitelijk met echte cijfers. Geen verkooppraat.`}]})});
             ))}
           </div>
           <div className="pce">
-            <div className="pce-top">
-              <span className="pce-title">
-                {annualConsumption&&selPanel?.watt?
-                  `Voorstel obv ${annualConsumption} kWh/j`:
-                  "Klant keuze"}
-              </span>
-              <span className="pce-reset" onClick={()=>{
-                if(annualConsumption&&selPanel?.watt){
-                  const irr=getSolarIrr(orientation||"Z",slope||35);
-                  setCustomCount(Math.max(4,Math.round(annualConsumption/irr*1000/selPanel.watt)));
-                }else{setCustomCount(10);}
-              }}>{`↩ Reset (max: ${autoPanels})`}</span>
-            </div>
+            <div className="pce-top"><span className="pce-title">Klant keuze</span><span className="pce-reset" onClick={()=>setCustomCount(10)}>{`↩ Reset (max: ${autoPanels})`}</span></div>
             <div className="pce-controls">
               <button className="pce-btn" onClick={()=>setCustomCount(Math.max(1,(customCount??autoPanels)-1))}>−</button>
               <div style={{textAlign:"center"}}>
