@@ -2871,6 +2871,84 @@ export default function App(){
     });
   },[tlQuery,tlAuth?.logged_in]);
 
+  const fetchWorkOrders=useCallback(async(contactId,contactType)=>{
+    if(!tlAuth?.logged_in||!contactId) return;
+    setTlWorkOrdersLoading(true);
+    setTlWorkOrders([]);setTlSelectedWorkOrder(null);setTlWorkOrderData(null);setTlWorkOrderDebug(["⏳ Zoeken..."]);
+    const all=[];const seen=new Set();const log=[];
+    const addItem=(item)=>{const k=item.source+":"+item.id;if(!seen.has(k)){seen.add(k);all.push(item);}};
+    log[0]=`⏳ Zoeken voor contactId=${contactId} type=${contactType||"contact"}`;
+    setTlWorkOrderDebug([...log]);
+    // Debug: toon wat er beschikbaar is voor token-extractie
+    console.log("[ZonneDak] tlAuth keys:", Object.keys(tlAuth||{}));
+    console.log("[ZonneDak] Captured token:", null?"✅ ja ("+null.substring(0,10)+"...)":"❌ nog niet");
+    // Toon alle actieve fetch requests om te begrijpen welke URL TL gebruikt
+    // Check sessionStorage for token
+    const ssKeys=[];
+    try{for(let i=0;i<sessionStorage.length;i++){const k=sessionStorage.key(i);if(k)ssKeys.push(k+" ("+sessionStorage.getItem(k)?.length+"ch)");}}catch{}
+    console.log("[ZonneDak] sessionStorage keys:",ssKeys);
+    console.log("[ZonneDak] Als token ❌: zorg dat tlTokenCapture.js in src/ staat, of controleer Network tab");
+    const tryCall=async(label,endpoint,params)=>{
+      try{
+        const data=await TL.apiCall(endpoint,params);
+        const d=Array.isArray(data)?data:(data?.data||[]);
+        log.push(`${d.length>0?"✅":"⬜"} ${label}: ${d.length} resultaten`);
+        return d;
+      }catch(e){log.push(`❌ ${label}: ${e?.message||String(e)}`);return [];}
+    };
+
+    // 1. workOrders.list — filter op klant, daarna client-side verificatie
+    {
+      const data=await tryCall("workOrders(related_to)","workOrders.list",{
+        filter:{related_to:{type:contactType||"contact",id:contactId}},
+        sort:[{field:"created_at",order:"desc"}],page:{size:50,number:1}
+      });
+      // Log eerste werkbon zodat we de structuur zien
+
+      // Filter op customer.id (de veldnaam die TL gebruikt in workOrders)
+      const matchesContact=(w)=>
+        w.customer?.id===contactId ||
+        w.related_to?.id===contactId ||
+        (Array.isArray(w.related_to)&&w.related_to.some(r=>r.id===contactId)) ||
+        JSON.stringify(w).includes(contactId);
+      const verified=data.filter(matchesContact);
+      const toAdd=verified.length>0?verified:data.slice(0,3);
+      toAdd.forEach(w=>addItem({id:w.id,source:"workorder",
+        title:w.title||w.description||"Werkbon #"+(w.number||w.id?.slice(0,8)),
+        date:w.date||w.created_at?.date||w.planned_at?.date||w.created_at||"",
+        status:w.status||w.phase?.name||"",
+        description:[w.title,w.description,w.remark,w.work_description,w.remarks]
+          .filter(Boolean).join(" — ").substring(0,200),raw:w}));
+      log.push(`  → ${toAdd.length}/${data.length} werkbonnen na klant-filter`);
+    }
+
+    // 2. deals.list + deals.info + files
+    // 4. deals.list + deals.info + files
+    const dealsFromList=await tryCall("deals.list","deals.list",{
+      filter:{customer_id:contactId},sort:[{field:"created_at",order:"desc"}],page:{size:10,number:1}});
+    const allDeals=[...dealsFromList,...(tlContact?.deals||[])];
+    const dealIds=new Set();
+    for(const deal of allDeals.filter(d=>d.id&&!dealIds.has(d.id)&&dealIds.add(d.id)).slice(0,5)){
+      const dArr=await tryCall("deals.info("+deal.id+")","deals.info",{id:deal.id,include:"files"});
+      const d=dArr?.[0]||dArr;
+      if(!d)continue;
+      (d?.files||[]).filter(f=>f.name).forEach(f=>addItem({
+        id:f.id,source:"file",title:f.name,date:f.added_at?.date||"",status:"📄",
+        description:"Deal: "+(d.title||deal.id),fileUrl:f.url||null,raw:f}));
+      if(d?.description||d?.summary)addItem({
+        id:"deal-"+d.id,source:"deal",title:d.title||d.reference||"Deal",
+        date:d.created_at?.date||"",status:d.status||"",
+        description:d.description||d.summary||"",raw:d});
+    }
+
+    all.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+    console.log("[ZonneDak] Werkbon fetch log:",log);
+    console.log("[ZonneDak] Werkbonnen gevonden:",all.length,all);
+    setTlWorkOrders(all);
+    setTlWorkOrderDebug(log);
+    setTlWorkOrdersLoading(false);
+  },[tlAuth,tlContact]);
+
   const handleSelectTlContact=useCallback(async(item)=>{
     setTlLoadingDetails(true);setTlResults([]);setTlQuery(item.name);
     const details=await TL.getContactDetails(item.type,item.id);
@@ -2888,7 +2966,7 @@ export default function App(){
       const geo=await TL.geocodeAddress(primaryAddress);
       if(geo) setTlPendingGeo({lat:String(geo.lat),lon:String(geo.lng),display_name:geo.displayName});
     }
-  },[fetchWorkOrders]);
+  },[]);
 
   const handleSelectAddress=useCallback(async(idx)=>{
     setTlSelectedAddressIdx(idx);
@@ -3165,83 +3243,6 @@ export default function App(){
 
   // ── Haal werkbonnen op voor geselecteerde klant ─────────────────────────────
 
-  const fetchWorkOrders=useCallback(async(contactId,contactType)=>{
-    if(!tlAuth?.logged_in||!contactId) return;
-    setTlWorkOrdersLoading(true);
-    setTlWorkOrders([]);setTlSelectedWorkOrder(null);setTlWorkOrderData(null);setTlWorkOrderDebug(["⏳ Zoeken..."]);
-    const all=[];const seen=new Set();const log=[];
-    const addItem=(item)=>{const k=item.source+":"+item.id;if(!seen.has(k)){seen.add(k);all.push(item);}};
-    log[0]=`⏳ Zoeken voor contactId=${contactId} type=${contactType||"contact"}`;
-    setTlWorkOrderDebug([...log]);
-    // Debug: toon wat er beschikbaar is voor token-extractie
-    console.log("[ZonneDak] tlAuth keys:", Object.keys(tlAuth||{}));
-    console.log("[ZonneDak] Captured token:", null?"✅ ja ("+null.substring(0,10)+"...)":"❌ nog niet");
-    // Toon alle actieve fetch requests om te begrijpen welke URL TL gebruikt
-    // Check sessionStorage for token
-    const ssKeys=[];
-    try{for(let i=0;i<sessionStorage.length;i++){const k=sessionStorage.key(i);if(k)ssKeys.push(k+" ("+sessionStorage.getItem(k)?.length+"ch)");}}catch{}
-    console.log("[ZonneDak] sessionStorage keys:",ssKeys);
-    console.log("[ZonneDak] Als token ❌: zorg dat tlTokenCapture.js in src/ staat, of controleer Network tab");
-    const tryCall=async(label,endpoint,params)=>{
-      try{
-        const data=await TL.apiCall(endpoint,params);
-        const d=Array.isArray(data)?data:(data?.data||[]);
-        log.push(`${d.length>0?"✅":"⬜"} ${label}: ${d.length} resultaten`);
-        return d;
-      }catch(e){log.push(`❌ ${label}: ${e?.message||String(e)}`);return [];}
-    };
-
-    // 1. workOrders.list — filter op klant, daarna client-side verificatie
-    {
-      const data=await tryCall("workOrders(related_to)","workOrders.list",{
-        filter:{related_to:{type:contactType||"contact",id:contactId}},
-        sort:[{field:"created_at",order:"desc"}],page:{size:50,number:1}
-      });
-      // Log eerste werkbon zodat we de structuur zien
-
-      // Filter op customer.id (de veldnaam die TL gebruikt in workOrders)
-      const matchesContact=(w)=>
-        w.customer?.id===contactId ||
-        w.related_to?.id===contactId ||
-        (Array.isArray(w.related_to)&&w.related_to.some(r=>r.id===contactId)) ||
-        JSON.stringify(w).includes(contactId);
-      const verified=data.filter(matchesContact);
-      const toAdd=verified.length>0?verified:data.slice(0,3);
-      toAdd.forEach(w=>addItem({id:w.id,source:"workorder",
-        title:w.title||w.description||"Werkbon #"+(w.number||w.id?.slice(0,8)),
-        date:w.date||w.created_at?.date||w.planned_at?.date||w.created_at||"",
-        status:w.status||w.phase?.name||"",
-        description:[w.title,w.description,w.remark,w.work_description,w.remarks]
-          .filter(Boolean).join(" — ").substring(0,200),raw:w}));
-      log.push(`  → ${toAdd.length}/${data.length} werkbonnen na klant-filter`);
-    }
-
-    // 2. deals.list + deals.info + files
-    // 4. deals.list + deals.info + files
-    const dealsFromList=await tryCall("deals.list","deals.list",{
-      filter:{customer_id:contactId},sort:[{field:"created_at",order:"desc"}],page:{size:10,number:1}});
-    const allDeals=[...dealsFromList,...(tlContact?.deals||[])];
-    const dealIds=new Set();
-    for(const deal of allDeals.filter(d=>d.id&&!dealIds.has(d.id)&&dealIds.add(d.id)).slice(0,5)){
-      const dArr=await tryCall("deals.info("+deal.id+")","deals.info",{id:deal.id,include:"files"});
-      const d=dArr?.[0]||dArr;
-      if(!d)continue;
-      (d?.files||[]).filter(f=>f.name).forEach(f=>addItem({
-        id:f.id,source:"file",title:f.name,date:f.added_at?.date||"",status:"📄",
-        description:"Deal: "+(d.title||deal.id),fileUrl:f.url||null,raw:f}));
-      if(d?.description||d?.summary)addItem({
-        id:"deal-"+d.id,source:"deal",title:d.title||d.reference||"Deal",
-        date:d.created_at?.date||"",status:d.status||"",
-        description:d.description||d.summary||"",raw:d});
-    }
-
-    all.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
-    console.log("[ZonneDak] Werkbon fetch log:",log);
-    console.log("[ZonneDak] Werkbonnen gevonden:",all.length,all);
-    setTlWorkOrders(all);
-    setTlWorkOrderDebug(log);
-    setTlWorkOrdersLoading(false);
-  },[tlAuth,tlContact]);
 
   // ── Gebruik werkbon als bron: extraheer en vul velden in ─────────────────
   const applyWorkOrder=useCallback(async(wo)=>{
